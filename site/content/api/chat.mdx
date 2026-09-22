@@ -1,0 +1,192 @@
+---
+title: Stateful chats
+description: POST /api/v1/chat keeps the conversation for you. Send one message, get a response id, and continue from it.
+---
+
+# Stateful chats
+
+`POST /api/v1/chat` is LM Studio's native chat endpoint, and ModelFabric serves it too. Unlike
+[Chat Completions](/docs/api/chat-completions), you don't resend the conversation each turn: the
+node keeps it, and you continue by naming the response you are answering.
+
+- Method: `POST /api/v1/chat`
+- Send one message as `input`. The reply is a list of `output` items and a `response_id`.
+- Every model call it makes goes through the node's front door, so it is routed across the mesh
+  like any other request.
+- It can also run tools from MCP servers for the model. See [MCP](/docs/api/mcp).
+
+## Start a conversation
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Authorization: Bearer $MFSH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "My favorite color is blue."
+  }'
+```
+
+```json
+{
+  "model_instance_id": "qwen/qwen3.8-27b",
+  "output": [
+    { "type": "message", "content": "That's a great choice! ..." }
+  ],
+  "stats": {
+    "input_tokens": 18,
+    "total_output_tokens": 31,
+    "tokens_per_second": 21.48,
+    "time_to_first_token_seconds": 0.533
+  },
+  "response_id": "resp_624676e9a0d1..."
+}
+```
+
+The `Authorization` header is needed only when the node asks for a key. See
+[API keys](/docs/api/api-keys).
+
+## Continue it
+
+Pass the `response_id` as `previous_response_id`, with only the new message:
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Authorization: Bearer $MFSH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "What color did I just mention?",
+    "previous_response_id": "resp_624676e9a0d1..."
+  }'
+```
+
+The model answers "blue". Each response has its own id, so you can continue from any earlier one
+to branch a conversation.
+
+The same two requests in Python:
+
+```python
+import requests
+
+URL = "http://localhost:1234/api/v1/chat"
+
+first = requests.post(URL, json={
+  "model": "qwen/qwen3.8-27b",
+  "input": "My favorite color is blue.",
+}).json()
+
+second = requests.post(URL, json={
+  "model": "qwen/qwen3.8-27b",
+  "input": "What color did I just mention?",
+  "previous_response_id": first["response_id"],
+}).json()
+
+print(second["output"][-1]["content"])   # You mentioned that your favorite color is blue.
+```
+
+## Turning storage off
+
+Send `"store": false` and nothing is kept. The reply then has no `response_id`.
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "Tell me a joke.",
+    "store": false
+  }'
+```
+
+## Where conversations are kept
+
+<Callout type="warning">
+  A stored conversation is the text of your prompts and the model's replies, held in the memory of
+  the node that answered. It is never written to disk. It is dropped 24 hours after its last use,
+  when the node restarts, or when more than 1,000 conversations are held and it is the oldest.
+</Callout>
+
+A `response_id` is known only to the node that issued it. Sent to another node, or after a
+restart, it is answered `404` with a message saying so. Send the conversation again without
+`previous_response_id`.
+
+This endpoint and [`/v1/responses`](/docs/api/responses#stateful-follow-ups) are the only places
+ModelFabric keeps prompt text by default.
+
+## Streaming
+
+With `"stream": true` the reply is a stream of named events:
+
+```bash
+curl -N http://localhost:1234/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "Say hi.",
+    "stream": true
+  }'
+```
+
+```python
+import json, requests
+
+body = {"model": "qwen/qwen3.8-27b", "input": "Say hi.", "stream": True}
+with requests.post("http://localhost:1234/api/v1/chat", json=body, stream=True) as r:
+  event = None
+  for line in r.iter_lines(decode_unicode=True):
+    if line.startswith("event: "):
+      event = line[7:]
+    elif line.startswith("data: ") and event == "message.delta":
+      print(json.loads(line[6:])["content"], end="", flush=True)
+```
+
+| Event | When |
+|---|---|
+| `chat.start` | the request was accepted |
+| `model_load.start`, `model_load.end` | this request loaded the model on demand; `end` carries `load_time_seconds` |
+| `prompt_processing.start`, `prompt_processing.end` | the engine is reading the prompt; once per model call |
+| `reasoning.start`, `reasoning.delta`, `reasoning.end` | the model is thinking; `delta` carries `content` |
+| `message.start`, `message.delta`, `message.end` | the answer; `delta` carries `content` |
+| `tool_call.start`, `tool_call.arguments`, `tool_call.success` | an [MCP](/docs/api/mcp) tool was called and returned |
+| `tool_call.failure` | a tool call could not be run; `reason` says why |
+| `error` | something failed after the stream began |
+| `chat.end` | the end; `result` is the same body a non-streaming request returns |
+
+## Request fields
+
+| Field | |
+|---|---|
+| `model` | required |
+| `input` | required. A string, or a list of `{"type": "text", "content"}` and `{"type": "image", "data_url"}` parts |
+| `system_prompt` | instructions for the model. On a follow-up it replaces the earlier one |
+| `previous_response_id` | the response to continue |
+| `store` | `false` keeps nothing. Default `true` |
+| `stream` | `true` for events. Default `false` |
+| `integrations` | MCP servers whose tools the model may use. See [MCP](/docs/api/mcp) |
+| `temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty` | sampling |
+| `max_output_tokens` | a limit on the reply. Thinking counts against it |
+| `reasoning` | `off`, `on`, or `low`, `medium`, `high` |
+| `context_length` | the context to load the model with, when this request loads it |
+
+## Output items
+
+| `type` | Fields |
+|---|---|
+| `message` | `content`: text for the user |
+| `reasoning` | `content`: the model's thinking, when it thought |
+| `tool_call` | `tool`, `arguments`, `output`, `provider_info`: a tool that was run |
+| `invalid_tool_call` | `reason`, `metadata`: a tool call that could not be run |
+
+## Differences from LM Studio
+
+- `context_length` is a load setting, so it applies when this request is what loads the model
+  ([just-in-time loading](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to)
+  on, and nothing serving the model yet). A model that is already loaded keeps the context it was
+  loaded with.
+- `model_load.progress` and `prompt_processing.progress` are not sent: the engine reports neither
+  as a fraction.
+- `stats.reasoning_output_tokens` is left out when the engine does not report it. llama.cpp
+  does not.
+- On a node's tailnet address this endpoint is for your own devices, like the rest of `/api/v1`.
+  Apps use `localhost` or the [public front door](/docs/operations/entrypoint).

@@ -1,0 +1,32 @@
+/* The dashboard's styles, in the order they cascade.
+ *
+ * CSS has no scoping, so the only semantics of splitting a stylesheet is the
+ * order its parts are concatenated in: these @imports are that order, and each
+ * part is a verbatim line range of the single styles.css this replaced. Adding
+ * a section means adding a file and an @import in the position it belongs.
+ *
+ * Kept as an index rather than as <link> tags in index.html so the order lives
+ * in one place, next to the files it orders.
+ */
+@import "./css/base.css";
+@import "./css/sidebar-rail.css";
+@import "./css/content.css";
+@import "./css/stat-cards.css";
+@import "./css/panels-tables.css";
+@import "./css/actions.css";
+@import "./css/runtime.css";
+@import "./css/routing.css";
+@import "./css/routing-router.css";
+@import "./css/doctor.css";
+@import "./css/workload-dialog.css";
+@import "./css/settings-dialog.css";
+@import "./css/tokens.css";
+@import "./css/bench.css";
+@import "./css/my-models.css";
+@import "./css/discover.css";
+@import "./css/discover-second-pass-lm-studio-s-browser.css";
+@import "./css/discover-as-a-modal-over-my-models.css";
+@import "./css/tune-slots-over-my-models.css";
+@import "./css/mesh-the-architecture.css";
+@import "./css/mesh-the-constellation.css";
+@import "./css/activity.css";

@@ -1,0 +1,53 @@
+{
+  "_comment": "Copy to ~/.config/modelfabric/config.json. Every field is optional.",
+
+  "node": "",
+  "listen": "127.0.0.1:1234",
+
+  "mesh_port": 1234,
+
+  "_models_root": "Directory scanned for GGUF models. Set this to let ModelFabric load and unload models itself. Empty means route-only.",
+  "models_root": "",
+
+  "_llama_server": "llama.cpp server binary. A bare name is resolved on PATH, then pinned by content digest.",
+  "llama_server": "llama-server",
+
+  "_state_dir": "Ownership records, the operation journal and input pins. Defaults to your user cache dir.",
+  "state_dir": "",
+
+  "_instance_ports": "Port range assigned to models ModelFabric launches.",
+  "port_min": 18000,
+  "port_max": 18099,
+
+  "_engine_defaults": "Applied to a load unless the request overrides them.",
+  "context_length": 8192,
+  "gpu_layers": 99,
+  "parallel": 4,
+  "flash_attention": true,
+  "startup_timeout": "10m",
+
+  "_engines": "Optional: OpenAI-compatible servers you start yourself, which ModelFabric fronts but does not supervise.",
+  "engines": [
+    {
+      "name": "vllm-gpu0",
+      "base_url": "http://127.0.0.1:8000"
+    },
+    {
+      "name": "llamacpp-gpu1",
+      "base_url": "http://127.0.0.1:8001"
+    }
+  ],
+
+  "_verify_full": "Re-hash every pinned model file on every load instead of trusting size+mtime. Off by default: re-hashing 16GB costs seconds.",
+  "verify_full": false,
+
+  "_tag": "Optional Tailscale tag to restrict discovery, e.g. tag:modelfabric. Empty means probe every online peer on mesh_port.",
+  "tag": "",
+
+  "poll_interval": "2s",
+  "probe_timeout": "1500ms",
+  "dead_after": "15s",
+
+  "_local_bias": "How strongly to favour local engines, in units of outstanding requests. 0.5 means a local engine wins any tie but loses to a peer that is a full request less busy.",
+  "local_bias": 0.5
+}

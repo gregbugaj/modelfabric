@@ -1,0 +1,127 @@
+---
+title: Connect your apps
+description: One base URL, and the handful of request shapes ModelFabric answers to.
+---
+
+# Connect your apps
+
+Everything connects to `http://localhost:1234/v1`.
+
+That address is the same on every machine in the mesh, and it doesn't change when models move, when
+you add a node, or when you hand a model to llm-d. You configure it once.
+
+## The base URL and the key
+
+The model name is whatever `mfsh models` lists, for example `qwen/qwen3.8-27b`. Usually there is
+no key: the loopback listener doesn't check one unless you set `"require_api_key": true`.
+If you do turn it on, `mfsh key` prints it.
+
+Most SDKs and CLI tools read both from the environment:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:1234/v1
+export OPENAI_API_KEY=not-needed          # any non-empty value; clients often insist on one
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="not-needed")
+
+r = client.chat.completions.create(
+    model="qwen/qwen3.8-27b",
+    messages=[{"role": "user", "content": "Describe DNS in one sentence."}],
+)
+print(r.choices[0].message.content)
+```
+
+Streaming works end to end, including across a forward to another machine.
+
+## Clients that speak something else
+
+Not everything is an OpenAI client, so ModelFabric answers several shapes at the same address:
+
+| your client speaks | route |
+|---|---|
+| OpenAI chat / completions / embeddings | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings` |
+| OpenAI Responses (Codex) | `/v1/responses` |
+| Anthropic | `/v1/messages`, `/v1/messages/count_tokens` |
+| richer model metadata | `/api/v0/models`, `/api/v0/chat/completions`, … |
+| rerank | `/v1/rerank`, `/v1/reranking` |
+| audio transcription | `/v1/audio/transcriptions` (multipart) |
+
+An Anthropic-shaped client gets pointed at ModelFabric the same way, through its own base-URL variable:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:1234
+```
+
+[OpenAI compatibility](/docs/api) has the full surface, and separates what's *advertised* as
+compatible from what's only forwarded.
+
+## Apps that run in a browser
+
+A web app on another origin, say a chat UI on `http://localhost:5173`, is blocked by the browser
+until the node allows that origin. Turn on **Enable CORS** on the Access tab of the dashboard's
+**Server settings**, or set it in config.json, and it applies without a restart:
+
+```json filename="config.json"
+{ "cors_origins": ["http://localhost:5173"] }
+```
+
+`"*"` allows any origin, which means any page you visit can call `/v1` from your browser. CORS only
+ever opens `/v1`: management and the dashboard refuse other origins whatever this says. See
+[Web pages in your own browser](/docs/operations/security#web-pages-in-your-own-browser).
+
+## Proving it went where you think
+
+Two response headers tell you where the work happened. They're the quickest way to confirm where
+a request went:
+
+```bash
+curl -si http://localhost:1234/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen/qwen3.8-27b","messages":[{"role":"user","content":"hi"}]}' \
+  | grep -i x-mfsh
+```
+
+```
+X-Fabric-Node: xpredator
+X-Fabric-Engine: inst-a9f7c92b4d66
+X-Fabric-Via: llm-d
+```
+
+The third line only appears when something other than ModelFabric's own router chose the engine. Today
+that means [llm-d](/docs/routing/llm-d), for the one model it schedules.
+
+To watch traffic as it happens:
+
+```bash
+mfsh log              # routed requests — metadata, and bodies while capture is on
+mfsh log engine       # an engine's own output: load times, VRAM, warnings
+```
+
+## Reaching a node from somewhere else
+
+Mostly you don't need to. Apps use the loopback address of whatever machine they're running on,
+and since every node answers for every model, there's usually nothing to reach across for.
+
+When you do want another node's front door, forward the port instead of binding it wider:
+
+```bash
+ssh -L 1234:127.0.0.1:1234 <node>
+```
+
+The loopback listener carries model management and the dashboard, so don't open it up. If you
+need the mesh reachable from outside, use a
+[public listener behind a TLS proxy](/docs/operations/entrypoint). It serves inference only and
+always requires the key.
+
+<Cards>
+  <Card title="API keys" href="/docs/api/api-keys">
+    Which listener checks the key, and which one never will.
+  </Card>
+  <Card title="A public front door" href="/docs/operations/entrypoint">
+    A small cloud VM as the public address of GPUs at home.
+  </Card>
+</Cards>

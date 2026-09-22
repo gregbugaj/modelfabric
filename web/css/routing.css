@@ -1,0 +1,62 @@
+/* ---- routing ---- */
+
+/* Pick one. A list of rows, not a grid of cards inside a card: the rows share
+   one surface, the hairline between them is the only separator, and the chosen
+   row is marked on its edge, its dot and its fill. */
+/* A labelled section inside a shared surface: the rule above it does the
+   separating that a second panel border used to. */
+.section-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  /* Air above, a real rule, and the weight of a heading: a section inside a
+     shared surface still has to read as a break, or the page becomes one
+     undifferentiated block. */
+  margin-top: 8px; padding: 16px 14px 9px; font-size: 13px; font-weight: 600; color: var(--text);
+  border-top: 1px solid var(--border-strong);
+}
+.section-head .hint { font-weight: 400; font-size: 12px; color: var(--text-muted); }
+.choices { display: grid; }
+.choice {
+  position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  /* Top-aligned: the mark belongs beside the title, not halfway down a
+     three-line description. The action stays centred against the whole row. */
+  align-items: start; gap: 11px; padding: 10px 14px;
+  border-top: 1px solid var(--border-soft); cursor: pointer;
+}
+.choice-mark { margin-top: 3px; }
+.choices > .choice:first-child { border-top: none; }
+.choice:hover { background: hsl(var(--surface-inset) / 0.7); }
+.choice.active { background: var(--primary-soft); cursor: default; }
+.choice.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--primary); }
+.choice-radio { position: absolute; opacity: 0; pointer-events: none; }
+.choice:has(.choice-radio:focus-visible) { outline: 2px solid var(--primary); outline-offset: -2px; }
+.choice-mark {
+  width: 12px; height: 12px; border-radius: 50%; flex: none;
+  border: 1.5px solid var(--border-strong); background: var(--surface);
+}
+.choice-mark.on { border-color: var(--primary); background: var(--primary); box-shadow: inset 0 0 0 2.5px var(--surface); }
+.choice-main { display: grid; gap: 3px; min-width: 0; }
+.choice-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-weight: 600; font-size: 13px; }
+.choice-desc { font-size: 12.5px; color: var(--text-2); }
+.choice a { color: var(--primary); font-size: 12px; }
+
+/* A metadata line: facts in a row, value first and its label small beside it.
+   Replaces a strip of bordered cells that looked like a dashboard. */
+.meta-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; padding: 11px 14px; }
+.meta { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+.meta-v { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.meta-v.mono { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+.meta-k { font-size: 11.5px; color: var(--text-muted); }
+.exp-tag {
+  padding: 1px 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600;
+  background: hsl(var(--warning-token) / 0.15); color: hsl(var(--warning-token));
+}
+.llmd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 18px; }
+.select {
+  font: inherit; font-size: 13px; padding: 5px 8px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+}
+.unavailable { padding: 0 18px 14px; }
+.unavail-row { padding: 3px 0; font-size: 13px; }
+.unavail-row a { color: var(--primary); }
+.pad { padding: 8px 18px; }
+.pad-top { padding-top: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }

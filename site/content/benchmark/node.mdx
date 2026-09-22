@@ -1,0 +1,104 @@
+---
+title: Benchmarking a node
+description: The standard benchmark on one node, how to read it, and everything a result records so anyone can run it again.
+---
+
+# Benchmarking a node
+
+`mfsh bench`, or the dashboard's **Benchmark** page, measures how fast a model runs on one node in a
+fixed shape: prompts of 1K to 32K tokens (64K if you ask), each generating exactly 128 tokens, then
+2, 4 and 8 requests at once, sharing one prompt and with a prompt each. The layout matches other
+local-inference servers' benchmarks, so the numbers compare directly.
+
+It is not [tuning](/docs/benchmark/tuning). Tuning asks how many slots a machine should run. This
+asks how fast the model is there, and keeps everything that changes the answer fixed and recorded.
+
+<Shot
+  src="/img/dash-bench.png"
+  alt="The dashboard's Benchmark page with its three tabs (Benchmark, Tune slots, Cluster benchmark): a configuration panel with node, model, prompt set and runs per test, checkboxes for pp1024 to pp65536 and for 2x, 4x and 8x batches, then a single-request table, two continuous-batching tables, a Reproduce this run panel with the GPU, driver, system, engine build, model file, prompt set checksum and the command that repeats the run, and the results as text."
+  caption="Benchmark. Every result comes with the command that repeats it."
+/>
+
+## Running it
+
+```bash
+mfsh bench -model qwen/qwen3.8-27b              # this node, the standard suite
+mfsh bench -model qwen/qwen3.8-27b -node gpu-01 # another node of yours
+mfsh bench -model qwen/qwen3.8-27b -fleet       # every node holding it, then side by side
+mfsh bench -quick                               # 1K and 4K, batches of 2 and 4, for a quick look
+```
+
+The model has to be loaded on the node: a run reloads it twice, once with one long slot for the
+prompt sweep and once with eight short slots for batching, and then puts back the load it found,
+including after you stop it. Requests routed to that node in the meantime wait or fail, so run it
+when nothing else needs the node.
+
+Each run is saved as JSON under `~/.local/share/modelfabric/bench/`. In the dashboard, **Copy**
+gives the same text the CLI prints, and **Download JSON** the full report.
+
+## What makes a result repeatable
+
+| Held fixed | How |
+|---|---|
+| What is sent | Two prompt sets ship in the binary, each named, versioned and checksummed: `prose` (ModelFabric's own docs, asked for a summary) and `code` (its Go source, asked to continue). |
+| How long the prompts are | Cut with the engine's own tokenizer, so `pp4096` is 4096 prompt tokens as the engine counts them, chat template included. |
+| How much is generated | Exactly 128 tokens every time: the end-of-text token is ignored. Temperature 0, fixed seed. |
+| What is cached | Each test opens its prompt differently, so nothing is reused unless the test is about reuse. |
+| Who measured | The engine's own timings (llama.cpp reports them), beside the client's clock. |
+| The machine | The GPU, its driver and memory, the OS, ModelFabric's version, the engine build, the model file and quantisation. |
+
+A report records all of it, and the command line that repeats the run with every setting written
+out.
+
+<Callout type="info">
+  The prompt set matters more than it looks. With speculative decoding, the same model on the same
+  RTX 5090 generated about 8% slower with drafting on unguessable text, and twice as fast on code.
+  Neither number is wrong. Compare results only within one prompt set, and run both when
+  speculation is on.
+</Callout>
+
+## Reading the tables
+
+**Single request** is one request at a time, at each prompt length.
+
+**Continuous batching, same prompt** sends one prompt to every request, after reading it once, the
+way a shared system prompt is. **Cached** says how much of it was actually reused: on llama.cpp,
+only the slot that read the prompt reuses it, so at 4x a quarter of the prompt tokens come from
+the cache, not all of them.
+
+**Continuous batching, different prompts** gives each request its own: nothing is shared, and the
+speedup is what the GPU gains from serving several at once.
+
+| Metric | Meaning |
+|---|---|
+| TTFT | Time to first token, as the client saw it. Includes reading the prompt. |
+| TPOT | Time per output token after the first, from the engine's generation time. |
+| pp TPS | Prompt tokens read per second. Tokens reused from the cache are not counted. |
+| tg TPS | Tokens generated per second. In a batch, all requests' tokens from the first token anywhere to the last. |
+| E2E Latency | From sending to the last token. In a batch, until the last request finished. |
+| Throughput | Prompt and generated tokens together, over end-to-end time. |
+| Speedup | A batch's tg TPS over one request's, on the same load. |
+| Peak Mem | The engine process's own GPU memory at its highest, from `nvidia-smi`: other work sharing the card is not counted. Empty where it cannot be read, as on a Mac. |
+
+## The API
+
+| Path | Purpose |
+|---|---|
+| `POST /api/v1/bench` | start: `{model, prompts, pp, tg, batch, batch_pp, reps}`; empty fields are the standard suite |
+| `GET /api/v1/bench` | progress, then the report; `?format=text` is the text the CLI prints |
+| `DELETE /api/v1/bench` | stop, and put the engine back |
+
+Management routes: on this node, or on another of yours through `/api/v1/nodes/<node>/bench`. A
+benchmark and a tuning sweep refuse to run at the same time on one node, since both reload its engine.
+
+<Cards>
+  <Card title="Benchmarking the cluster" href="/docs/benchmark/cluster">
+    How much the whole setup serves, through the front door.
+  </Card>
+  <Card title="Tuning slots" href="/docs/benchmark/tuning">
+    How many requests each node should serve at once.
+  </Card>
+  <Card title="SWE benchmark" href="/docs/benchmark/swe-routing">
+    Routing across the mesh, measured on real agent work.
+  </Card>
+</Cards>

@@ -1,0 +1,7 @@
+node_modules/
+.next/
+next-env.d.ts
+public/_pagefind/
+*.tsbuildinfo
+public/install.sh
+data/brand-icons.json

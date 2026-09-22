@@ -1,0 +1,21 @@
+name: Feature request
+description: Something ModelFabric should be able to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The situation, not the solution — what the missing capability costs you today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+  - type: markdown
+    attributes:
+      value: |
+        ModelFabric stays a single binary with almost no dependencies, and it serves
+        models across machines — it is not a chat client or an agent runtime.
+        Requests that fit that shape land best.

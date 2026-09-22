@@ -1,0 +1,76 @@
+---
+title: Benchmarking the cluster
+description: How much the whole setup serves, measured through the front door at rising concurrency, with a record of which node served each request.
+---
+
+# Benchmarking the cluster
+
+The node benchmark asks how fast one machine is. The **Cluster benchmark** tab, or
+`mfsh bench -cluster`, asks how much the whole setup serves, and how that holds as requests pile up.
+
+<Shot
+  src="/img/dash-bench-cluster.png"
+  alt="The Benchmark page's Cluster benchmark tab: a model box showing the nodes holding the model, checkboxes for prompt lengths and for 1 to 32 requests at once, a one-request-at-a-time table, two load tables whose last column says how many requests each node served, a Reproduce this run panel naming the entry node, routing method and holders, the results as text, and the commands for the agent and chat benchmarks."
+  caption="Cluster benchmark. The last column of each load table is where the requests went."
+/>
+
+```bash
+mfsh bench -cluster -model qwen/qwen3.8-27b          # 1K, 4K, 16K one at a time, then 1 to 16 at once
+mfsh bench -cluster -model qwen/qwen3.8-27b -quick   # 1K, then 1, 2 and 4 at once
+mfsh bench -cluster -model qwen/qwen3.8-27b -concurrency 4,16,32 -load-pp 4096
+```
+
+The requests go through this node's front door, exactly as an app's do, so the router (or
+[llm-d](/docs/routing/llm-d), if it schedules the model) places them across every node holding the
+model. The model does not have to be loaded on the node you run it from. Nothing is reloaded: the
+cluster is measured as it is configured, and any other traffic shares it.
+
+A run has two parts. One request at a time at each prompt length shows which node the router picks
+for it. Then the load sweep sends 1, 2, 4, 8 and 16 requests at once, first each with its own prompt
+and then all sharing one, as a shared system prompt is. Speedup is against one request at a time.
+
+Every row records where its requests went, from the `X-Fabric-Node` header each response carries:
+`gpu-01 6 · mac-01 2` means six of the eight were served by `gpu-01`. A request whose node the front
+door did not name is counted as `unknown`. The report also records the
+entry node, which method routed the model, and the nodes holding it with their engines and slots
+when the run began.
+
+Through the front door the engines' tokenizers cannot be reached, so prompt lengths are estimated
+from the text; the report's timings are the engines' own, as for a node run. Reports are saved
+under `~/.local/share/modelfabric/bench/` as `<time>-cluster-<model>.json`.
+
+## Reading the tables
+
+| Column | What it measures |
+|---|---|
+| Served by | The node that answered, from `X-Fabric-Node`. Under load, how many requests each node took. |
+| At once | How many requests were sent together. |
+| tg TPS | Tokens generated per second by all requests together, from the first token anywhere to the last. |
+| Speedup | That level's tg TPS over one request at a time. Below 1 means the cluster served less in total than a single request gets. |
+| pp TPS | Prompt tokens read per second. Tokens served from a prompt cache are not counted. |
+| Avg and p95 TTFT | Time to first token across the level's requests: the average, and the slowest one in twenty. |
+| Cached | The share of prompt tokens reused from a prompt cache. On the shared-prompt sweep this shows whether requests reached an engine that already held the prompt. |
+| E2E Latency | From sending the first request to the last token of the last one. |
+
+A level slower than the one before it, on a mixed fleet, usually
+means a request landed on a much slower node and the batch waited for it, which is a routing
+question. See [How routing works](/docs/routing).
+
+## The API
+
+| Path | Purpose |
+|---|---|
+| `POST /api/v1/bench/cluster` | start a cluster run through this node's front door: `{model, prompts, pp, tg, concurrency, load_pp, reps}` |
+| `GET /api/v1/bench/cluster` | progress, then the report; `?format=text` is the text the CLI prints |
+| `DELETE /api/v1/bench/cluster` | stop; requests already sent finish on their engines |
+
+Management routes, so loopback-only like the rest of `/api/v1`.
+
+<Cards>
+  <Card title="Benchmarking a node" href="/docs/benchmark/node">
+    How fast a model runs on one machine.
+  </Card>
+  <Card title="Agent benchmarks" href="/docs/benchmark#agent-and-chat-benchmarks">
+    SWE-bench and Aider, run from the repository.
+  </Card>
+</Cards>

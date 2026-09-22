@@ -1,0 +1,255 @@
+---
+title: llm-d
+description: llm-d's EPP scheduling llama.cpp engines across the mesh, with no containers and no Kubernetes.
+---
+
+# llm-d
+
+llm-d brings a scheduler, the **EPP**, that picks which engine serves each request, using queue
+depth scraped from every engine plus prefix-cache locality it tracks itself. Envoy carries the
+traffic and calls the EPP for each decision.
+
+ModelFabric runs both of them for you, as ordinary processes.
+
+```bash
+mfsh llmd install                 # the EPP and Envoy versions your build pins, verified; ~3s
+mfsh llmd enable qwen/qwen3.8-27b # run them for this model; ModelFabric routes it through them
+mfsh llmd status
+mfsh llmd disable
+mfsh llmd profiles                # what can run here, and what cannot
+```
+
+<Arch legend={['loopback', 'tailnet']}>
+  <ArchNode title="modelfabric" sub="the front door" accent="loopback" />
+  <Arrow label="this model only" />
+  <ArchNode title="Envoy" sub="127.0.0.1:8090" accent="loopback" />
+  <Arrow label="ext_proc" />
+  <ArchNode title="EPP" sub="queue depth + prefix cache" accent="loopback" />
+  <Arrow label="picks one" />
+  <ArchNode title="the model's engines" sub="on any node" accent="tailnet" dashed />
+</Arch>
+
+We kept the split narrow: ModelFabric proxies to Envoy **only for the model llm-d is scheduling, and only
+while llm-d reports at least one endpoint for it**. Every other model goes through ModelFabric's own
+router, and so does *that* model whenever llm-d's pool is empty.
+See [When llm-d can schedule nothing](#when-llm-d-can-schedule-nothing).
+
+<Callout type="info">
+  llm-d is **Linux-only**. A Mac node routes and serves but does not run an EPP, and
+  [MLX engines](/docs/engines/mlx) are left out of the endpoint list because the EPP
+  dials engines itself and cannot rewrite a model id.
+</Callout>
+
+## No containers
+
+Both run under the node as ordinary child processes, and stop with it. There's no Docker here, no
+Go toolchain, and no Kubernetes.
+
+Envoy is easy: it ships an official static release binary, checked against a pinned SHA-256.
+
+The EPP is harder, because it's only published as a container image. ModelFabric pulls the static
+binary straight out of that image over the registry's HTTPS API. The image is pinned by digest and
+every manifest and layer is verified as it streams, so what lands on disk is exactly the file the
+pin names.
+
+## Scheduling profiles
+
+Named after llm-d's own well-lit paths. Pick one per model, on the dashboard's **Routing** page or
+with `-profile`:
+
+```bash
+mfsh llmd enable qwen/qwen3.8-27b -profile optimized-baseline
+```
+
+| profile | follows | what it does |
+|---|---|---|
+| `load-aware` | ModelFabric's first config | queue depth and running requests from engine metrics, plus prefix-cache scoring |
+| `optimized-baseline` | llm-d's **Optimized Baseline** | sticks to the engine holding the prefix unless that would cost more TTFT than it saves, then balances by in-flight tokens |
+| `tuned` *(experimental)* | Optimized Baseline + agentic fan-out | also co-locates requests sharing a prompt that arrive together, and spreads prompts with no cache anywhere; uses Alpha llm-d plugins |
+
+### Or pick the workload instead
+
+Those names describe the mechanism. If you only know what you are running, start from the
+dashboard's sidebar, which lists the same three under a **Workload** heading, named for the traffic
+they suit. The chosen one has a tick:
+
+| in the sidebar | applies | because |
+|---|---|---|
+| **Chat** | `optimized-baseline` | turns of a conversation share a prefix, and each call's own latency is what a person is waiting on |
+| **Agentic coding** | `tuned` | llm-d's [agentic serving](https://github.com/llm-d/llm-d/blob/main/docs/well-lit-paths/workloads/agentic-serving.md) workload: long tool loops, parallel fan-out and branches sharing one large context, where what matters is when the *whole program* finishes, not any single call |
+| **Balanced** | `load-aware` | no experimental plugins; the one to fall back to |
+
+They are another name for the same profiles, not a fourth one:
+
+- Clicking one opens a dialog first. Applying restarts the scheduler, so the dialog shows which
+  profile, which model, and whether it is experimental, before anything changes.
+- When llm-d is off you choose the model in the dialog; when it is running the model is filled in
+  for you to confirm. llm-d serves one at a time.
+- The KV options and the room filter stay on the **Routing** page. Set those from a benchmark.
+
+## Room filter
+
+On by default; `-room-filter=false` turns it off.
+
+It sits in front of every profile and does one thing: never pick an engine with no free slot while
+another has room. Prefix affinity can't queue a request behind a busy engine, however warm that
+engine's cache is.
+
+That rule exists because of what queueing means on llama.cpp. A queued request waits for a slot,
+and then **evicts somebody else's conversation from the KV pool** to get one. In the
+[SWE-bench runs](/docs/benchmark/swe-routing) that stacked three long agent conversations onto one GPU while
+the other sat idle, so affinity destroyed the cache it was meant to use.
+
+It's built on llm-d's `utilization-filter`, which is Alpha, so turning it on means the EPP runs
+with experimental plugins allowed. `mfsh llmd status` shows whether it's active. ModelFabric's own
+router applies the same rule on every model llm-d isn't scheduling.
+
+## Calibration: prefill rate
+
+To weigh a warm engine against the wait, the affinity filter converts queued tokens into an
+estimated time-to-first-token. For that it needs your engines' prefill rate.
+
+llm-d's default is calibrated for a 32B model on two H100s. That's several times faster than a
+workstation GPU running llama.cpp, so out of the box **every queue looks short** and the scheduler
+piles work onto an engine that's already behind.
+
+ModelFabric measures the real number from the engines' own counters
+(`prompt_tokens_total / prompt_seconds_total`), falling back to 2,000&nbsp;tok/s until there's
+enough traffic to measure.
+
+## One model at a time
+
+That's how llm-d is designed: an inference pool is one model's replicas, and the EPP assumes every
+engine in its list serves the requested model.
+
+On llama.cpp that assumption matters. `llama-server` answers with whatever it has loaded,
+regardless of what the request said, so an engine holding a different model wouldn't return an
+error. It would return an answer from the wrong model.
+
+So ModelFabric hands the EPP only that one model's engines, and every other model stays on ModelFabric's own
+router. Running several models through llm-d would mean one pool each, which is left for later.
+
+### When llm-d can schedule nothing
+
+The EPP dials engines itself, so it cannot reach one bound to another machine's loopback, nor one
+answering to its own id ([mlx-lm](/docs/engines/mlx)). A model can therefore be *owned* by llm-d
+and have no engine llm-d can use. A Mac serving it is invisible to the EPP.
+
+Sending that model through an empty Envoy pool failed every request with a `503` that named neither
+llm-d nor the cause, while working engines sat idle. So a model whose llm-d pool is empty **stays on
+ModelFabric's own router** until the pool has something in it, then switches back to the llm-d route
+automatically.
+
+`mfsh llmd status` shows which is in force, because its `engines` row is the pool:
+
+```
+  LLM-D
+  model         qwen/qwen3.8-27b
+  engines       100.64.0.12:18001, 100.64.0.31:18001
+```
+
+An empty `engines` row is the case above: llm-d owns the model on paper and ModelFabric is routing it.
+
+## KV-cache utilization
+
+llama.cpp exports no KV gauge on `/metrics`. Its whole set is token and request counters plus
+`n_busy_slots_per_decode`. The data is there in another form: `/slots` reports
+each slot's capacity and the prompt resident in it. ModelFabric computes utilization from that, shows it
+per engine on the dashboard's **Serving** page, and publishes it to llm-d as
+`llamacpp:kv_cache_usage_ratio`.
+
+### Why that needs a shim
+
+You can't point the EPP somewhere else for metrics. We measured this: a per-endpoint `metricsPort`
+is ignored, and putting a `port` on the metrics data source stops it scraping at all. The EPP scrapes each endpoint at exactly the address and port it routes
+to.
+
+So ModelFabric runs a small listener beside each llama.cpp engine. It answers `/metrics` with the
+engine's own metrics plus the computed gauge, and passes everything else straight through,
+streaming and unbuffered.
+
+Only llm-d is pointed at that listener. ModelFabric's own router keeps dialling engines directly, so no
+request pays for the extra hop unless llm-d is the one scheduling it.
+
+An engine that exports its own gauge (vLLM and SGLang both do) is scraped directly with no shim,
+by naming its metric in the engine's runtime traits.
+
+### The two options that read it
+
+Both off by default, selectable on the dashboard's **Routing** page or:
+
+```bash
+mfsh llmd enable -kv-ceiling 0.97 -kv-scorer 2
+```
+
+| flag | what it does |
+|---|---|
+| `-kv-ceiling` | excludes engines whose cache is fuller than this share |
+| `-kv-scorer` | weight for llm-d's `kv-cache-utilization-scorer`, which favours the emptier cache |
+
+<Callout type="warning">
+  Neither is a load-balancing knob here. On llama.cpp **a full cache means *warm*, not busy**:
+  the tokens counted are prefixes kept for reuse, so a low ceiling or a heavy scorer steers away
+  from the engine prefix affinity would pick. The ceiling is useful near 1, as a guard against eviction
+  thrash; the scorer is there to be measured.
+</Callout>
+
+### What the number actually counts
+
+Tokens sitting in the engine's slots, over their capacity. That includes caches kept for reuse,
+since those occupy the pool just the same.
+
+What it can't count is tokens generated after the prompt. `/slots` reports the prompt a slot holds
+and says nothing about the completion, so a long generation reads lower than the memory it's
+using. Keep that in mind before you set a ceiling based on it.
+
+An engine that can't be queried reads as unknown (`—`), never as empty.
+
+## Reachability
+
+The EPP dials every engine and scrapes its metrics. Engines on **this** node are reached on
+loopback. Engines on **other** nodes must bind their current tailnet address:
+
+```json filename="that node's config.json"
+{ "engine_bind": "tailnet" }
+```
+
+<Callout type="warning">
+  Engine ports have no authentication; binding to the tailnet relies on Tailscale ACLs.
+  Never use `0.0.0.0`, which would also expose them to the LAN. See [Security](/docs/operations/security).
+</Callout>
+
+## Generated configs
+
+ModelFabric writes the EPP and Envoy configs itself, which avoids three failures that all happen silently:
+the EPP serves `ext_proc` over TLS by default, it injects a second vLLM-mapped metrics source
+unless told not to, and llama.cpp publishes no KV-utilisation metric for it to read.
+
+For an EPP you run yourself:
+
+```bash
+mfsh llmd init                    # writes the same configs
+mfsh endpoints                    # the mesh in llm-d's file-discovery format
+```
+
+`llmd_endpoints_file` in the config keeps that file up to date automatically, and
+`GET /z/endpoints.yaml` serves it.
+
+## What llama.cpp can't do
+
+`mfsh llmd profiles` lists the paths that can't run here and why: precise prefix-cache routing,
+P/D disaggregation, tiered prefix cache, wide expert parallelism, predicted latency, flow control,
+multi-model.
+
+The specific caveat: llm-d's **precise** prefix-cache routing needs KV-cache events, which vLLM,
+SGLang and TensorRT-LLM publish and llama.cpp does not. The EPP here uses its approximate prefix
+scorer and queue depth.
+
+<Cards>
+  <Card title="How routing works" href="/docs/routing">
+    What ModelFabric does for every model llm-d isn't scheduling.
+  </Card>
+  <Card title="Replicas and prefix affinity" href="/docs/routing/replicas">
+    ModelFabric's own affinity, which applies with or without llm-d.
+  </Card>
+</Cards>

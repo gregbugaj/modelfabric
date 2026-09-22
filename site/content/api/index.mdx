@@ -1,0 +1,381 @@
+---
+title: OpenAI compatibility
+description: The full endpoint surface, which routes are claimed as compatible, and the headers that say where a request ran.
+---
+
+# OpenAI compatibility
+
+Send requests to the Chat Completions, Responses and Embeddings endpoints. Point any
+OpenAI client at `http://localhost:1234/v1` and it works, with whichever machine in the mesh holds
+the model doing the work.
+
+## Supported endpoints
+
+| Endpoint | Method | Docs |
+|---|---|---|
+| `/v1/models` | GET | [List Models](/docs/api/models) |
+| `/v1/responses` | POST | [Responses](/docs/api/responses) |
+| `/v1/chat/completions` | POST | [Chat Completions](/docs/api/chat-completions) |
+| `/v1/embeddings` | POST | [Embeddings](/docs/api/embeddings) |
+
+Chat Completions also carries [Structured Output](/docs/api/structured-output) and
+[Tool Use](/docs/api/tool-use).
+
+Beside the OpenAI-compatible endpoints, `POST /api/v1/chat` is LM Studio's native chat endpoint:
+it keeps [the conversation for you](/docs/api/chat) and runs tools from [MCP servers](/docs/api/mcp).
+
+## Set the base URL to point to ModelFabric
+
+Reuse an existing OpenAI client (Python, JavaScript, C# and so on) by changing its base URL to
+your node. These examples assume the default port, `1234`.
+
+### Python example
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:1234/v1",
+    api_key="modelfabric",   # any text, unless the node asks for a key
+)
+
+# ... the rest of your code ...
+```
+
+### TypeScript example
+
+```typescript
+import OpenAI from 'openai';
+
+const client = new OpenAI({
+  baseURL: "http://localhost:1234/v1",
+  apiKey: "modelfabric",
+});
+
+// ... the rest of your code ...
+```
+
+### curl example
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "messages": [{"role": "user", "content": "Say this is a test!"}],
+    "temperature": 0.7
+  }'
+```
+
+When the node asks for a key, send it as `Authorization: Bearer <token>`. See
+[API keys](/docs/api/api-keys).
+
+## Using Codex with ModelFabric
+
+Codex works through the `POST /v1/responses` endpoint. See [Responses](/docs/api/responses).
+
+## Try it
+
+Every example here runs against a node on its default port. Nothing to configure first.
+
+**What have I got?**
+
+```bash
+curl http://localhost:1234/v1/models
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "qwen/qwen3-0.6b",  "object": "model", "owned_by": "modelfabric", "nodes": ["minion", "xpredator"] },
+    { "id": "qwen/qwen3.8-27b", "object": "model", "owned_by": "modelfabric", "nodes": ["helion", "minion"] }
+  ]
+}
+```
+
+The `nodes` array is ModelFabric's addition: the machines that hold each model. See
+[what the list is](#what-answers-v1models) for what else ends up in it.
+
+**Ask it something.**
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen/qwen3-0.6b",
+    "messages": [{"role": "user", "content": "Reply with exactly: ok"}],
+    "max_tokens": 20,
+    "temperature": 0
+  }'
+```
+
+```json
+{
+  "id": "chatcmpl-KaKvZHN4cVuGjKxNh10b45S72QxB7RgB",
+  "object": "chat.completion",
+  "model": "qwen/qwen3-0.6b",
+  "choices": [{ "index": 0, "finish_reason": "stop",
+                "message": { "role": "assistant", "content": "ok" } }],
+  "usage": { "prompt_tokens": 13, "completion_tokens": 20, "total_tokens": 33 }
+}
+```
+
+A `404` here means nothing has that model loaded. That's the default, not a fault. Either
+`mfsh load <model>` or turn on
+[JIT](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to).
+
+**Stream it.** Add `"stream": true` and you get SSE chunks, preserved end to end even across a
+forward to another machine:
+
+```bash
+curl -N http://localhost:1234/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen/qwen3-0.6b","messages":[{"role":"user","content":"count to 3"}],"stream":true}'
+```
+
+```
+data: {"id":"chatcmpl-a0N9…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+data: {"id":"chatcmpl-a0N9…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"1"}}]}
+```
+
+**Is it alive?**
+
+```bash
+curl http://localhost:1234/healthz          # -> ok
+```
+
+For a full check of the node and the mesh, see [Check it works](/docs/getting-started/verify).
+
+## Inference
+
+| Path | Method | |
+|---|---|---|
+| `/v1/models`, `/v1/models/{id}` | GET | union across the mesh |
+| `/v1/chat/completions` | POST | streaming preserved |
+| `/v1/embeddings` | POST | needs an embedding model |
+| `/v1/responses` | POST | what Codex uses |
+| `/api/v1/chat` | POST | stored conversations and MCP tools |
+| `/v1/messages`, `/v1/messages/count_tokens` | POST | Anthropic-shaped |
+| `/v1/rerank`, `/v1/reranking` | POST | |
+| `/v1/audio/transcriptions` | POST | multipart |
+| `/api/v0/models`, `/api/v0/chat/completions`, … | | richer model metadata: loaded vs not, quantization, arch, context |
+
+The model name travels in the request on every one of these, which is what lets the mesh pick the
+node for you. There's no per-model address to learn and nothing to reconfigure when a model moves
+to a different machine.
+
+## Streaming
+
+A client that sends `stream: true` gets SSE chunks, preserved end to end, including across a
+forward to another machine and under [llm-d](/docs/routing/llm-d).
+
+A client that sends `stream: false` gets the whole answer in one piece. The engine still generates
+it a token at a time, but it holds them and sends one body, so nothing crosses the wire
+incrementally and nothing in the path can observe the tokens. llama.cpp's `/slots` shows
+how far along a slot is (`n_prompt_tokens_processed`, `n_decoded`) but never what it is writing.
+
+So ModelFabric requests a stream even when the caller did not: it rewrites the request to `stream: true`
+on the way out, reads the event stream as it arrives, and assembles the `chat.completion` body the
+caller asked for. That makes [Live replies](/docs/dashboard#activity) and `mfsh log -tokens` work for
+every caller, not only the ones that opted into streaming.
+
+The order matters. The router writes an event stream, the token tap reads it as it passes, and only
+*then* is it reassembled into the single body the caller asked for:
+
+<Diagram>
+{`router ──SSE──► tap (publishes tokens live) ──► unstreamer ──JSON──► caller`}
+</Diagram>
+
+Wrapped the other way round, the tap would see one finished JSON body and no tokens.
+
+We kept this narrow, because it is the data path and a wrong reassembly is a wrong answer:
+
+| | |
+|---|---|
+| Rewritten | `POST /v1/chat/completions` with `stream` absent or `false` |
+| Left alone | anything already streaming, `/v1/messages` (Anthropic-shaped), `/v1/completions`, embeddings, and any body that does not parse |
+| Added | `stream_options: {include_usage: true}`, so token counts still reach callers that were getting them |
+| Reassembled | content, `reasoning_content`, `tool_calls` (arguments joined in order), `finish_reason`, `logprobs`, `usage`, and the envelope (`id`, `created`, `model`, `system_fingerprint`) kept as the engine sent it |
+| Passed through | a response that did not come back as an event stream, and any error the engine reports mid-stream |
+
+A reply that is only tool calls has `content: null`, not `""`, matching OpenAI. Clients branch on
+it.
+
+### When the upgrade happens
+
+| path | when |
+|---|---|
+| under [llm-d](/docs/routing/llm-d), where ModelFabric proxies to Envoy | always |
+| ModelFabric's own router | **only while something is watching**: a Live replies viewer or an `mfsh log -tokens` subscriber |
+
+<Callout type="info">
+  Reassembly buffers the full answer and changes when the caller receives its first byte. On the
+  default router path, it runs only while a Live replies viewer or an `mfsh log -tokens` subscriber
+  is attached.
+</Callout>
+
+An oversized stream is not buffered without limit. Past about 32&nbsp;MB held, ModelFabric stops
+reassembling, flushes what it has and streams the rest. The caller asked for one body and gets a
+stream, but the node stays up. A non-2xx is passed through verbatim, so you see the engine's own
+error message.
+
+## Management
+
+| Path | Purpose |
+|---|---|
+| `GET /api/v1/models` | prepared models, each with its `loaded_instances` |
+| `POST /api/v1/models/load` | `{"model", "context_length", "echo_load_config"}` |
+| `POST /api/v1/models/unload` | `{"instance_id"}` |
+| `POST /api/v1/models/repin` | accept changed files as the new pinned state |
+| `GET /api/v1/operations` | the durable operation journal |
+| `GET /api/v1/front` | the front door's own shape: `{listen, require_api_key, public_listen}` |
+| `GET /api/v1/llmd` | llm-d's status: model, profile, engines, peak prefill, room filter |
+| `GET /api/v1/server-settings` | this node's Server settings: `saved` (the config file), `running` (what is in effect), `live` (the ones that apply without a restart) |
+| `PUT /api/v1/server-settings` | change some of them: only the keys sent are written to config.json, unknown keys kept, the previous file left as `.bak` |
+| `GET /api/v1/topology` | this node's full topology, as the dashboard's Mesh page draws it |
+| `GET /api/v1/events` | server-sent events: the dashboard's six views, each sent when it changes |
+| `GET /api/v1/share/model?model=<key>` | a model's files for copying: `{key, format, dir, repo, revision, files: [{name, size, sha256}]}`. `&format=gguf\|mlx` picks a variant. |
+| `GET /api/v1/share/files/<repo>/resolve/<revision>/<file>` | one of those files, with `Range` for resume. Hugging Face's URL shape, so the same client fetches both. |
+
+`events` is how the dashboard stays current without polling. Each event is named after a resource
+(`mesh`, `models`, `operations`, `runtimes`, `llmd`, `front`) and its data is exactly what that
+resource's `GET` returns (`/z/mesh` for `mesh`, `/api/v1/<name>` for the rest), or `null` where
+the `GET` would not return `200`. The stream opens with every resource, then sends one only when
+its answer changes; the node checks once a second, and only while a stream is open.
+`?only=models,operations` narrows it. The `GET` endpoints remain the contract, and the dashboard
+falls back to polling them against a node too old to have the stream.
+
+```bash
+curl -N localhost:1234/api/v1/events?only=operations
+```
+
+`topology` is this node as the Mesh page draws it: `node`, `role` (`gpu`, `entrypoint` or `router`),
+`tailnet_ip`, `version`, `platform`, `os_version`, `preferred`, and the `gpus` it has. `listeners`
+lists each address it answers on, `{name, addr, scope, auth, serves, enabled}`, where `name` is
+`front`, `mesh`, `public` or `llmd`. `engines` lists what is loaded here, `{id, model, addr, port,
+runtime, slots, inflight, healthy, context, kv_usage}`. `peers` lists the other nodes as this one
+reaches them, `{node, addr, base_url, alive}`: `base_url` is the peer's mesh listener, which is
+where this node's router sends a request for a model only that peer holds. `llmd` is present while
+llm-d schedules.
+
+We didn't copy OpenAI's shape here: the list uses `models` and `key` with `loaded_instances`
+instead of a `data` array. Managing models is a different job from running inference, and it reads
+better with vocabulary that fits it.
+
+<Callout type="warning">
+  All of this is loopback-only, except to the node owner's own devices, which reach it through
+  `/api/v1/nodes/<node>/`. For anyone else the tailnet listener returns `403`, and the dashboard is
+  never served there. See [Security](/docs/operations/security).
+</Callout>
+
+## Mesh
+
+| Path | Purpose |
+|---|---|
+| `GET /z/state` | this node's state, which discovery probes for |
+| `GET /z/mesh` | whole-mesh snapshot, which is what the UI renders |
+| `GET /z/endpoints.yaml` | the mesh's engines in llm-d's file-discovery format |
+| `GET /healthz` | liveness |
+
+Discovery uses `/z/state`: anything that responds to it is in the mesh.
+
+## Headers you'll see
+
+`X-Fabric-Node` names the machine that served the request and `X-Fabric-Engine` the engine process on
+it:
+
+```bash
+curl -si http://localhost:1234/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"qwen/qwen3-0.6b","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
+  | grep -i '^x-mfsh'
+```
+
+```
+X-Fabric-Node: minion
+X-Fabric-Engine: inst-b7fd51138ab1
+X-Fabric-Trace: 7d1778962d806aee
+```
+
+`X-Fabric-Trace` is the id tying that one request together across every node it touched. A request
+that arrives at one machine and is served by another is recorded by both, and without an id those
+two records are just two rows that look alike. Quote it when reporting a problem: it finds the same
+request in two nodes' logs.
+
+### Joining a trace you already started
+
+ModelFabric speaks [W3C Trace Context](https://www.w3.org/TR/trace-context/). Send a `traceparent` and
+ModelFabric **uses your trace id** instead of starting its own, so the request shows up in whatever your
+agent framework is already recording:
+
+```bash
+curl -si http://localhost:1234/v1/chat/completions \
+  -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' \
+  -H 'Content-Type: application/json' -d '{...}' | grep -i '^x-mfsh-trace'
+```
+
+```
+X-Fabric-Trace: 4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+- Your span becomes the parent. ModelFabric mints its own for the hop and names *that* one to the next
+  node, so the mesh appears as a chain under your trace, not beside it.
+- `tracestate` passes through untouched.
+- A malformed, all-zero or `ff`-version header is ignored and a fresh trace minted, since no
+  collector would accept it.
+- Send none and you still get a W3C-shaped id, so every request has one.
+
+<Callout type="info">
+  A valid `traceparent` is accepted from any caller. `X-Fabric-Trace` is honoured only on a hop from
+  another node, after its shape is checked. An external caller's `X-Fabric-Trace` is ignored because
+  the dashboard groups rows by it; accepting it would let a client group unrelated requests.
+</Callout>
+
+<Callout type="info">
+  **Under llm-d, `X-Fabric-Via: llm-d` says so**, because the scheduler and not ModelFabric chose the
+  engine. The header names what picked the engine, not whatever carried the request. ModelFabric still
+  resolves the node from the upstream the reply reports, and sets the same two headers.
+
+  If that address doesn't match a known engine (say, a route to an engine the mesh no longer lists),
+  the node headers are left off, and `mfsh log` shows the request with its `via` and no node.
+</Callout>
+
+On the way in, `Authorization: Bearer <key>` carries the API key. `x-api-key` also works, for
+Anthropic-shaped clients.
+
+There's one more, `X-Fabric-Hop`, which ModelFabric sets on a forwarded request. A node receiving one
+serves it locally or fails; it never forwards again. That isn't something a client sets, and
+headers of that family arriving from outside get stripped at the edge so nobody can claim to be a
+forwarding node.
+
+## What "compatible" means here
+
+The four endpoints in the table at the top are tested against a running mesh, each with the
+examples on its page. `/v1/responses` differs from OpenAI in the ways its page lists.
+
+The other `/v1` routes (rerank, transcription, the Anthropic-shaped `/v1/messages`, and OpenAI's
+retired `/v1/completions`) are forwarded
+but not advertised as compatible. They work as well as the engine behind them does, and ModelFabric
+doesn't normalise their quirks.
+
+## What answers `/v1/models`
+
+The list is the union of every model in the mesh, each `owned_by: ModelFabric` and tagged with the nodes
+holding it.
+
+A model only another node has still appears, and is still callable. With [JIT](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to) on, every
+*downloaded* model appears too, since a client can only request a model it can see. With JIT off,
+the list is what's resident.
+
+```bash
+mfsh models              # the same view, for a person
+```
+
+<Cards>
+  <Card title="API keys" href="/docs/api/api-keys">
+    Which listener checks the key, and which one doesn't.
+  </Card>
+  <Card title="Connect your apps" href="/docs/getting-started/connect-apps">
+    Base URLs, SDK snippets, and confirming where a request ran.
+  </Card>
+</Cards>

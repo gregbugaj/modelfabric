@@ -1,0 +1,197 @@
+---
+title: Frequently asked questions
+description: The things people hit in the first hour.
+---
+
+# Frequently asked questions
+
+## Setup
+
+### Do I need Tailscale?
+
+For a mesh, yes. Discovery, cross-node routing and node identity all come from the tailnet. ModelFabric
+gets its peer list from the local `tailscaled` and probes each one. There's no relay and no
+ModelFabric account; Tailscale does the hard part.
+
+A single node works fine without it. You just end up with one machine's models at one address,
+which is llama.cpp with a nicer front door.
+
+### Do I need another inference app installed?
+
+No. [`mfsh runtime get`](/docs/engines) fetches verified llama.cpp builds and
+[`mfsh get`](/docs/models/downloading) downloads weights, so a bare machine is enough.
+
+If you *do* have one, ModelFabric adopts what it finds: engine packages become runtimes, and an
+existing model library is read in place. See [Existing installs](/docs/models/existing-installs).
+
+### Can I run ModelFabric alongside another inference server?
+
+Yes, but not on the same port. **1234** is a popular default and only one process can hold it, so
+either stop the other server or move ModelFabric:
+
+```json filename="config.json"
+{ "listen": "127.0.0.1:1235", "mesh_port": 1235 }
+```
+
+Remember `mesh_port` has to match across the whole fleet, so that second line is a decision about
+every machine, not just this one.
+
+`mfsh doctor` checks for this and shows which program is holding the port.
+
+### Which address do my apps use?
+
+`http://localhost:1234/v1`, on whatever machine the app is running on. Same address everywhere, and
+it doesn't change when models move or nodes come and go. See
+[Connect your apps](/docs/getting-started/connect-apps).
+
+## Models
+
+### Why am I getting a 404?
+
+Because nothing has that model loaded, and ModelFabric doesn't load models on demand by default.
+
+Either load it yourself (`mfsh load <model>`) or turn on
+[JIT](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to). The default is
+off because otherwise a stray request can tie up a minute and 19&nbsp;GB of VRAM with no sign to
+the caller of what's happening.
+
+### Can I load a model on another machine?
+
+From the dashboard, yes. A node accepts loads, unloads and settings changes from devices
+belonging to the same Tailscale user. From the CLI, `mfsh -addr` will talk to any node you can
+already reach.
+
+You can't make a node load something by sending it inference. Loading is management, and a peer
+can't manage someone else's GPU.
+
+### Why does my vision model only answer about text?
+
+Its `mmproj-*.gguf` is missing, so it loaded without error and dropped your images.
+
+This one catches people because it looks like success. Check the `VISION` column in `mfsh ls`
+before you rely on a result.
+
+### What does "inputs changed since they were pinned" mean?
+
+The model's files aren't what they were the first time you loaded it. Usually that's a re-download
+that finished differently, or a quantization you swapped out and forgot about.
+
+If the change was yours, accept it:
+
+```bash
+mfsh repin <model>
+```
+
+The full story is in [Integrity](/docs/models/integrity).
+
+## The mesh
+
+### My second node isn't showing up.
+
+Three things, in order of likelihood.
+
+**`mesh_port` differs.** Discovery probes exactly one agreed port. Two nodes with different
+values will see each other on the network and never meet.
+
+**An ACL or firewall.** Run `mfsh doctor` on both machines. It probes the mesh listener *from the
+tailnet*, not from loopback, which is where this shows up.
+
+**A `tag` is set** in one config but not applied to the other node, so it never gets probed.
+
+### Which node will serve my request?
+
+Whichever is least busy, with a small nudge toward staying local (`local_bias`, default 0.5: a
+local engine wins a tie but loses to a peer that's a full request less busy). A
+[preference](/docs/routing/preferred-node) overrides that; prefix affinity and the room filter
+adjust it further. See [How routing works](/docs/routing).
+
+Every response carries `X-Fabric-Node` and `X-Fabric-Engine`, so you can see which one did.
+
+### What happens if a node dies mid-request?
+
+Depends whether you've seen any bytes yet.
+
+Before the response starts, ModelFabric moves on to the next candidate, so a node dying between polls
+costs one retry, not the request. Once tokens are streaming, the failure is returned to you. There's
+no clean way to recover at that point: you already have half an answer, and a different engine
+would produce a different second half.
+
+### Can the nodes have different GPUs, or different operating systems?
+
+Yes, and they're expected to. Each node runs the engine build ModelFabric picked for its own hardware,
+and each engine publishes its own slot count and measured prefill rate. A 5090 and a Mac mini have
+no meaningful shared average.
+
+Two capabilities are tied to their platform: [MLX and Metal](/docs/engines/mlx) need a
+Mac, and [llm-d](/docs/routing/llm-d) is Linux-only.
+
+## Security
+
+### Do I need an API key?
+
+Not on the loopback listener, by default. Set `"require_api_key": true` if you want one. Do this
+on a shared machine, where "anything that can reach loopback" includes other people's
+processes.
+
+The exposed listener (`public_listen`) always requires it. Between nodes, no: peers are already
+authenticated tailnet devices and WireGuard is doing the encrypting. See
+[API keys](/docs/api/api-keys).
+
+### Can I expose this to the internet?
+
+Yes, through `public_listen`, behind Tailscale Funnel or a TLS proxy. It serves inference only: no
+dashboard, no management, no mesh views, key required on every request.
+
+Don't expose `:1234`. It carries model management. See
+[A public front door](/docs/operations/entrypoint).
+
+### Does anything leave my network?
+
+Model downloads and engine installs fetch from Hugging Face and GitHub. The node also fetches
+and caches publisher icons. If you enable remote [MCP servers](/docs/api/mcp), the node sends
+tool calls to those servers.
+
+`mfsh log` records request metadata (model, node, engine, timing) and nothing else until you turn
+on more. Turning on **Capture request & response** in the dashboard's Activity page keeps the last
+N prompts and replies *in memory*, where they age out as new ones arrive; switching it back off
+drops what was kept. Nothing reaches disk unless you also set `log_bodies_file`.
+
+### Can I use the dashboard from another machine?
+
+Forward the port:
+
+```bash
+ssh -L 1234:127.0.0.1:1234 <node>
+```
+
+It can load and unload models, so it's loopback-only and the tailnet listener won't serve it.
+
+## Scope
+
+### Is there a chat UI?
+
+No, and there won't be. ModelFabric is infrastructure: point a client at the address. The dashboard
+manages models and shows you the mesh; it isn't somewhere to have a conversation.
+
+### Does it run vLLM?
+
+It routes to vLLM, and to anything else speaking the OpenAI API, if you
+[list it under `engines`](/docs/engines/vllm-sglang). It won't start it, stop it, install it or manage
+its weights. Only llama.cpp and, on a Mac, [MLX](/docs/engines/mlx) are supervised.
+
+### Why not just run llama.cpp on every box?
+
+You can, and for one machine you probably should.
+
+It stops working around the second or third. Every client has to be configured with which box holds which model,
+and that config goes stale the moment you load something somewhere else. ModelFabric moves the
+question out of your configuration and into the mesh.
+
+<Cards>
+  <Card title="Set a preferred node" href="/docs/routing/preferred-node">
+    Send a model's requests to one machine first, without losing the fallback.
+  </Card>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    `mfsh doctor` checks most of the above and tells you what to do about it.
+  </Card>
+</Cards>

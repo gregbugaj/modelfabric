@@ -1,0 +1,78 @@
+---
+title: Preferred node
+description: Send a model's work to one machine first, and fall back to the others when it can't serve.
+---
+
+# Preferred node
+
+When more than one node holds the same model, you can choose where it runs first:
+
+```bash
+mfsh prefer predator     # resolve models there first
+mfsh prefer              # show the current preference
+mfsh prefer -none        # clear it
+```
+
+You can also set it on the dashboard's Overview page (Nodes → **Prefer**). It persists across
+restarts, and `mfsh prefer` with no arguments reports what is in force. Concurrent updates are
+saved atomically. If saving or clearing the preference fails, the request returns an error and
+the previous live preference remains active.
+
+## It's precedence, not a bonus
+
+A preference isn't a weight in the score. Requests go to the preferred node even when the local
+machine has idle GPU capacity, and load never overrides that.
+
+We built it this way because a scoring bonus stops working under load, which is when you need it.
+"Send the 27B to the box with 32&nbsp;GB of VRAM" shouldn't stop happening because that box got
+busy for a minute.
+
+## But it isn't a pin
+
+If the preferred node is offline, doesn't have the model, or fails the request, somebody else
+serves it.
+
+<Callout type="info">
+  A preference never makes a request *impossible*. That's the difference from a pin, and it's why
+  `mfsh prefer` is safe to point at a machine you might reboot.
+</Callout>
+
+## Where it gets applied
+
+In the router, on every model except the one [llm-d](/docs/routing/llm-d) is scheduling:
+
+| the model | how |
+|---|---|
+| any model | the router puts the preferred node first, then falls back |
+| the one model llm-d owns | **not applied**: llm-d schedules all of it |
+
+A model llm-d is scheduling gets one route and one scheduler. Giving it both the preferred node's
+engines *and* llm-d's Envoy would let two requests for one model be placed by two different
+schedulers. That defeats llm-d's queue-aware scheduling, and it makes "where did this go?"
+impossible to answer.
+
+So the preference applies everywhere except the one model llm-d owns. It is still reported, and it
+applies again as soon as llm-d stops scheduling that model.
+
+<Callout type="info">
+  It can't be set inside llm-d instead: llm-d's node filter has no fallback, so a preference there
+  would become a pin, and a pin on an offline node is an outage.
+</Callout>
+
+## It belongs to the node you set it on
+
+There's no mesh-wide preference, because there's no mesh-wide state. The setting controls where
+that node sends the requests it receives.
+
+Different entry points can prefer different machines, and that's often what you want. On a
+[public front door](/docs/operations/entrypoint), `mfsh prefer <home-node>` sends traffic to your
+main GPU box first, and the others (or llm-d) pick up whatever it can't take.
+
+<Cards>
+  <Card title="How routing works" href="/docs/routing">
+    How the engine is picked when no preference is set, and in what order.
+  </Card>
+  <Card title="A public front door" href="/docs/operations/entrypoint">
+    Where a per-node preference is most useful.
+  </Card>
+</Cards>

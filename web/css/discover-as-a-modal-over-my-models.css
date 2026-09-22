@@ -1,0 +1,19 @@
+/* ---- Discover as a modal over My Models ---- */
+
+.mm-tools { display: inline-flex; gap: 8px; align-items: center; }
+
+dialog.modal-lg {
+  width: min(1760px, 94vw); height: min(1100px, 92vh); max-width: none; max-height: none;
+  padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--app-bg, var(--overlay-bg)); color: var(--text); box-shadow: var(--shadow-overlay);
+  display: none; flex-direction: column; overflow: hidden;
+}
+dialog.modal-lg[open] { display: flex; }
+dialog.modal-lg::backdrop { background: var(--overlay-scrim); }
+.modal-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 12px 18px; border-bottom: 1px solid var(--border-soft); background: var(--surface);
+}
+dialog.modal-lg .dv { flex: 1; min-height: 0; padding: 14px; grid-template-rows: minmax(0, 1fr); }
+dialog.modal-lg .dv-list { position: static; max-height: none; height: 100%; }
+dialog.modal-lg .dv-page { height: 100%; overflow-y: auto; }

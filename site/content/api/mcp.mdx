@@ -1,0 +1,289 @@
+---
+title: MCP
+description: Let a model use tools from MCP servers, on /api/v1/chat and /v1/responses, with the node running the tool calls.
+---
+
+# MCP
+
+The [Model Context Protocol](https://modelcontextprotocol.io) is a standard way for a program to
+offer tools to a model. Name an MCP server in a request to [`/api/v1/chat`](/docs/api/chat) or
+[`/v1/responses`](/docs/api/responses#remote-mcp-tools) and the node does the rest: it asks the server for its tools, offers them to the model, runs the calls
+the model makes, feeds the results back, and returns the answer with a record of every call.
+
+This is different from [Tool Use](/docs/api/tool-use), where your code runs the tools.
+
+There are two ways to name a server, and each has its own switch. **Both are off until you turn
+them on**, in the dashboard under **Server settings → MCP**.
+
+| | In the request | Switch | config.json |
+|---|---|---|---|
+| A server named in the request | `"type": "ephemeral_mcp"` | Allow per-request MCPs | `mcp_allow_ephemeral` |
+| A server from mcp.json | `"mcp/<name>"` | Allow calling servers from mcp.json | `mcp_allow_configured` |
+
+Both apply as soon as they are saved. With a switch off, a request that needs it is answered `403`
+naming the switch.
+
+## Try it with the test server
+
+The repository ships a small MCP server for testing, `examples/mcp/test_server.py`. It needs only
+Python 3, and its two tools have answers a model cannot guess, so you can tell the tool really ran:
+`add` adds two numbers, and `secret_word` returns a fixed word.
+
+<Steps>
+
+### List it in mcp.json
+
+Use the full path to the file in your checkout:
+
+```json filename="~/.modelfabric/mcp.json"
+{
+  "mcpServers": {
+    "test": {
+      "command": "python3",
+      "args": ["/path/to/modelfabric/examples/mcp/test_server.py"]
+    }
+  }
+}
+```
+
+### Turn the switch on
+
+In the dashboard, **Server settings → MCP → Allow calling servers from mcp.json**, then Save. Or
+from a terminal on the node:
+
+```bash
+curl -X PUT http://localhost:1234/api/v1/server-settings \
+  -H "Content-Type: application/json" \
+  -d '{"mcp_allow_configured": true}'
+```
+
+### Ask something only the tools can answer
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "What is the secret word, and what is 1234.5 plus 4321? Use the tools.",
+    "integrations": ["mcp/test"]
+  }'
+```
+
+```python
+import requests
+
+response = requests.post("http://localhost:1234/api/v1/chat", json={
+  "model": "qwen/qwen3.8-27b",
+  "input": "What is the secret word, and what is 1234.5 plus 4321? Use the tools.",
+  "integrations": ["mcp/test"],
+}).json()
+
+for item in response["output"]:
+  print(item["type"], item.get("tool", ""), item.get("output") or item.get("content"))
+```
+
+### Check the output
+
+Two `tool_call` items, then the answer built from them:
+
+```text
+tool_call secret_word  -> marzipan
+tool_call add {"a": 1234.5, "b": 4321} -> 5555.5
+message   -> Secret word: marzipan. 1234.5 + 4321 = 5555.5
+```
+
+If the answer has no `tool_call` items, the model answered without the tools. Check that it has a
+chat template with tool support, and that the reply was not cut short by `max_output_tokens`.
+
+</Steps>
+
+## Ephemeral MCP servers
+
+An ephemeral server is defined in the request itself. It has to be reachable over HTTP.
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Authorization: Bearer $MFSH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "What is the top trending model on hugging face?",
+    "integrations": [
+      {
+        "type": "ephemeral_mcp",
+        "server_label": "huggingface",
+        "server_url": "https://huggingface.co/mcp",
+        "allowed_tools": ["hub_repo_search"]
+      }
+    ]
+  }'
+```
+
+The model's tool call, and what the tool returned, are in the output beside the answer:
+
+```json
+{
+  "model_instance_id": "qwen/qwen3.8-27b",
+  "output": [
+    {
+      "type": "tool_call",
+      "tool": "hub_repo_search",
+      "arguments": { "query": "", "repo_types": ["model"], "sort": "trendingScore", "limit": 1 },
+      "output": "Found 1 repositories across models ...",
+      "provider_info": { "type": "ephemeral_mcp", "server_label": "huggingface" }
+    },
+    {
+      "type": "message",
+      "content": "The top trending model on Hugging Face is ..."
+    }
+  ],
+  "stats": {
+    "input_tokens": 888,
+    "total_output_tokens": 224,
+    "tokens_per_second": 27.12,
+    "time_to_first_token_seconds": 2.616
+  },
+  "response_id": "resp_7c1a08e3d6e2..."
+}
+```
+
+```python
+import requests
+
+response = requests.post("http://localhost:1234/api/v1/chat", json={
+  "model": "qwen/qwen3.8-27b",
+  "input": "What is the top trending model on hugging face?",
+  "integrations": [{
+    "type": "ephemeral_mcp",
+    "server_label": "huggingface",
+    "server_url": "https://huggingface.co/mcp",
+    "allowed_tools": ["hub_repo_search"],
+  }],
+}).json()
+
+for item in response["output"]:
+  if item["type"] == "tool_call":
+    print("called", item["tool"], item["arguments"])
+  elif item["type"] == "message":
+    print(item["content"])
+```
+
+## MCP servers from mcp.json
+
+Servers you use often go in `~/.modelfabric/mcp.json`. The format is the one LM Studio, Cursor and
+Claude Desktop share, so a file written for those works here.
+
+```json filename="~/.modelfabric/mcp.json"
+{
+  "mcpServers": {
+    "huggingface": {
+      "url": "https://huggingface.co/mcp"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}
+```
+
+A server with a `url` is remote. One with a `command` is started on the node as a process for the
+request, spoken to over its standard input and output, and stopped when the request ends. `headers`
+(remote) and `env` (local) are optional. The file is read on each request, so an edit needs no
+restart.
+
+Name a server as `mcp/<name>`:
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Authorization: Bearer $MFSH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "Find the most downloaded text embedding model on Hugging Face.",
+    "integrations": ["mcp/huggingface"]
+  }'
+```
+
+```python
+import requests
+
+response = requests.post("http://localhost:1234/api/v1/chat", json={
+  "model": "qwen/qwen3.8-27b",
+  "input": "Find the most downloaded text embedding model on Hugging Face.",
+  "integrations": ["mcp/huggingface"],
+}).json()
+```
+
+Tool calls from these carry `"provider_info": {"type": "plugin", "plugin_id": "mcp/huggingface"}`.
+
+## Restricting tool access
+
+`allowed_tools` limits what the model may call. Fewer tools also means a shorter prompt, since
+every tool's description is sent to the model. Without it, every tool the server offers is
+available.
+
+```json
+"integrations": [
+  { "type": "plugin", "id": "mcp/huggingface", "allowed_tools": ["hub_repo_search"] }
+]
+```
+
+A name the server does not have is refused with the names it does have:
+
+```json
+{ "error": { "code": 400, "message": "MCP server huggingface has no tool \"model_search\"; it offers: hf_whoami, hub_repo_search, hub_repo_details, hf_fs" } }
+```
+
+## Custom headers for ephemeral servers
+
+A server that needs authentication takes it through `headers`:
+
+```bash
+curl http://localhost:1234/api/v1/chat \
+  -H "Authorization: Bearer $MFSH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "Give me details about my private Hugging Face model",
+    "integrations": [
+      {
+        "type": "ephemeral_mcp",
+        "server_label": "huggingface",
+        "server_url": "https://huggingface.co/mcp",
+        "allowed_tools": ["hub_repo_details"],
+        "headers": {
+          "Authorization": "Bearer <YOUR_HF_TOKEN>"
+        }
+      }
+    ]
+  }'
+```
+
+The headers go to the MCP server and nowhere else. They are not logged or stored.
+
+## What turning these on means
+
+<Callout type="warning">
+  **Per-request MCPs** let whoever can call `/api/v1/chat` make this node open a connection to
+  any address the node can reach, including machines inside your network that the caller cannot
+  reach themselves. Turn on **Require Authentication** with it, and give tokens only to apps you
+  trust with that.
+
+  **mcp.json servers** with a `command` are processes this node starts, and their tools act with
+  the rights of the user the node runs as. List only servers you would run yourself.
+</Callout>
+
+## Limits
+
+- A model that calls tools 16 times in a row without answering is stopped, so a loop cannot hold
+  an engine.
+- A tool's output is cut at 64 KB before it goes to the model. The cut is marked in the text.
+- A tool call that cannot be run (unknown tool, arguments that are not JSON, a tool that reports
+  an error) appears as an `invalid_tool_call` item, and the model is told the reason so it can try
+  again.
+- Two servers offering a tool with the same name in one request are refused. Use `allowed_tools`
+  to pick one.
+- A tool result that is an image or a file is replaced by a note saying it was left out. Only text
+  reaches the model.
+- The model needs a chat template that supports tools, as for [Tool Use](/docs/api/tool-use).

@@ -1,0 +1,127 @@
+---
+title: Introduction
+description: One address on every machine, and every model in the mesh behind it.
+---
+
+# ModelFabric
+
+A peer-to-peer model mesh over Tailscale. Run one agent per machine, and every machine serves
+**every model in the mesh** at its own loopback address.
+
+<Arch down legend={['loopback', 'tailnet']}>
+  <Zone label="the machine your app runs on" tone="loopback">
+    <ArchNode title="any OpenAI client" sub="Claude Code, Codex, your scripts" />
+    <ArchNode title="modelfabric" sub="serves what it has, forwards what it doesn't" accent="loopback">
+      <Port scope="loopback">localhost:1234</Port>
+    </ArchNode>
+    <ArchNode title="llama.cpp" sub="its own engines" accent="loopback" dashed />
+  </Zone>
+
+  <Arrow down tone="tailnet" label="your tailnet" sub="WireGuard · peers found by probing, not registration" both />
+
+  <Zone label="every other machine you own" tone="tailnet" note="Each one runs the same agent and answers at its own localhost:1234. No node is in charge.">
+    <ArchNode title="predator" sub="ModelFabric + llama.cpp · qwen3.8-27b" accent="tailnet" />
+    <ArchNode title="xpredator" sub="ModelFabric + llama.cpp" accent="tailnet" />
+    <ArchNode title="entrypoint-01" sub="ModelFabric · routes only, no models" accent="tailnet" dashed />
+  </Zone>
+</Arch>
+
+There's no central server here, no control plane, no account to create. Each node gets its peer
+list from the local `tailscaled` and probes each peer on the agreed port. Anything that answers
+`/z/state` is in the mesh.
+
+## Mesh
+
+<Shot
+  src="/img/mesh-architecture.png"
+  alt="The Mesh page's Architecture view: four nodes inside a tailnet boundary, each listing its tailnet address, operating system and GPU, the addresses it listens on (a loopback front door and a tailnet listener, plus a public listener on the entrypoint), and its loaded engines with their slots. Lines trace a request from apps on the first node to its own engine and across the tailnet to the other nodes."
+/>
+
+<Shot
+  src="/img/mesh-constellation.png"
+  alt="The Mesh page's Constellation view: two models at the centre, an embedding model and a 27B chat model, with the three GPU nodes around them joined to the models they hold, and the entrypoint on the right connected to the internet."
+/>
+
+## Why
+
+Say you have a workstation with a 5090, an older box with a 6000 Ada, and a laptop you do your
+work on. Without something like this you run a server on each, and then you spend your time
+remembering which box has which model loaded. Client configs hardcode an IP. You move a model and
+six things break.
+
+With ModelFabric, Claude Code, OpenCode, Codex and your own scripts all point at `localhost:1234` on
+whatever machine they run on, and none of them need to know which box has the GPU.
+
+## What it does
+
+Five things, roughly.
+
+**Speaks OpenAI.** `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/responses`,
+Anthropic-shaped `/v1/messages`, and a richer `/api/v0` that reports what's loaded. Details in [API](/docs/api).
+
+**Runs the engines.** It starts and stops llama.cpp processes directly (and `mlx-lm` on a Mac),
+with no containers and no orchestrator in the way. See
+[Loading and unloading](/docs/models/load-and-unload).
+
+**Brings its own engine builds.** `mfsh runtime get` fetches verified upstream llama.cpp builds,
+and tests that each one can drive your GPU before installing it. See
+[Engines](/docs/engines).
+
+**Routes.** By load, by locality, by an explicit preference, and by which engine already has your
+conversation's prefix warm in its KV cache. See [Routing](/docs/routing), and
+[the benchmark](/docs/benchmark/swe-routing) for what that last one is worth on real work.
+
+**Ships a dashboard.** Compiled into the binary, so there's nothing extra to deploy: mesh
+topology, per-engine KV use, model management across nodes, a Hugging Face browser. See
+[Dashboard](/docs/dashboard).
+
+## What it works with
+
+ModelFabric brings its own engines and weights and needs nothing else installed. Most machines already
+have both, though, so ModelFabric uses what's there and you don't have to move anything.
+
+- Point `models_root` at a directory of GGUFs and it reads them.
+- An existing model library on the machine is read in place, and never written to.
+- An engine package someone else installed becomes a runtime you can launch.
+- A model's `model.yaml` (the publisher's sampling defaults and capabilities) is applied, not
+  overridden.
+- Anything speaking the OpenAI API, vLLM included, can be
+  [fronted](/docs/engines/vllm-sglang) and routed to, even unsupervised.
+
+Models keep the identifiers your tools already use, so pointing something at `qwen/qwen3.8-27b`
+carries on working. See [The model catalog](/docs/models).
+
+## What it isn't
+
+It isn't a chat client. There *is* an `mfsh chat`, for testing the mesh without a third-party client in
+the way: one command that talks to your own engines and shows which node served each turn and how
+much context is left. For real work, point a client at the address.
+
+It only supervises llama.cpp, plus [MLX](/docs/engines/mlx) on a Mac. You can route to vLLM, but ModelFabric won't start it, stop it, install
+it or manage its weights. Supervising an engine means owning its process, its flags, its weights
+and its crash recovery, and we take that on one engine at a time.
+
+## Where things stand
+
+Discovery, routing, model lifecycle, downloads, engine builds, JIT and idle-TTL, and the llm-d
+integration all work, and run daily on a mesh of two NVIDIA machines, a Mac and an entrypoint.
+
+Two things are tied to their platforms, by the platforms and not by choice:
+[MLX and Metal](/docs/engines/mlx) need a Mac, and [llm-d](/docs/routing/llm-d) is
+Linux-only. A mesh can mix both. Every node reports its own slot count and prefill rate; they
+aren't averaged into one fleet-wide number.
+
+<Cards>
+  <Card title="Install and run a node" href="/docs/getting-started">
+    One command, a small config file, and your first `mfsh up`.
+  </Card>
+  <Card title="Load your first model" href="/docs/getting-started/first-model">
+    Download it, load it, call it, and see which machine answered.
+  </Card>
+  <Card title="Add a second machine" href="/docs/getting-started/add-a-node">
+    Two nodes, nothing to register, same address as before.
+  </Card>
+  <Card title="The benchmark" href="/docs/benchmark/swe-routing">
+    What routing is worth on real SWE-bench tasks, measured.
+  </Card>
+</Cards>

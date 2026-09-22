@@ -1,0 +1,138 @@
+---
+title: Loading and unloading
+description: Getting models into memory and back out again, by hand or on demand.
+---
+
+# Loading and unloading
+
+ModelFabric supervises engine processes directly, so you can load and unload models on any node in the
+mesh without touching the machine they run on.
+
+```bash
+mfsh load qwen/qwen3.8-27b                 # prompts if you don't name one
+mfsh load qwen/qwen3.8-27b -replicas 4     # several copies on this node
+mfsh ps                                    # what's resident, with instance ids
+mfsh unload qwen/qwen3.8-27b               # every instance of that key
+mfsh unload inst-a9f7c92b4d66              # one exact instance
+mfsh unload -all
+```
+
+## Nothing loads by itself unless you ask it to
+
+Send a request for a model nobody has resident and you get a `404`.
+
+We chose that because otherwise a single stray request can tie up a minute and 19&nbsp;GB of
+VRAM while the caller waits with no idea why nothing came back. If you want on-demand loading, it's
+one line:
+
+```json filename="config.json"
+{ "jit_load": true, "jit_ttl": "60m", "jit_auto_evict": true }
+```
+
+**`jit_load`** loads a downloaded model when a request names one nothing is serving, then answers.
+Turning it on also makes `/v1/models` list everything you've downloaded, not only what's
+resident, since a client can only request what it can see.
+
+**`jit_ttl`** unloads those models again after they've been idle this long: an hour by default,
+`"0"` to keep them forever. A request can override it with its own `"ttl"` in seconds, and
+`mfsh load -ttl 30m` puts a clock on a manual load too. `mfsh ps` shows the countdown.
+
+**`jit_auto_evict`** is on by default. Before a JIT load, other *idle JIT-loaded* models get
+unloaded, so on-demand models take turns in VRAM instead of accumulating.
+
+Three rules hold across all of it. Models you loaded by hand are never evicted and never get a TTL
+unless you give them one. JIT only fires for requests on the loopback listener. A request
+forwarded from a peer never triggers a load, because loading is management and peers don't get
+management access to your GPU.
+
+There's no reconciler. Anything that restores "desired state" would fight an idle policy forever,
+loading back whatever the TTL just unloaded. These policies are the whole mechanism: off unless
+configured, explicit about what they touch, and nothing behind them undoing the result.
+
+## Unloading interrupts; it doesn't drain
+
+llama.cpp has no way to say "finish what you're doing and stop", so when you unload something,
+ModelFabric terminates the process group: `SIGTERM`, then `SIGKILL` if it hasn't gone by the deadline.
+
+Requests in flight on that instance die with it. If that matters, settle the traffic first.
+
+Policy unloads behave differently, because nobody asked for those. When an idle TTL expires or a
+JIT eviction fires, ModelFabric pulls the instance out of routing first and then waits for the requests
+it already accepted to finish.
+
+Unload binds to an exact instance id. If the instance you named has already been replaced, the
+unload fails and the replacement keeps running. That matters when a script is racing a reload.
+
+<Callout type="warning">
+  Naming a model key on the command line (`mfsh unload qwen/qwen3.8-27b`) stops **every** instance
+  of it. Pass an instance id when you mean one, or `-all` when you mean everything.
+</Callout>
+
+## Replicas
+
+`-replicas N` keeps that many copies of a model running on one node. Requests that share a prompt
+prefix go back to the replica that last served them, so the KV cache gets reused instead of
+rebuilt. See [Replicas and prefix affinity](/docs/routing/replicas).
+
+## The operation journal
+
+Loads, unloads, downloads and installs are durable operations, written to a journal that survives
+a restart:
+
+```bash
+mfsh ops
+```
+
+Completed, failed and cancelled operations are retained for 24 hours after they finish.
+Expired entries are removed at startup and checked every minute while the node runs.
+Running operations are kept; after a restart, interrupted operations are recorded as failed
+and retained for another 24 hours. A failed disk removal is logged and retried.
+
+Each one carries a generation number, so an operation issued against a model that has since been
+replaced is marked stale instead of being applied to whatever is running now. It's all
+file-backed; there's no database to run.
+
+## When a load fails
+
+```bash
+mfsh log engine                  # the engine's own output: load times, VRAM, warnings
+mfsh log engine <instance> -f    # follow one
+mfsh doctor                      # hardware, runtime fit, model.yaml problems, orphans
+```
+
+Start with `mfsh log engine`. The reason a load failed is almost always in the engine's output,
+not ModelFabric's.
+
+If it's a memory problem, `mfsh doctor` is faster: its Engines section lists every
+`llama-server` on the machine (ModelFabric's, another tool's, orphans from a crash, anything else on the
+GPU) with how much VRAM each is holding. Usually the culprit is there and isn't yours.
+
+## The management API
+
+If you're driving this from code instead of the CLI:
+
+| Path | Purpose |
+|---|---|
+| `GET /api/v1/models` | prepared models, each with its `loaded_instances` |
+| `POST /api/v1/models/load` | `{"model", "context_length", "echo_load_config"}` |
+| `POST /api/v1/models/unload` | `{"instance_id"}` |
+| `POST /api/v1/models/repin` | accept changed files as the new pinned state |
+| `GET /api/v1/operations` | the durable operation journal |
+
+The shape is not OpenAI's: the list uses `models` and `key` with `loaded_instances`, not a `data`
+array. We gave management its own vocabulary because it's a different job from inference.
+
+<Callout type="warning">
+  All of this lives on the loopback listener only. A peer on the tailnet can use whatever you have
+  loaded, but it can't load anything. Tailnet access doesn't include reconfiguring someone else's
+  GPU.
+</Callout>
+
+<Cards>
+  <Card title="Load and inference settings" href="/docs/models/settings">
+    Context, offload, speculative decoding, sampling, presets.
+  </Card>
+  <Card title="Integrity and recovery" href="/docs/models/integrity">
+    Pinned manifests, `mfsh repin`, and adopting orphaned engines after a crash.
+  </Card>
+</Cards>

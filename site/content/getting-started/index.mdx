@@ -1,0 +1,165 @@
+---
+title: Install
+description: Build the binary, write a minimal config, and start a node.
+---
+
+# Getting started
+
+<Steps>
+
+### Install (this page)
+
+The binary, a minimal config, and your first `mfsh up`.
+
+### [Load your first model](/docs/getting-started/first-model)
+
+Download by hub id, load it, call it, and see which node ran it.
+
+### [Connect your apps](/docs/getting-started/connect-apps)
+
+Point any OpenAI client at `http://localhost:1234/v1` and stop there.
+
+### [Check it works](/docs/getting-started/verify)
+
+Four checks that confirm the node, the mesh and your app's path. About a minute.
+
+### [Add a machine](/docs/getting-started/add-a-node)
+
+A second node, found by probing. There's no registration. Nothing about your apps changes.
+
+### [Set a preferred node](/docs/routing/preferred-node) *(optional)*
+
+When several machines hold the same model, send the requests to one of them first.
+
+</Steps>
+
+Stuck on something specific? [Frequently asked questions](/docs/getting-started/faq).
+
+## Install
+
+ModelFabric is a single static binary with no runtime dependencies. The dashboard is compiled
+into it, so there is nothing else to deploy and no build step.
+
+### Install script
+
+```bash
+curl -fsSL https://modelfabric.sh/install.sh | sh
+```
+
+It detects your platform, downloads the matching release binary, **verifies it against
+the release's SHA-256 checksums**, and installs it to `~/.local/bin`. If a checksum
+does not match, it installs nothing, and it warns you if that directory is not on your
+`PATH`.
+
+| variable | |
+|---|---|
+| `MFSH_VERSION` | a release tag to install instead of the latest, e.g. `v0.3.0` |
+| `MFSH_INSTALL_DIR` | where to put the binary (default `~/.local/bin`) |
+| `MFSH_BASE_URL` | a mirror or a private build host |
+
+```bash
+MFSH_INSTALL_DIR=/usr/local/bin curl -fsSL https://modelfabric.sh/install.sh | sh
+```
+
+Builds are published for `linux/amd64`, `linux/arm64` and `darwin/arm64`. There is no
+Intel Mac build: ModelFabric's Mac support is [Metal and MLX](/docs/engines/mlx),
+which are Apple silicon.
+
+<Callout type="info">
+  Want to read it first? It is a single POSIX `sh` script,
+  [`install.sh`](https://github.com/gregbugaj/modelfabric/blob/main/install.sh). Run
+  `curl -fsSL …/install.sh | less`.
+</Callout>
+
+### From source
+
+Needs a Go toolchain. This is also how you produce binaries for a whole fleet:
+
+```bash
+make build                # ./mfsh for this machine
+make dist                 # static binaries for linux/amd64, linux/arm64, darwin/arm64
+                          # plus checksums.txt, which install.sh verifies against
+```
+
+<Callout type="warning">
+  `go build ./...` does **not** produce the `./mfsh` that runs. Use `make build`. If
+  you copy a binary to another machine with `scp`, set the executable bit yourself: `scp`
+  does not carry it, and the error is a confusing "Permission denied".
+</Callout>
+
+### Then configure it
+
+```bash
+cp mfsh.example.json ~/.config/modelfabric/config.json
+```
+
+Every field is optional, so you can also skip this and edit the file later.
+
+## Requirements
+
+| what | why it is needed |
+|---|---|
+| **Tailscale** | Required for the mesh. A single node works without it, but discovery, cross-node routing and node identity all come from the tailnet. |
+| **An inference engine** | Either an existing llama.cpp `llama-server`, or let ModelFabric install one with [`mfsh runtime get`](/docs/engines). Engine packages already on the machine are [picked up automatically](/docs/models/existing-installs). |
+| **Models** | A directory of GGUF files, an [existing library](/docs/models/existing-installs), or nothing: [`mfsh get`](/docs/models/downloading) downloads by hub id. |
+
+ModelFabric has no runtime dependencies of its own: no Python, no Docker, no database.
+[llm-d](/docs/routing/llm-d) is optional and installs itself, pinned and verified, when you ask for
+it.
+
+## A minimal config
+
+Point it at your models and your llama.cpp binary:
+
+```json filename="~/.config/modelfabric/config.json"
+{
+  "listen": "127.0.0.1:1234",
+  "models_root": "/srv/models",
+  "llama_server": "llama-server"
+}
+```
+
+That is enough for ModelFabric to supervise models itself. Every field is optional and every
+default is usable, so an empty file yields a working node with no engines. The full
+key list is in the [config reference](/docs/reference/config).
+
+Two fields matter now:
+
+- **`listen`** is the front door: the address apps point at. Keep it on loopback. It
+  carries model management and the dashboard as well as inference, so it is not
+  something to expose. See [Security](/docs/operations/security).
+- **`mesh_port`** (default `1234`) is the port peers probe each other on. Every node in
+  the mesh must agree on it, because discovery works by probing, with no
+  registry.
+
+## Start the node
+
+```bash
+mfsh up                    # start the node in the background
+mfsh status                # who is in the mesh, and what they serve
+mfsh down                  # stop the node
+```
+
+`mfsh serve` runs it in the foreground instead, which is what you want while changing
+configuration (`-v` for verbose). Any command that needs a node starts one
+automatically, so you rarely type `mfsh up`.
+
+## Check the install
+
+```bash
+mfsh doctor
+```
+
+`doctor` checks everything ModelFabric depends on (config, directories, disk, the node, the
+tailnet, runtimes, models, engines, llm-d and the exposure of every listener) and
+prints what to do about anything wrong. It never starts the node or changes anything, so
+it diagnoses the broken state as it is. See [Diagnostics](/docs/operations/diagnostics).
+
+<Cards>
+  <Card title="Your first model" href="/docs/getting-started/first-model">
+    Download a model by hub id, load it, and watch where the request ran.
+  </Card>
+  <Card title="config.json reference" href="/docs/reference/config">
+    Every key, its default, and what it changes.
+  </Card>
+</Cards>

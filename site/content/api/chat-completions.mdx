@@ -1,0 +1,156 @@
+---
+title: Chat Completions
+description: Send a chat history and get the assistant's reply, with streaming, images and every sampling parameter the engine takes.
+---
+
+# Chat Completions
+
+Send a chat history and get the assistant's reply.
+
+- Method: `POST /v1/chat/completions`
+- The model's own chat template is applied for you.
+- Sampling parameters (`temperature`, `top_p` and the rest) go in the payload.
+- OpenAI's reference for the semantics: https://platform.openai.com/docs/api-reference/chat
+- Keep a terminal open with `mfsh log` to see where each request ran, and `mfsh log -tokens` to watch the reply as it is written.
+
+## Example
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "messages": [
+      {"role": "system", "content": "Always answer in rhymes."},
+      {"role": "user", "content": "Introduce yourself."}
+    ],
+    "temperature": 0.7
+  }'
+```
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="modelfabric")
+
+completion = client.chat.completions.create(
+  model="qwen/qwen3.8-27b",
+  messages=[
+    {"role": "system", "content": "Always answer in rhymes."},
+    {"role": "user", "content": "Introduce yourself."}
+  ],
+  temperature=0.7,
+)
+
+print(completion.choices[0].message)
+```
+
+The `api_key` can be any text unless the node asks for one. See [API keys](/docs/api/api-keys).
+
+## Streaming
+
+Add `"stream": true` and the reply arrives as server-sent events, a few tokens at a time, ending
+with `data: [DONE]`. It stays a stream when the request is forwarded to another machine.
+
+```bash
+curl -N http://localhost:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "messages": [{"role": "user", "content": "Count to 3."}],
+    "stream": true
+  }'
+```
+
+```python
+stream = client.chat.completions.create(
+  model="qwen/qwen3.8-27b",
+  messages=[{"role": "user", "content": "Count to 3."}],
+  stream=True,
+)
+for chunk in stream:
+  if chunk.choices:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+```
+
+Add `"stream_options": {"include_usage": true}` to get token counts in the last chunk.
+
+## Images
+
+A model loaded with its image projector takes images as `image_url` parts, as a URL or as base64
+data. `mfsh ls` shows which models have one under VISION.
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,<base64 data>"}}
+      ]
+    }]
+  }'
+```
+
+```python
+import base64
+image = base64.b64encode(open("photo.png", "rb").read()).decode()
+
+completion = client.chat.completions.create(
+  model="qwen/qwen3.8-27b",
+  messages=[{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "What is in this image?"},
+      {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
+    ],
+  }],
+)
+print(completion.choices[0].message.content)
+```
+
+A request carrying an image goes only to an engine that can read it. If every engine holding the
+model was loaded with `-vision off`, the request is refused with a message saying so.
+
+## Supported payload parameters
+
+See https://platform.openai.com/docs/api-reference/chat/create for what each one means.
+
+```text
+model
+messages
+temperature
+top_p
+top_k
+max_tokens
+stream
+stream_options
+stop
+presence_penalty
+frequency_penalty
+repeat_penalty
+logit_bias
+seed
+tools
+tool_choice
+response_format
+```
+
+Anything else llama.cpp's server accepts is passed through unchanged, for example `min_p`,
+`chat_template_kwargs` and `cache_prompt`.
+
+- A request with no `max_tokens` gets the node's output ceiling (`max_output_tokens`, 16384 by
+  default). A request that sets its own limit is never changed. See [Routing](/docs/routing).
+- Reasoning models answer with `reasoning_content` beside `content`. Thinking counts against
+  `max_tokens`, so a small limit can end the reply before any `content` is written.
+
+<Cards>
+  <Card title="Structured output" href="/docs/api/structured-output">
+    Make the reply match a JSON schema.
+  </Card>
+  <Card title="Tool use" href="/docs/api/tool-use">
+    Let the model call your functions.
+  </Card>
+</Cards>

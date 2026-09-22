@@ -1,0 +1,79 @@
+# What every change has to pass. These are the same checks the Makefile runs
+# locally, so a green CI means `make check` would have been green too — a CI
+# that tests something different from what developers run is a CI nobody
+# trusts.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  # Lets a release be cut from a commit whose CI has already passed.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes the run in flight for the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both platforms ModelFabric supervises engines on. The fleet is deliberately
+        # mixed, so a change that only builds on Linux is a change that breaks
+        # half of it.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The UI is staged into the embed directory before the binary is built;
+      # `go build` alone does not do it, and an empty embed yields a node that
+      # serves a blank dashboard.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # One target, so what CI runs and what a contributor runs cannot drift:
+      # build, vet, race tests, the dashboard's syntax check and its tests,
+      # then gofmt.
+      - name: make check
+        run: make check
+
+  # The installer is what most people will actually run, so it is tested like
+  # anything else: it has been wrong before (a redirect to a 404, a tampered
+  # checksum that still installed).
+  install-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Shell syntax
+        run: |
+          sh -n install.sh
+          sh -n scripts/deploy.sh
+      - name: Installer self-check
+        run: make check-install
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Build the docs site
+        working-directory: site
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build

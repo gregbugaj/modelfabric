@@ -1,0 +1,102 @@
+---
+title: Run as a service
+description: A systemd user unit, and the one extra command that keeps it alive after you log out.
+---
+
+# Run as a service
+
+```bash
+mfsh service install          # writes a systemd user unit
+mfsh service install -enable  # and starts it on every login
+loginctl enable-linger $USER  # keep it running when you're logged out
+```
+
+Enable lingering so the systemd user service keeps running after your last login session ends.
+
+## Logs
+
+As a service, the node's own output goes to the journal:
+
+```bash
+journalctl --user -u mfsh -f
+```
+
+ModelFabric's own log commands work the same either way, because they read the node's records, not
+its stdout:
+
+```bash
+mfsh log              # routed requests — metadata, and bodies while capture is on
+mfsh log engine       # an engine's own output: load times, VRAM, warnings
+mfsh log engine <instance> -f -n 200
+```
+
+Engine logs are kept apart from the node's. When a load fails, the reason is almost always in the
+engine's output.
+
+## Foreground, while you're still fiddling
+
+```bash
+mfsh serve -v                            # foreground, verbose
+mfsh serve -config ./other.json -listen 127.0.0.1:1299 -node test
+```
+
+Useful while you're changing configuration, because you see what happens at startup: which
+runtime got selected, which models were adopted, what discovery found.
+
+## Restarting after a rebuild
+
+A rebuilt binary doesn't replace a running node, and `mfsh doctor` says so:
+
+```
+! binary              …/mfsh was rebuilt after the node started; it is running old code
+  → mfsh down && mfsh up
+```
+
+<Callout type="warning">
+  `go build ./...` doesn't produce the `./mfsh` that runs; it compiles and discards. Use
+  `make build`. The *running* node is what validates requests, so a change to
+  validation needs a restart, not just a rebuild.
+</Callout>
+
+## Stop it properly
+
+```bash
+mfsh down
+```
+
+A node stopped this way unloads its models on the way out. A node that gets killed doesn't: the
+engines keep running and keep holding GPU memory.
+
+ModelFabric adopts those orphans on the next start, so nothing is permanently lost. But in between,
+that VRAM is held by a process nothing is supervising, which is a confusing state to debug into.
+See [Crash recovery](/docs/models/integrity#picking-up-the-pieces-after-a-crash).
+
+`mfsh down` also cleanly stops whatever the node supervises (llm-d's Envoy and EPP).
+
+## A headless node in a fleet
+
+Nothing about a headless node is special. Same binary, same config shape, same mesh. Two settings
+are worth considering.
+
+```json filename="config.json"
+{ "web_ui": false }
+```
+
+Turns the dashboard off. It's never served on the tailnet or public listeners anyway, so this
+only removes it from loopback.
+
+```json filename="config.json"
+{ "jit_load": true, "jit_ttl": "60m" }
+```
+
+[JIT](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to) is more useful
+on a headless box, because there's nobody there to run `mfsh load`.
+
+<Cards>
+  <Card title="A public front door" href="/docs/operations/entrypoint">
+    A cloud VM as the mesh's public address.
+  </Card>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    `mfsh doctor`: what it checks, and its exit codes for scripts.
+  </Card>
+</Cards>

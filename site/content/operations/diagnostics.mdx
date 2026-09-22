@@ -1,0 +1,186 @@
+---
+title: Diagnostics
+description: mfsh doctor, and the handful of commands that cover everything else.
+---
+
+# Diagnostics
+
+`mfsh doctor` checks everything ModelFabric depends on and prints what to do about whatever's wrong.
+It never starts the node or changes anything, so it reports the broken state as it is instead of
+repairing it by accident and hiding the cause.
+
+```
+$ mfsh doctor
+Node
+  ✓ node                running on 127.0.0.1:1234, pid 2076364, up 3s
+  ! binary              …/mfsh was rebuilt after the node started; it is running old code
+    → mfsh down && mfsh up
+…
+! 18 ok, 1 warning
+```
+
+Every warning comes with a `→` line: the command that fixes it. It exits non-zero when something's
+broken and takes `-json`, so it works as a health check in cron or CI.
+
+## What it looks at
+
+**Install**: config file, writable directories, disk space.
+
+**Node**: whether it's up, whether the binary was rebuilt underneath it, and whether some other
+program has taken the port.
+
+**Tailnet**: Tailscale itself, which peers are up, and the mesh listener *as reached from the
+tailnet*, not from loopback. A node that looks healthy locally but is invisible to its peers has a
+firewall or ACL problem, and this check is where it shows up.
+
+**Runtimes**: your hardware, and whether the default runtime fits it.
+
+**Models**: the catalog, plus any `model.yaml` it couldn't parse.
+
+**Engines**: every `llama-server` on the machine, whose it is, and how much VRAM it's holding,
+not just ModelFabric's. When a load fails for memory, the cause is usually an orphan from a crashed node,
+another tool's model still resident, or something else on the GPU, and ModelFabric's own state can't
+tell you which.
+
+**Processes**: what ModelFabric started on this machine and still owns: the node, each engine with its
+pid, port and VRAM, and llm-d's two processes. The other sections say whether things *work*; this
+one shows what is running because of ModelFabric, and whether ModelFabric can still stop it.
+
+The most useful check here is the node's own. `mfsh down` works from a record `mfsh up` writes,
+matched on the process's birth id so a recycled pid can't be mistaken for the node. A node started
+any other way (by hand, by a service manager, or by an `up` whose record was later removed) serves
+every request normally and ignores `down`, which then reports *"no node is running"* about a node
+that is plainly running, while `up` fails because the port is held. Every other check calls that
+node healthy, correctly. This one says:
+
+```
+Processes
+  ! node                pid 3186787, up 4h51m — no record in …/node.json, so it was not
+                        started by `mfsh up` and `mfsh down` will not stop it
+    → kill -TERM 3186787 && mfsh up
+  ✓ engine              pid 3839706, port 18000, qwen/qwen3.8-27b (llama.cpp-cuda-12.8), 26.8GB VRAM
+  · owned               ModelFabric started and still owns 2 processes on this machine
+```
+
+A recorded process that has since vanished, and an engine ModelFabric routes to but did not launch (so
+cannot stop), are flagged the same way. Ownership is local, so when pointed at another machine the
+check says so instead of comparing this machine's record against that machine's node.
+
+**Engines**, continued: whether each engine is running the context it was loaded with. ModelFabric
+compares the context it requested with what the engine reports and warns when they disagree. Without
+that warning the failure is silent and expensive: a load whose settings were ignored ran a 32768
+context while `mfsh ps` reported 65536, every long conversation routed there overflowed, and nothing
+said why. One combination can't be resolved and is not checked; see
+[tuning](/docs/benchmark/tuning).
+
+**Shims**: the proxy ModelFabric runs in front of each llama.cpp engine, and what it does to a
+request on its way through. It is in the path of everything llm-d schedules, and of everything
+when the disk prompt cache is on, and nothing else shows it:
+
+```
+Shims
+  ✓ shim · qwen/qwen3-0.6b  :18001 in front of :18000 (inst-cadf807daba8): KV-cache gauge for llm-d
+                            · live tokens · output ceiling 16384 · disk prompt cache, for every routing method
+```
+
+An engine that publishes its own metrics (an MLX engine, say) has none, and the line says it is
+dialled directly.
+
+**llm-d**: whether it is scheduling, for which model, with which profile, and across how many
+engines.
+
+**Security**: whether management or engines are exposed beyond loopback and the tailnet, whether
+the API key is required on each listener, and the key file's permissions.
+
+## The rest of the toolkit
+
+```bash
+mfsh status              # who's in the mesh and what they're serving
+mfsh models              # every model in the mesh, and who holds it
+mfsh ps                  # what's resident here, with instance ids and TTL countdowns
+mfsh ops                 # recent operations, from the durable journal
+mfsh log                 # routed requests as they happen (bodies only while capture is on)
+mfsh log engine          # an engine's own output: load times, VRAM, warnings
+mfsh runtime survey      # hardware, and which runtimes can use it — and why not
+mfsh llmd status         # profile, engines, room filter, measured peak prefill
+mfsh endpoints           # the mesh's engines in llm-d's file-discovery format
+```
+
+Two of those do most of the work. When a **load** fails, look at `mfsh log engine`: the reason is
+in the engine's output, not ModelFabric's. When a load *succeeded* and you want to know what it ran with,
+or whether something replaced it since, look at `mfsh ops`.
+
+## Metrics
+
+Each node serves Prometheus metrics at `/metrics` for what its **router** did, which only ModelFabric
+can report. The engines' own counters stay with the engines: ModelFabric reads them to schedule, and
+republishes a synthesized KV gauge for [llm-d](/docs/routing/llm-d), but it does not proxy them.
+
+```bash
+curl -s http://localhost:1234/metrics | grep modelfabric_requests_total
+```
+
+| metric | |
+|---|---|
+| `modelfabric_requests_total` | requests routed, by `model`, `node`, `status`, `via`, `local` |
+| `modelfabric_request_duration_seconds` | histogram, request to last byte, as this node measured it |
+| `modelfabric_response_bytes_total` | bytes forwarded |
+| `modelfabric_request_errors_total` | requests that recorded an error, including ones that answered `200` and then failed mid-stream |
+| `modelfabric_nodes_total`, `modelfabric_nodes_up` | the mesh as this node sees it |
+| `modelfabric_engines_ready`, `modelfabric_models_served` | what can take a request |
+| `modelfabric_inflight_requests` | what this node is forwarding right now |
+
+`via` is who chose the engine (`router` for this node, `llm-d` for its scheduler), so a graph can
+separate the paths. `node` is `unknown` where the chooser reported an upstream ModelFabric could not
+place.
+
+**No prompts appear here**, whatever [capture](/docs/dashboard#activity) is set to. Engine
+instance ids are left out of the labels because they change on every reload, and a long-lived
+node would grow a new time series each time a model restarted.
+
+<Callout type="info">
+  On loopback `/metrics` is open, like the dashboard. Over the tailnet it goes through the same
+  same-owner check as management, since it names every model and how much traffic each one took.
+  A scraper on another of your own machines passes; `mesh_admin: "off"` closes it with the rest.
+</Callout>
+
+## Colour and piping
+
+Tables are coloured when stdout is a terminal and plain when it isn't, so piping into a file or
+another program gives you clean text without any flags.
+
+`NO_COLOR` turns it off; `CLICOLOR_FORCE` turns it back on for pagers like `less -R`.
+
+Columns are measured by visible width, not byte length, so a coloured cell doesn't shift
+every column after it. (`text/tabwriter` counts escape bytes, which is why it isn't used here.)
+
+## Things that come up
+
+**"It is running old code."** A rebuilt binary doesn't replace a running node. Also, `go build ./...`
+doesn't produce the `./mfsh` that runs; use `make build`.
+
+**A peer is missing from `mfsh status`.** Check `mesh_port` matches on both machines first;
+discovery knocks on exactly one agreed port. Then check `doctor`'s Tailnet section on both, and
+your ACLs if you've set a `tag`.
+
+**A model won't load and says `unknown`.** A node died between forking an engine and recording
+what it started. Confirm from `doctor`'s engine list that no orphan is running,
+then `mfsh recover -clear <model>`. See
+[Crash recovery](/docs/models/integrity#picking-up-the-pieces-after-a-crash).
+
+**"Inputs changed since they were pinned."** The model's files aren't what they were at first
+load. If the change is expected, `mfsh repin <model>` accepts the new contents. See
+[Integrity](/docs/models/integrity).
+
+**A vision model answering text-only.** Its `mmproj-*.gguf` is missing. `mfsh ls` has a `VISION`
+column, because otherwise this failure looks like success. See
+[The model catalog](/docs/models#vision-models).
+
+<Cards>
+  <Card title="Integrity and recovery" href="/docs/models/integrity">
+    Pins, `repin`, and adopting orphaned engines.
+  </Card>
+  <Card title="Dashboard" href="/docs/dashboard">
+    The same state in the browser, including the live mesh topology.
+  </Card>
+</Cards>

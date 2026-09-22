@@ -1,0 +1,137 @@
+---
+title: llama.cpp
+description: The engine ModelFabric supervises, and how to get a build that runs on your GPU without compiling it yourself.
+---
+
+# llama.cpp
+
+llama.cpp is the engine ModelFabric starts, stops and supervises. When you run `mfsh load`, ModelFabric
+launches a `llama-server` process, waits for it to come up, records that it owns it, and starts
+routing to it.
+
+That needs a `llama-server` binary that works on your GPU. You can compile one, point ModelFabric at one
+you already have, or let it fetch one:
+
+```bash
+mfsh runtime get
+```
+
+That looks at your hardware, picks a matching upstream llama.cpp release, checks it against the
+hash upstream published, starts it once to confirm it can see your GPUs, and only then installs
+it. Everything lands in ModelFabric's own tree. The names below are from one machine; yours will carry
+whatever CUDA and build number fit it:
+
+<Diagram>
+{`~/.modelfabric/runtimes/
+  llama.cpp-upstream-linux-x86_64-cuda-12.8-b11040/   llama-server + libraries,
+      backend-manifest.json                            backend, GPU fit, entry point
+  vendor/cudart-12.8-x64/                              CUDA runtime, shared by every
+                                                       CUDA 12.8 build`}
+</Diagram>
+
+```bash
+mfsh runtime survey             # your hardware, and which runtimes can use it
+mfsh runtime ls                 # what this node can launch
+mfsh runtime get vulkan         # or pick: cpu | cuda | vulkan | rocm
+mfsh runtime get -build b11040  # a specific upstream build
+mfsh runtime get -cuda 12.8     # a specific CUDA toolkit version
+mfsh runtime update             # newest build of each variant you have; old ones kept
+mfsh runtime remove <name>      # only builds ModelFabric installed; refuses one in use
+mfsh runtime select [name]      # pin the default
+```
+
+The same thing is on the dashboard's **Runtime** page, which is usually the faster way to see
+what a machine can run:
+
+<Shot
+  src="/img/dash-runtime.png"
+  alt="The dashboard's Runtime page: a hardware survey, then every installed engine build with its llama.cpp build, backend and whether it fits, and below it the upstream builds available to install."
+  caption="Runtime, on a node with an RTX 5090. The hardware strip shows the machine; each build shows whether it fits and why."
+/>
+
+## Which build you get
+
+On NVIDIA, the newest CUDA build **your driver supports**, which isn't always the newest build
+published. A driver supports CUDA up to some version; a package built against a newer toolkit
+installs fine and then fails to start. So ModelFabric reads the driver first and takes the highest build
+under that version.
+
+```bash
+mfsh runtime survey
+```
+
+That prints what your driver reports and which builds fit it. Trust its output over anything
+written here: CUDA versions, driver versions and llama.cpp build numbers all move on their own
+schedule, and today's pairing won't stay right for long.
+
+ModelFabric also skips releases that are still uploading. From the outside, a half-published release
+looks like a finished one until you try to run it.
+
+When several packagers ship the same engine, ModelFabric compares the underlying llama.cpp build
+number, not the vendor's version string. Vendor version strings don't sort against each other;
+the build they wrap does. The newest compatible engine wins, whoever packaged it. Override all of
+that with `mfsh runtime select`.
+
+## Verified, and proven to run here
+
+Those are two different claims, and ModelFabric checks both.
+
+**Verified**: every file is checked against the SHA-256 upstream publishes before anything is
+unpacked, and archives that try to write outside their own directory are rejected.
+
+**Proven to run here**: upstream doesn't declare which GPU architectures a build supports, so
+ModelFabric starts the engine and has it enumerate every GPU on the machine before the install counts as
+finished. The result goes into the manifest as evidence.
+
+In a mixed fleet this matters. A matching hash tells you nothing about whether the binary can drive
+*this* card, and without the launch check you'd find out at load time, after waiting for the
+download.
+
+## Changing engines under load
+
+A running node picks up installs and removals without restarting.
+
+`runtime remove` won't remove a runtime that's currently in use, and won't touch a package it
+didn't install in the first place.
+
+## Reading `runtime ls`
+
+```
+ENGINE                                          SELECTED  FITS  ORIGIN    BACKEND  PIN
+llama.cpp-mac-arm64-apple-metal-advsimd@2.33.0  ✓         yes   lmstudio  metal    content
+mlx-lm-mac-arm64-apple-metal@0.31.3                       yes   upstream  metal    partial
+```
+
+`SELECTED` is what new loads will use. `FITS` says whether it can use this hardware; if it can't,
+`runtime survey` explains why. `ORIGIN` is where the package came from: `upstream` for one
+ModelFabric installed, otherwise whoever packaged it. `BACKEND` is `cuda`, `metal`, `vulkan`, `rocm` or
+`cpu`.
+
+`PIN`: `content` means every file is verified by digest. `partial` means the entry point is
+verified but something behind it isn't, typically a Python environment ModelFabric didn't build, like a hand-assembled [MLX runtime](/docs/engines/mlx). See
+[Integrity](/docs/models/integrity#the-engine-gets-the-same-treatment).
+
+## The file format picks the engine
+
+A `.gguf` loads on llama.cpp. A directory of safetensors next to a `config.json` loads on
+[mlx-lm](/docs/engines/mlx). If you name a runtime that can't read the format, the load fails
+with an error instead of starting an engine that dies two minutes in and gets blamed on the
+hardware.
+
+## Is fetching one worth it?
+
+Not for speed. On the 5090 a ModelFabric-installed b11040 and an equivalent packaged build
+measure the same: 3.08&nbsp;s to load the 27B, about 96.7&nbsp;tok/s with MTP on both.
+
+The reason to use it is that ModelFabric owns the dependency. You can add a fresh machine to the mesh
+without installing anything else first, and you know exactly which build every node is running,
+because it's recorded.
+
+<Cards>
+  <Card title="MLX" href="/docs/engines/mlx">
+    The other engine ModelFabric supervises. Apple silicon only, and different in three ways.
+  </Card>
+  <Card title="vLLM and SGLang" href="/docs/engines/vllm-sglang">
+    Engines ModelFabric routes to but does not supervise.
+  </Card>
+</Cards>

@@ -1,0 +1,95 @@
+---
+title: Tool Use
+description: Describe your functions and let the model ask to call them.
+---
+
+# Tool Use
+
+Describe functions the model may call. When it wants one, the reply holds a `tool_calls` list
+with the function's name and arguments. Your code runs the function and sends the result back,
+and the model writes its answer from it. To have the node run the tools, see [MCP](/docs/api/mcp).
+
+- Endpoint: `POST /v1/chat/completions`, with `tools`
+- OpenAI's reference: https://platform.openai.com/docs/guides/function-calling
+- The model needs a chat template that supports tools. Most recent chat models have one.
+
+## Example
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {"city": {"type": "string"}},
+          "required": ["city"]
+        }
+      }
+    }]
+  }'
+```
+
+The reply ends with `"finish_reason": "tool_calls"` and no text:
+
+```json
+{
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [{
+    "id": "A8qmuTSQdYY7AY6S7NUHmWv8wCBMpG1H",
+    "type": "function",
+    "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" }
+  }]
+}
+```
+
+The whole loop: ask, run the tool, send the result, read the answer.
+
+```python
+import json
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="modelfabric")
+
+tools = [{
+  "type": "function",
+  "function": {
+    "name": "get_weather",
+    "description": "Get the current weather for a city",
+    "parameters": {
+      "type": "object",
+      "properties": {"city": {"type": "string"}},
+      "required": ["city"],
+    },
+  },
+}]
+
+messages = [{"role": "user", "content": "What is the weather in Paris?"}]
+first = client.chat.completions.create(model="qwen/qwen3.8-27b", messages=messages, tools=tools)
+call = first.choices[0].message.tool_calls[0]
+
+# Run the function yourself, then hand the result back.
+result = {"city": json.loads(call.function.arguments)["city"], "temp_c": 18, "sky": "clear"}
+messages += [
+  first.choices[0].message,
+  {"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)},
+]
+
+final = client.chat.completions.create(model="qwen/qwen3.8-27b", messages=messages, tools=tools)
+print(final.choices[0].message.content)   # It's currently 18°C and clear in Paris.
+```
+
+## Details
+
+- `arguments` is a string of JSON. Parse it before use.
+- `tool_choice` takes `"auto"` (the default), `"none"`, `"required"`, or one named function.
+- Tool calls work with `"stream": true`: the arguments arrive in pieces to join in order.
+- A conversation with tools resends everything each turn. ModelFabric sends it back to the engine
+  that already has the earlier turns cached. See [prefix affinity](/docs/routing/replicas).

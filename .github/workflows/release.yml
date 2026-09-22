@@ -1,0 +1,84 @@
+# Cutting a release.
+#
+#   git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+#
+# The binaries come from `make dist`, the same target used to deploy to the
+# mesh by hand, so what ships is what has been run here. Nothing is built by a
+# tool that only CI knows how to drive.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Lets a release be rehearsed without pushing a tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (an existing tag; no release is published)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # A tag that cannot pass CI is not a release.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the provenance
+      attestations: write # record it
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The version is `git describe`, so the tag has to be there.
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Build every platform
+        run: make dist
+
+      - name: Show what shipped
+        run: cat dist/checksums.txt
+
+      # Provenance: a signed record of which workflow, from which commit, built
+      # these exact bytes. install.sh already checks the SHA-256, which proves
+      # the download was not altered in flight; this proves where it came from.
+      #
+      #   gh attestation verify mfsh-linux-amd64 -R gregbugaj/modelfabric
+      - name: Attest the binaries
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/mfsh-linux-amd64
+            dist/mfsh-linux-arm64
+            dist/mfsh-darwin-arm64
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        # A dispatch run builds and attests but does not publish, so a release
+        # can be rehearsed on a real tag without announcing it.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            dist/mfsh-linux-amd64 \
+            dist/mfsh-linux-arm64 \
+            dist/mfsh-darwin-arm64 \
+            dist/checksums.txt

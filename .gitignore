@@ -1,0 +1,24 @@
+# The binary `make build` writes, and the release tree `make dist` writes.
+/mfsh
+/dist/
+node_modules/
+web/node_modules/
+
+# The embed directory is staged by `make ui` from web/, which is the source.
+# index.html is the exception on purpose, and it is load-bearing:
+# //go:embed all:web/dist does not compile against a directory that does not
+# exist, so a fresh clone needs one file here for `go build ./...` and
+# `go test ./...` to work before anyone has run make.
+cmd/mfsh/web/dist/*
+!cmd/mfsh/web/dist/index.html
+
+*.log
+
+# Python bytecode from the benchmark's report builder and helper scripts. The
+# benchmark's own output — trajectories, grading, runs — is tens of gigabytes
+# and lives under ~/.local/share/modelfabric, never in the repo.
+__pycache__/
+*.pyc
+
+# Left by macOS Finder. The fleet includes a Mac, so this is reached from one.
+.DS_Store

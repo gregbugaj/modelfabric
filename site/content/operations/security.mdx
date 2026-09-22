@@ -1,0 +1,174 @@
+---
+title: Security
+description: What each listener exposes, who may change what, and how engine_bind affects engine access.
+---
+
+# Security
+
+We don't implement transport crypto or an identity system in ModelFabric. Every hop between nodes is
+WireGuard, and every peer is already an authenticated device on your tailnet. Tailscale does that
+job better than a bolted-on alternative would.
+
+What ModelFabric controls is **authority**: who gets to change what.
+
+## Each node listens twice
+
+On loopback, it serves everything: inference, model management, runtime selection, the dashboard.
+That's the address your apps use, and it's `127.0.0.1:1234` unless you move it.
+
+On the tailnet, it serves almost nothing. Other nodes need three things: `/z/state` to find it,
+`GET /v1/models` to see what it has, and `POST /v1/...` to forward inference. Everything else gets
+a `403`. If you try to load a model, unload one, change the runtime or open the dashboard from
+another machine's tailnet address, you get a `403`.
+
+The reason for the split: being on someone's tailnet isn't the same as being allowed to manage
+their GPU.
+
+A node never binds a LAN or public interface unless you point `listen` at one. There's a third,
+optional listener, [`public_listen`](/docs/api/api-keys#the-exposed-listener), which serves
+inference only and always requires the key.
+
+## Narrowing the tailnet
+
+By default ModelFabric probes every online peer. If your tailnet is just your machines, that's fine. If
+it isn't, tag the fleet:
+
+```jsonc
+// tailnet policy
+{
+  "tagOwners": { "tag:modelfabric": ["autogroup:admin"] },
+  "acls": [
+    { "action": "accept", "src": ["tag:modelfabric"], "dst": ["tag:modelfabric:1234"] }
+  ]
+}
+```
+
+```json filename="config.json"
+{ "tag": "tag:modelfabric" }
+```
+
+You get two things: the mesh is only reachable from the fleet, and discovery stops knocking on
+your phone every two seconds.
+
+## Managing a node from another machine
+
+You reach another node *through* this one, over the tailnet, and it only accepts management
+requests from devices belonging to its owner. Tailscale identifies every connection, so a node
+accepts loads,
+unloads and settings changes from a device of the same Tailscale user, or one sharing a tag with
+it.
+
+```json filename="config.json"
+{ "mesh_admin": "same-owner" }     // the default; "off" refuses everyone
+```
+
+The same rule covers copying a model's files to another node with `mfsh get -from`: the weights
+go only to the owner's own devices.
+
+Anyone else on the tailnet can still *use* the models. They just can't manage or copy them. The check
+fails closed: a connection whose identity can't be established is rejected, not let through.
+
+## The dashboard
+
+It can load and unload models, so it's loopback-only and the tailnet listener won't serve it. To
+reach it from elsewhere, forward the port instead of widening the bind:
+
+```bash
+ssh -L 1234:127.0.0.1:1234 <node>
+```
+
+If you'd rather it didn't exist at all:
+
+```json filename="config.json"
+{ "web_ui": false }
+```
+
+## Web pages in your own browser
+
+Loopback keeps other machines out. It does not keep out a web page, because the page runs in a
+browser on this machine. Without a check, any site you visited could send a form-style POST to
+`127.0.0.1:1234/api/v1/…` and manage the node, or run a model and, since llama-server echoes the
+caller's origin, read the reply. So a request that comes from a browser is checked:
+
+- **Changing anything** (any method but `GET`, `HEAD`, `OPTIONS`) must come from the node's own
+  pages. From any other origin it gets `403`, unless it is inference on `/v1` from an origin you
+  allowed with [`cors_origins`](/docs/reference/config#identity-and-listeners).
+- **Anything but `/v1`** must be addressed to the machine by an IP address, `localhost` or its own
+  hostname. That stops DNS rebinding, where a site re-points its own domain at `127.0.0.1` to look
+  same-origin.
+- **An engine's own CORS headers are dropped.** ModelFabric alone decides which origins may read a
+  reply.
+
+curl, `mfsh`, SDKs and peers send no browser headers and are not affected. The tailnet listener
+applies the same checks, since a same-owner device's browser is exactly what a hostile page would
+ride on.
+
+## Engine listener exposure (`engine_bind`)
+
+Engines are llama.cpp servers, and llama.cpp's server has no authentication of any kind. By
+default ModelFabric binds them to loopback, where they're private to their own machine and reachable
+only through ModelFabric.
+
+```json filename="config.json"
+{ "engine_bind": "tailnet" }
+```
+
+<Callout type="warning">
+  Use `"tailnet"` to bind to the node's current Tailscale address. Tailnet ACLs are then the only
+  protection in front of these unauthenticated engine ports. Never use `0.0.0.0`, which exposes
+  them to your LAN too.
+</Callout>
+
+There's only one reason to touch it: [llm-d's EPP](/docs/routing/llm-d#reachability) dials
+engines itself and can't go through ModelFabric. ModelFabric's own router reaches an engine via its own node and
+doesn't need this.
+
+## Keys over plain HTTP
+
+ModelFabric speaks plain HTTP. On loopback that's fine. Inside the tailnet it's fine too, because
+WireGuard is already doing the encrypting.
+
+It stops being fine the moment anything is published. Expose only `public_listen`, only behind
+Funnel or a TLS proxy, and never `:1234`, which carries management. `mfsh doctor` warns you if a
+listener is configured in a way that would send keys unencrypted.
+
+The same applies to a proxy you put in front of ModelFabric for budgets or per-key accounting
+([Putting something in front](/docs/routing#putting-something-in-front)): it terminates your
+callers' credentials, so it is what needs TLS, and ModelFabric's own key travels from it to
+ModelFabric over loopback or the tailnet.
+
+## What doctor checks
+
+```bash
+mfsh doctor
+```
+
+Its Security section reports whether management or engines are exposed beyond loopback or the
+tailnet, whether the API key is required on each listener, and the key file's permissions. It exits
+non-zero when something's broken, so it works in a cron job.
+
+## A few things that are already handled
+
+Everything ModelFabric downloads is pinned and verified before it runs: engine builds, Envoy, llm-d's EPP,
+and model weights. The engine binary itself is recorded by content
+digest, so a mutable `PATH` can't be reported as a pinned runtime. Details in
+[Integrity](/docs/models/integrity).
+
+`mfsh log` streams request metadata (model, node, engine, timing). Prompts and completions are not
+recorded until you turn on capture:
+
+- The switch is on the dashboard's Activity page, off at every start unless `log_bodies` says
+  otherwise.
+- Captured bodies live in a ring in memory and are dropped as it rolls over.
+- They reach disk only via `log_bodies_file`. That's a config setting, not a button, because a
+  file keeps everything written to it.
+- `mfsh log engine` shows load and memory reporting, not conversation content.
+
+<Cards>
+  <Card title="API keys" href="/docs/api/api-keys">
+    Which listener checks the key, and why the tailnet one doesn't.
+  </Card>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    Everything `mfsh doctor` checks, and how to read it.
+  </Card>
+</Cards>

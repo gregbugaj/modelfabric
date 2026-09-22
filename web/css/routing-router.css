@@ -1,0 +1,28 @@
+/* ---- Routing: the two methods, who routes what, and the router's panel ---- */
+
+.rg-methods { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.rg-method {
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface);
+  padding: 12px 16px; display: grid; gap: 6px;
+}
+.rg-method.on { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.rg-method.rg-llmd.on { border-color: hsl(280 60% 55%); box-shadow: inset 0 0 0 1px hsl(280 60% 55%); }
+.rg-method-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rg-method-head b { font-size: 14.5px; }
+.rg-method-state { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.rg-method.on .rg-method-state { color: var(--primary); }
+.rg-method.rg-llmd.on .rg-method-state { color: hsl(280 60% 60%); }
+.rg-method-line { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.rg-method-line:first-of-type { color: var(--text); font-weight: 500; }
+
+/* The same colours the Mesh page draws each method's paths in. */
+.rg-by { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid; }
+.rg-by-router { color: var(--primary); border-color: hsl(var(--brand-primary) / 0.45); }
+.rg-by-llmd { color: hsl(280 60% 60%); border-color: hsl(280 60% 55% / 0.5); }
+
+.rg-router-body { padding: 4px 16px 0; }
+.rg-router-body .input { font-size: 12.5px; padding: 5px 8px; width: 220px; }
+.rg-router-body .rg-num { width: 110px; text-align: right; }
+.rg-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px 12px; border-top: 1px solid var(--border-soft); }
+.rg-router-msg { font-size: 12px; color: var(--text-2); }
+#rt-na { margin-bottom: 16px; }

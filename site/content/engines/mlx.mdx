@@ -1,0 +1,143 @@
+---
+title: MLX
+description: Apple's inference engine, supervised by ModelFabric on Apple silicon, and the three ways it behaves differently from llama.cpp.
+---
+
+# MLX
+
+MLX is Apple's array framework for Apple silicon, and `mlx-lm` is the server built on it. It's the
+second engine ModelFabric supervises, alongside [llama.cpp](/docs/engines). On a Mac you'll usually have
+both, since a Mac can serve both weight formats.
+
+```
+$ mfsh runtime ls            # on a Mac
+ENGINE                                          SELECTED  FITS  ORIGIN    BACKEND  PIN
+llama.cpp-mac-arm64-apple-metal-advsimd@2.33.0  ✓         yes   lmstudio  metal    content
+mlx-lm-mac-arm64-apple-metal@0.31.3                       yes   upstream  metal    partial
+```
+
+You don't pick the engine. It follows from the file: a `.gguf` loads on llama.cpp, and a directory
+of safetensors with a `config.json` loads on mlx-lm. If you name a runtime that can't read the
+format, the load fails with an error instead of starting an engine that will crash.
+
+When the same model exists in both formats, the shared hub id means the GGUF, so it means the same
+thing on every node in the mesh. Load the MLX copy by its path:
+
+```bash
+mfsh load qwen/qwen3.8-27b                              # GGUF, llama.cpp on Metal
+mfsh load lmstudio-community/Qwen3.8-27B-MLX-4bit       # MLX, mlx-lm
+```
+
+## Three ways MLX differs
+
+If ModelFabric didn't handle each of these, you'd get a wrong answer with no error.
+
+### There's no context flag
+
+Context is whatever the model's `config.json` declares, and the KV cache grows per request. That's
+the number `mfsh ps` reports.
+
+### It dispatches on the request's `model` field
+
+If it doesn't recognise the id, it downloads that model from Hugging Face.
+
+To stop that, ModelFabric sends `default_model` (the id that means "the model you were started with")
+and sets `HF_HUB_OFFLINE=1`. An engine should never download weights nobody asked for.
+
+### There are no Prometheus metrics
+
+Without counters, prefill rate can't be measured the way it is on llama.cpp. For MLX engines,
+routing uses queue depth and slots only, and llm-d's llama.cpp metric mapping doesn't apply to them.
+
+## MLX engines are always reached through their own node
+
+This follows from the model-id rewrite above. Only ModelFabric does that rewrite, so requests for an MLX
+engine have to go through the ModelFabric on its node, even when `engine_bind` puts the engine on a
+routable address.
+
+ModelFabric's router forwards to that node's front door with `X-Fabric-Hop`, so the node serves the request
+itself and doesn't forward it again. [llm-d](/docs/routing/llm-d) dials engines directly and can't
+rewrite anything, so it leaves MLX engines out of its endpoint list.
+
+On ModelFabric's own path you lose nothing: the extra hop is what makes the model id correct. The cost is
+that llm-d can't see MLX engines, so if a model is served only by a Mac, llm-d can own it and still
+have nothing to schedule.
+
+## Setting up the MLX runtime
+
+mlx-lm needs a Python environment, which ModelFabric keeps in its own directory. Packaged MLX backends
+usually can't be reused: they ship in-process addons with no server to spawn, and ModelFabric supervises
+engines as processes.
+
+<Callout type="warning">
+  `mfsh runtime get` installs llama.cpp builds only. The MLX environment is built once by hand.
+</Callout>
+
+```bash
+UV=$(command -v uv)                 # your own uv
+mkdir -p ~/.modelfabric/runtimes/mlx-lm && cd ~/.modelfabric/runtimes/mlx-lm
+$UV venv --python 3.12 .venv && $UV pip install --python .venv/bin/python mlx-lm
+cat > backend-manifest.json <<'JSON'
+{ "name": "mlx-lm-mac-arm64-apple-metal", "version": "0.31.3", "engine": "mlx",
+  "extension_type": "engine", "platform": "mac", "domains": ["llm"],
+  "cpu": { "architecture": "ARM64", "instruction_set_extensions": ["AdvSIMD"] },
+  "gpu": { "make": "Apple", "framework": "Metal" },
+  "supported_model_formats": ["mlx"], "manifest_version": "4",
+  "engine_protocol_server": { "runtime_kind": "mlx-lm",
+    "executable_relative_path": ".venv/bin/mlx_lm.server" } }
+JSON
+```
+
+Set `version` to the version `uv` installed (`uv pip show mlx-lm` prints it). That string is what
+`mfsh runtime ls` reports.
+
+Afterwards the runtime shows as `partial` pinned: ModelFabric can verify the launch script's bytes, but
+not the Python environment behind it. See
+[Integrity](/docs/models/integrity#the-engine-gets-the-same-treatment).
+
+## What a Mac node can't do
+
+<Callout type="info">
+  A Mac often holds one model in both formats. `mfsh load <model> -format mlx` picks the MLX
+  weights and `-format gguf` the llama.cpp ones. See
+  [One model, two formats](/docs/models#one-model-two-formats).
+</Callout>
+
+**mlx-lm ignores `response_format`.** Its server parses `tools`, `logit_bias`, `logprobs` and the
+sampling fields, but it has no support for `response_format` or grammars. A request for
+JSON-schema-constrained output comes back as free prose with a `200`. llama.cpp enforces the same
+request. Neither returns an error.
+
+In a mesh this gets worse than on one machine, because the same request would parse or not
+depending on which node happened to be idle. So ModelFabric **routes constrained requests away from MLX
+engines**. A request with `response_format: json_object` or `json_schema`, or a llama.cpp
+`grammar`/`json_schema`, only goes to engines that enforce it.
+
+If no engine serving that model can, the request fails with an error naming the engines that were
+ruled out:
+
+```
+"qwen/qwen3-0.6b" is served only by engines that ignore response_format and grammar
+(helion/inst-a4f1), so a schema could not be enforced. Load it on a llama.cpp node,
+or drop the constraint.
+```
+
+A peer is eligible based on the engines it reports for that model, so a node running both engines
+stays eligible: the forwarded request reaches its router, which applies the same rule to its own
+engines. A node too old to report engine families is treated as llama.cpp, which is what every node
+ran before the field existed. Unconstrained requests route the same as before.
+
+[llm-d is Linux-only](/docs/routing/llm-d), so a Mac routes and serves normally but doesn't run an
+EPP. A model whose engines are all on Macs stays on ModelFabric's own router.
+
+That's expected. Nodes in a mesh differ by backend and capability, and each one publishes its own
+slots and prefill rate instead of being averaged into a fleet number.
+
+<Cards>
+  <Card title="llama.cpp" href="/docs/engines">
+    The other supervised engine: installing and pinning builds.
+  </Card>
+  <Card title="llm-d" href="/docs/routing/llm-d">
+    What the EPP needs, and which engines it can and can't dial.
+  </Card>
+</Cards>

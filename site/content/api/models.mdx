@@ -1,0 +1,47 @@
+---
+title: List Models
+description: List the models the mesh can serve, through the OpenAI-compatible endpoint.
+---
+
+# List Models
+
+- Method: `GET /v1/models`
+- Returns every model loaded anywhere in the mesh. With
+  [just-in-time loading](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to)
+  on, it also lists every downloaded model, since a client can only ask for a model it can see.
+
+## Example
+
+```bash
+curl http://localhost:1234/v1/models
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "qwen/qwen3.8-27b", "object": "model", "owned_by": "modelfabric", "nodes": ["gpu-01", "mac-01"] }
+  ]
+}
+```
+
+`nodes` is ModelFabric's addition: the machines holding each model.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="modelfabric")
+
+for model in client.models.list():
+  print(model.id)
+```
+
+## One model
+
+```bash
+curl http://localhost:1234/v1/models/qwen/qwen3.8-27b
+```
+
+`GET /v1/models/{id}` answers `200` with that model, or `404` when nothing in the mesh serves it.
+
+`mfsh models` shows the same list for a person, and `/api/v0/models` adds quantization,
+architecture and context length. See [what answers `/v1/models`](/docs/api#what-answers-v1models).

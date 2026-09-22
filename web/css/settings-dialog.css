@@ -1,0 +1,32 @@
+/* ---- settings dialog ---- */
+
+#settings-dialog {
+  width: min(880px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--overlay-bg); color: var(--text);
+  box-shadow: var(--shadow-overlay);
+}
+#settings-dialog::backdrop { background: var(--overlay-scrim); }
+#settings-form { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+.dlg-head { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border-soft); }
+.dlg-title { font-weight: 700; font-size: 16px; }
+.dlg-sub { font-size: 12.5px; color: var(--text-2); margin-top: 3px; }
+.dlg-body { overflow: auto; padding: 8px 18px 14px; display: grid; gap: 10px; }
+.dlg-group { border: 1px solid var(--border-soft); border-radius: var(--r-md); padding: 8px 12px 10px; margin: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 16px; }
+.dlg-group legend { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); padding: 0 4px; }
+.dlg-field { display: grid; grid-template-columns: 1fr 140px; align-items: center; gap: 2px 8px; font-size: 13px; }
+.dlg-help { grid-column: 1 / -1; font-size: 11.5px; color: var(--text-muted); }
+.input { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: var(--r-sm); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); width: 100%; box-sizing: border-box; }
+.dlg-field .select { width: 100%; }
+.dlg-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border-soft); }
+.dlg-actions { display: flex; gap: 8px; }
+.btn.icon { padding: 5px 9px; }
+label.btn { display: inline-flex; }
+
+/* A one-line explanation under a panel head, e.g. what the preferred node does. */
+.panel-note {
+  margin: 0; padding: 9px 18px; font-size: 13px; color: var(--text-muted);
+  border-bottom: 1px solid var(--border-soft);
+}

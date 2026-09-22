@@ -1,0 +1,106 @@
+---
+title: Integrity and recovery
+description: What happens when a model file changes underneath you, and how a node takes its engines back after a crash.
+---
+
+# Integrity and recovery
+
+## When a model file changes underneath you
+
+The first time you load a model, ModelFabric hashes every file and records the result. Every load after
+that is checked against that record:
+
+```
+$ mfsh load qwen3.8-27b
+error: inputs changed since they were pinned (run `mfsh repin qwen3.8-27b` to
+accept the new contents): Qwen3.8-27B-Q4_K_M.gguf changed size
+```
+
+If the change was yours (you swapped in a different quantization, say), accept it:
+
+```bash
+mfsh repin qwen3.8-27b
+```
+
+Later loads compare against the manifest recorded on the first load.
+
+## What it catches, and what it misses
+
+ModelFabric hashes everything on the first load. After that it looks at each file's size and
+modification time, and if nothing moved, it skips the hashing.
+
+Size and modification-time checks avoid re-reading the full model on every load. Changes that
+preserve both are missed unless `verify_full` is enabled:
+
+```json filename="config.json"
+{ "verify_full": true }
+```
+
+Now every load re-hashes everything.
+
+Full hashing does not protect against someone who can also rewrite ModelFabric's records.
+
+## The engine gets the same treatment
+
+Your config probably says `"llama_server": "llama-server"`, a bare name resolved on `PATH`.
+ModelFabric resolves it once and then records the binary by content digest.
+
+If something upgrades `llama-server` underneath you, a different engine is running your model, and
+ModelFabric reports that instead of marking the load reproducible. Draft models used for speculative
+decoding are checked the same way, since a draft model is just more weights.
+
+Runtimes you install with [`mfsh runtime get`](/docs/engines) are covered completely. A runtime
+you assembled yourself, such as a hand-built [MLX environment](/docs/engines/mlx), shows up as
+`partial`: ModelFabric can verify the launch script's bytes, but not the Python environment behind it.
+
+## Picking up the pieces after a crash
+
+Shut a node down with `mfsh down` and it unloads its models on the way out. Kill it (OOM, power
+cut, an impatient `kill -9`) and it doesn't get the chance. The engines keep running, and they
+keep holding your GPU memory.
+
+On the next start, ModelFabric reads its ownership records, checks that each recorded process is still
+the process it started, and adopts the ones that match. They come back in `mfsh ps` with their original instance ids, still routable. Nothing
+reloads, so recovery costs no VRAM and no time.
+
+### When it can't be sure
+
+Occasionally a node dies in the worst possible half-second: after forking an engine, before
+recording what it started. That launch is unrecoverable by design. There's a process that might be
+ModelFabric's or might be yours, and no way to tell from the outside.
+
+ModelFabric reports `unknown` and won't launch that model again until you clear it:
+
+```bash
+mfsh recover -clear qwen3.8-27b
+```
+
+Assuming "it's mine" would mean killing a process that might be someone else's work; assuming
+"it's not" would mean a duplicate engine competing for the same VRAM. Neither is a good default,
+so the decision is yours.
+
+<Callout type="warning">
+  Look before you clear. `mfsh doctor` lists every `llama-server` on the machine, whose it is, and
+  how much VRAM it's holding. Check that before you pass `-clear`.
+</Callout>
+
+## The same rule for everything else ModelFabric downloads
+
+Weights aren't the only thing arriving over the network. ModelFabric fetches engine builds, a Python
+runtime, a proxy and a scheduler, and each one is pinned and checked before it runs:
+
+| what | how it's checked |
+|---|---|
+| llama.cpp builds | the SHA-256 upstream publishes, verified before unpacking; archives that write outside their own directory are rejected |
+| Envoy | the official static release, pinned SHA-256 |
+| llm-d's EPP | an image pinned by digest, with every manifest and layer verified as it streams |
+| models | the repository's published hashes, then your local pin |
+
+<Cards>
+  <Card title="llama.cpp" href="/docs/engines">
+    What "proven to run here" means, and why it's recorded in the manifest.
+  </Card>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    `mfsh doctor`, the engine inventory, and what else it catches.
+  </Card>
+</Cards>

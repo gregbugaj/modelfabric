@@ -1,0 +1,143 @@
+/* ---- Discover, second pass: LM Studio's browser ---- */
+
+.ico { display: inline-flex; align-items: center; }
+.with-ico { display: inline-flex; align-items: center; gap: 5px; }
+.with-ico.chip { padding: 2px 8px; border-radius: var(--r-sm); border: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+.with-ico.ok { color: hsl(var(--success-text)); font-weight: 500; }
+.warn-text { color: hsl(var(--warning-token)); }
+.btn.ghost { border-color: transparent; background: none; color: var(--text-muted); }
+.btn.lg { font-size: 14px; padding: 8px 16px; }
+
+.avatar {
+  flex: none; display: inline-grid; place-items: center; overflow: hidden; border-radius: var(--r-md);
+  background: hsl(var(--surface-inset)); color: var(--text-muted);
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }
+.pick { color: hsl(var(--brand-primary)); }
+.pick-badge {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
+  padding: 3px 9px; border-radius: var(--r-sm); font-size: 12px; font-weight: 600;
+  background: var(--primary-soft); color: var(--primary);
+}
+
+.dv-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.dv-item-body { display: grid; gap: 2px; min-width: 0; }
+.dv-item-top { display: flex; align-items: center; gap: 5px; }
+.dv-sub { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dv-item-side { display: grid; justify-items: end; gap: 4px; }
+.dv-date { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+.dv-head { display: grid; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border-soft); }
+.dv-title { display: flex; align-items: center; gap: 12px; }
+.dv-title-text { display: grid; gap: 1px; min-width: 0; }
+.dv-h { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.dv-repo { display: flex; align-items: center; gap: 4px; }
+.dv-repo a { color: var(--text-2); text-decoration: none; font-size: 12px; }
+.dv-repo a:hover { text-decoration: underline; }
+.dv-stats { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+
+.dv-facts {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 18px;
+  background: hsl(var(--surface-inset)); border-bottom: 1px solid var(--border-soft);
+}
+.fact { display: flex; align-items: center; gap: 7px; }
+.fact-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.fact-value { font-weight: 600; font-size: 13px; }
+.fact-value.mono { font-size: 12px; }
+.format-badge {
+  display: inline-block; padding: 0 6px; border-radius: var(--r-sm); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em;
+  line-height: 17px; background: var(--primary); color: #fff;
+}
+
+.dv-dl {
+  margin: 16px 18px; padding: 14px 16px; display: grid; gap: 10px;
+  border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: var(--r-md);
+  background: var(--surface);
+}
+.dv-dl-head { font-weight: 700; font-size: 15px; }
+.dv-step { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); margin-top: 2px; }
+/* The quantization picker: the chosen file, and the rest a click away. Five
+   rows fit; the rest scroll, so a repo with twenty quants reads the same as
+   one with three. */
+/* The quantization picker. Every row is the same model in the same format, so
+   the row's ink goes to what differs: which quantization, and how many bytes
+   it costs. overflow:hidden keeps a row's fill inside the rounded corner. */
+.dv-picker { border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.dv-picker[open] { border-color: var(--primary); box-shadow: var(--ring); }
+/* label · size · change · caret, so sizes line up in a column whatever the badges say. */
+.dv-picker > .dv-summary { cursor: pointer; list-style: none; border-bottom: none; grid-template-columns: minmax(0, 1fr) auto auto auto; padding: 9px 12px; }
+.dv-summary::-webkit-details-marker { display: none; }
+.dv-change { font-size: 12px; font-weight: 600; color: var(--primary); }
+.dv-picker[open] .dv-change { visibility: hidden; }
+.dv-caret { margin-left: 2px; color: var(--text-muted); font-size: 13px; }
+.dv-picker[open] .dv-caret { transform: rotate(180deg); }
+/* What the options agree on, said once instead of on every row. */
+.dv-picker-head {
+  padding: 7px 12px; font-size: 11.5px; color: var(--text-muted);
+  border-top: 1px solid var(--border); background: hsl(var(--surface-inset) / 0.5);
+}
+.dv-tick { width: 14px; display: inline-flex; flex: none; color: var(--primary); }
+/* Four and a half rows: enough to compare, short enough that a repo with a
+   dozen quantizations does not push the download button off the page. */
+.dv-options { display: grid; max-height: 172px; overflow-y: auto; }
+.dv-options .dv-option { border-top: 1px solid var(--border-soft); border-bottom: none; grid-template-columns: auto minmax(0, 1fr) auto; }
+.dv-options .dv-option:first-child { border-top: none; }
+/* The radio stays in the accessibility tree and keeps arrow-key selection; the
+   tick beside the label is what you see. */
+.dv-radio { position: absolute; opacity: 0; pointer-events: none; }
+.dv-option:has(.dv-radio:focus-visible) { outline: 2px solid var(--primary); outline-offset: -2px; }
+.dv-option {
+  position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 6px 12px; cursor: pointer; border-bottom: 1px solid var(--border-soft);
+}
+.dv-option:last-child { border-bottom: none; }
+.dv-option:hover { background: hsl(var(--surface-inset) / 0.7); }
+.dv-option.active { background: var(--primary-soft); }
+/* The chosen row is marked on its edge as well as its fill, so it survives
+   both themes and a colour-blind read. */
+.dv-option.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--primary); }
+.dv-summary:hover { background: hsl(var(--surface-inset) / 0.6); }
+.dv-option-main { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+/* The quantization is the row's name, so it is set like one. */
+.dv-quant { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); }
+.rec { font-size: 11px; font-weight: 600; color: hsl(var(--success-text)); background: hsl(var(--success-subtle)); padding: 0 6px; border-radius: var(--r-sm); }
+.dv-size { display: flex; flex-direction: row-reverse; align-items: center; gap: 9px; }
+.dv-bytes { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--text-2); }
+/* Each file against the largest in the repo: the choice is quality vs. disk. */
+.dv-bar { display: block; width: 54px; height: 4px; border-radius: 2px; background: var(--border-soft); flex: none; }
+.dv-bar-fill { display: block; height: 100%; border-radius: 2px; background: var(--border-strong); }
+.dv-option.active .dv-bar-fill { background: var(--primary); }
+.dv-option.active .dv-bytes, .dv-option.active .dv-quant { color: var(--text); }
+.dv-summary .dv-bytes { color: var(--text); }
+
+.dv-nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.dv-node {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 9px; align-items: start;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; background: var(--surface);
+}
+.dv-node input { margin-top: 3px; }
+.dv-node:hover { border-color: var(--border-strong); }
+.dv-node.chosen { border-color: var(--primary); box-shadow: var(--ring); }
+.dv-node.state-have, .dv-node.state-entrypoint, .dv-node.state-nospace, .dv-node.state-downloading { cursor: default; }
+.dv-node.state-have { background: hsl(var(--success-subtle) / 0.5); }
+.dv-node.state-entrypoint { opacity: 0.6; }
+.dv-node-main { display: grid; gap: 3px; min-width: 0; }
+.dv-node-name { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.dv-node-specs { display: grid; gap: 2px; font-size: 11.5px; color: var(--text-muted); }
+.dv-node-status { grid-column: 2; display: grid; gap: 5px; justify-items: start; font-size: 12px; }
+.dv-action { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding-top: 4px; }
+/* The action never shrinks: squeezed, its label broke one word per line and
+   overlapped the node tiles. */
+.dv-action > .btn { flex: none; white-space: nowrap; }
+.dv-action > div { flex-basis: 100%; }
+
+.dv-section { padding: 4px 18px 14px; }
+.dv-section-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); margin: 10px 0 6px; }
+.dv-section .md { padding: 0; }
+.dv-more-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; width: 100%;
+  font: inherit; color: inherit; text-align: left; background: none; border: none; border-bottom: 1px solid var(--border-soft);
+  padding: 6px 2px; cursor: pointer; font-size: 12.5px;
+}
+.dv-more-row:hover { background: var(--surface-muted); }

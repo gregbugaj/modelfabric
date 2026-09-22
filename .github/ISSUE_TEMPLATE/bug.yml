@@ -1,0 +1,37 @@
+name: Bug report
+description: Something behaves differently from what it says it does
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before anything else: run `mfsh doctor`. It checks most of what goes
+        wrong and often answers the question outright.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: mfsh doctor
+      description: Paste the output. Redact hostnames or addresses you would rather not share.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Engine log, if a model failed to load
+      description: |
+        The reason is usually one line above the exit, in
+        `~/.local/state/modelfabric/logs/<instance>.log` (macOS: `~/Library/Logs/modelfabric`).
+      render: text
+  - type: input
+    id: trace
+    attributes:
+      label: Trace id, if a request failed
+      description: The `X-Fabric-Trace` header on the response. It finds the same request in every node's log.

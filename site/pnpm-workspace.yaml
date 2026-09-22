@@ -1,0 +1,12 @@
+packages: []
+
+allowBuilds:
+  sharp: true
+
+# nextra-theme-docs 4.6.1 strips `children` from its props and then validates
+# the remainder against a schema that still declares `children` as required.
+# zod <= 4.3 let a bare z.custom() accept undefined, so the check passed; 4.6
+# reports "expected nonoptional, received undefined" and every docs page 500s.
+# Pinned to the version nextra was released against.
+overrides:
+  zod: 4.3.6

@@ -1,0 +1,171 @@
+---
+title: config.json
+description: Every configuration key, its default, and what it changes.
+---
+
+# config.json
+
+```
+~/.config/modelfabric/config.json
+```
+
+**Every field is optional and every default is usable**, so an empty file yields a working node,
+though one with no engines. `mfsh.example.json` in the repository is a commented copy.
+
+```bash
+mfsh serve -config ./other.json     # a different file
+```
+
+## Identity and listeners
+
+| key | default | |
+|---|---|---|
+| `node` | the Tailscale hostname | this node's advertised name |
+| `role` | none | `"entrypoint"` for a node that runs no models and only takes requests into the mesh. See [A public front door](/docs/operations/entrypoint). |
+| `listen` | `127.0.0.1:1234` | the local front door apps point at: inference, management and the dashboard. `mfsh up -port N` overrides the port for one run. |
+| `public_listen` | none | a second front door meant for exposure: inference only, key always required |
+| `require_api_key` | `false` | make `listen` check the node's API key. Off by default: `listen` is loopback. |
+| `mcp_allow_ephemeral` | `false` | let a request to `/api/v1/chat` name an MCP server for this node to call. See [MCP](/docs/api/mcp). |
+| `mcp_allow_configured` | `false` | let a request use the MCP servers in `~/.modelfabric/mcp.json`. |
+| `cors_origins` | none | web origins allowed to call `/v1` from a browser, as `scheme://host[:port]`, or `"*"` for any. Never applies to management or the dashboard. |
+| `mesh_port` | `1234` | the port peers are probed on. **Every node in the mesh must agree on it.** |
+| `web_ui` | on | serves the dashboard at `listen`; never served on the tailnet or public listeners either way |
+| `mesh_admin` | `"same-owner"` | who may manage this node from another node: devices Tailscale reports as the same user, or sharing a tag. `"off"` accepts none. |
+
+## Discovery and routing
+
+| key | default | |
+|---|---|---|
+| `tag` | none | restrict discovery to peers carrying this Tailscale tag (e.g. `"tag:modelfabric"`). Empty probes every online peer. |
+| `poll_interval` | `2s` | how often peers and local engines are re-checked |
+| `probe_timeout` | `1500ms` | bounds a single peer or engine state check |
+| `dead_after` | `15s` | how long a peer may fail probes before it leaves the mesh |
+| `request_stall` | `15m` | how long a request may make **no progress** before it is abandoned and its slot released; `off` to hold indefinitely |
+| `max_output_tokens` | `16384` | filled into a generating request that names no limit of its own; `0` leaves it uncapped, which means the context window |
+| `rate_weighted_routing` | `true` | compare candidates by how long each would take instead of by queue depth, so a slot on a slow engine counts for less |
+| `local_bias` | `0.5` | favour local engines, in units of outstanding requests |
+| `preferred_node` | none | resolve a model here first when several nodes hold it. A preference, not a pin. Set it with `mfsh prefer`. |
+| `prefix_affinity` | on | route requests sharing a prompt prefix to the engine that last served it |
+| `cache_disk_mib` | `0` (off) | cap for the [disk prompt cache](/docs/routing/disk-cache): a conversation's KV cache is saved when its slot is taken and restored when it returns. The files contain prompts. |
+| `cache_disk_dir` | `slots/` in the state directory | where those files are kept |
+
+## Models
+
+| key | default | |
+|---|---|---|
+| `models_root` | none | the directory scanned for GGUF models. **Empty disables the supervisor**, leaving a node that routes but hosts nothing. |
+| `extra_model_roots` | none | additional directories to scan |
+| `verify_full` | `false` | re-hash every pinned file on every load instead of relying on size+mtime. See [Integrity](/docs/models/integrity). |
+| `disable_lmstudio_models` | `false` | stop scanning an installed model library found on the machine (read-only either way) |
+
+## Engines
+
+| key | default | |
+|---|---|---|
+| `llama_server` | `llama-server` | the llama.cpp server binary. A bare name is resolved on `PATH`, then **pinned by content digest**. |
+| `engines` | none | OpenAI-compatible servers you start yourself, which ModelFabric fronts but does not supervise: `[{"name","base_url"}]`. See [vLLM and SGLang](/docs/engines/vllm-sglang). |
+| `engine_bind` | loopback | where loaded engines listen. `"tailnet"` binds them to this node's Tailscale address, looked up at each start, for when something off-box must dial them (llm-d). Never `0.0.0.0`. A tailnet address written here (`100.x.y.z`, as older advice said) means the same: engines follow Tailscale's current address, and a stale one is logged. |
+| `port_min` | `18000` | |
+| `port_max` | `18099` | the port range assigned to instances ModelFabric launches |
+| `runtimes` | none | explicitly declared runtimes, each recording origin, version, backend and entry point |
+| `default_runtime` | none | the runtime used when a load does not name one. Set it with `mfsh runtime select`. |
+| `runtimes_root` | `~/.modelfabric/runtimes` | where `mfsh runtime get` installs builds. ModelFabric never installs into a tree it did not create. |
+| `disable_lmstudio_runtimes` | `false` | stop discovering engine packages already installed on the machine |
+
+## Load defaults
+
+Applied to a load unless the request overrides them. See
+[Load and inference settings](/docs/models/settings) for the precedence chain.
+
+| key | default | |
+|---|---|---|
+| `context_length` | `8192` | **per request**; the KV pool is `context_length × parallel` |
+| `parallel` | `4` | concurrent slots |
+| `gpu_layers` | `99` | |
+| `flash_attention` | `true` | |
+| `startup_timeout` | `10m` | bounds one model load |
+
+## On-demand loading
+
+Off by default: a request for a model nothing has resident returns `404` instead of spending a
+minute loading 19&nbsp;GB with no warning. See [Loading and unloading](/docs/models/load-and-unload).
+
+| key | default | |
+|---|---|---|
+| `jit_load` | `false` | load a downloaded model when a request names one no node serves, and list every downloaded model in `/v1/models` |
+| `jit_ttl` | `60m` | unload a JIT-loaded model after this long idle. `"0"` keeps it loaded; a request's own `"ttl"` (seconds) overrides it. |
+| `jit_auto_evict` | on | unload idle JIT-loaded models before a JIT load of another. **Manually loaded models are never evicted.** |
+
+## llm-d
+
+| key | default | |
+|---|---|---|
+| `llmd_listen` | loopback | where llm-d's Envoy listens when llm-d is enabled |
+| `llmd_endpoints_file` | none | when set, kept up to date with the mesh's model servers in llm-d's file-discovery format |
+
+## Paths
+
+| key | default | |
+|---|---|---|
+| `state_dir` | platform state dir | ownership records, the operation journal and input pins. See [Files and paths](/docs/reference/paths). |
+
+## Request capture
+
+Off by default: a node records who sent which request, not what was said. These four keys change
+that, and the dashboard's [Activity](/docs/dashboard#activity) page can flip the first two while the
+node runs. What you set here is only the state it starts in.
+
+| key | default | |
+|---|---|---|
+| `log_bodies` | `false` | start with capture on, so `mfsh log` and the dashboard carry prompts and replies |
+| `log_bodies_max` | `32768` | how much of each body is kept, in bytes. The rest is dropped and the entry is marked truncated. |
+| `log_bodies_keep` | `200` | how many requests the in-memory ring holds, up to 2000. Older ones fall out as new ones arrive. |
+| `log_bodies_file` | none | also append every captured request to this file, one JSON object per line, written `0600`. The ring drops old entries and a file keeps them, so this one is config, not a button. |
+
+<Callout type="warning">
+  Captured bodies are whole prompts and completions. In memory they age out; in a file they stay
+  until you delete it, and anyone who can read the dashboard or the file can read them.
+</Callout>
+
+## A few minimal configs
+
+**A GPU node:**
+
+```json
+{
+  "listen": "127.0.0.1:1234",
+  "models_root": "/srv/models",
+  "llama_server": "llama-server"
+}
+```
+
+**A node that only routes** (a laptop):
+
+```json
+{ "node": "laptop" }
+```
+
+**A public entrypoint** (a cloud VM):
+
+```json
+{ "node": "front", "role": "entrypoint", "public_listen": "127.0.0.1:1235", "web_ui": false }
+```
+
+**A GPU node whose engines llm-d must dial:**
+
+```json
+{
+  "models_root": "/srv/models",
+  "engine_bind": "tailnet",
+  "tag": "tag:modelfabric"
+}
+```
+
+<Cards>
+  <Card title="Files and paths" href="/docs/reference/paths">
+    Where ModelFabric writes on each platform, and what each directory holds.
+  </Card>
+  <Card title="CLI" href="/docs/reference/cli">
+    Every command, and the load and inference flags.
+  </Card>
+</Cards>

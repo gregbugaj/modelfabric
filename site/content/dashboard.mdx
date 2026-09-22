@@ -1,0 +1,383 @@
+---
+title: Dashboard
+description: Compiled into the binary. Mesh topology, model management across nodes, and a model browser.
+---
+
+# Dashboard
+
+Open **http://127.0.0.1:1234/** once a node is up. There's nothing to install: the whole UI is
+compiled into the binary.
+
+```json filename="config.json"
+{ "web_ui": false }
+```
+
+turns it off. It's never served on the tailnet or public listeners either way: it can load and
+unload models, so it stays on loopback. To reach it from another machine, forward the port instead
+of widening the bind:
+
+```bash
+ssh -L 1234:127.0.0.1:1234 <node>
+```
+
+<Callout type="info">
+  The screenshots below are the real dashboard on a live four-node mesh. Only the identifiers are
+  swapped for the example ones used throughout these docs: `entrypoint-01` for the routing-only
+  node, and `100.64.0.x` for tailnet addresses.
+</Callout>
+
+## The pages
+
+### Overview
+
+The top of the page shows the address apps connect to, what they need to send, and the hops a
+request takes from there (front door, router, engines), in the same colours the Mesh page uses for
+reachability. The mesh's live state is one line in the Nodes panel's header.
+
+The **Nodes** table marks each machine with its platform (a penguin, an apple, Windows' panes)
+next to the OS version string ("macOS 26.6.2", "Ubuntu 24.04.1 LTS"), which Tailscale's own node
+list doesn't carry. That tells you what each node *can* run: MLX and Metal need the Mac, llm-d
+needs Linux. A node too old to report a platform shows no glyph.
+
+This is also where you set the [node preference](/docs/routing/preferred-node): Nodes → **Prefer**.
+
+**Server settings**, beside the connect address, opens the node's own settings in a panel: its port,
+Public Front Door, Require Authentication, CORS, API tokens and on-demand loading. See
+[Server settings](/docs/operations/server-settings).
+
+<Shot
+  src="/img/dash-overview.png"
+  alt="The dashboard's Overview page: the address apps connect to in large monospace with a Copy button and a Server settings button, the front door and how many engines it reaches, and a Nodes table listing four machines with their platform, tailnet address, whether their engines are on the tailnet, status, in-flight count, models held and a Prefer button."
+  caption="Overview. The address apps connect to comes first; the mesh's live state is one line in the Nodes panel header."
+/>
+
+### Serving
+
+What's running right now: every model in the mesh with its replicas and where each one is routed,
+and below that every engine process across every node, with in-flight count, KV-cache use, address
+and runtime.
+
+<Shot
+  src="/img/dash-models.png"
+  alt="The dashboard's Serving page: every model in the mesh with its replicas and the nodes serving it; a table of engine processes with slots in use, load, prefill and decode rates, draft acceptance, KV-cache use, address and runtime; and the tokens each engine has processed."
+  caption="Serving. Models and their routes on top, the engine processes behind them below."
+/>
+
+### My Models
+
+Inventory and configuration: what's on disk on each node, and how each model is set up.
+
+It groups **by model** by default: each model once, with the nodes holding it, which of them have
+it loaded ("loaded on 2 of 3 nodes"), and a Load or Unload for each. Switch to **by node** for the
+machine-first view.
+
+The model [llm-d](/docs/routing/llm-d) is scheduling carries its
+[workload](/docs/routing/llm-d#or-pick-the-workload-instead) as a chip on its group heading
+(*Agentic coding*, say), so you can see which model the sidebar choice applies to. At most one
+model shows a chip, since llm-d serves a single model at a time. For the others, the detail panel
+names the model llm-d is scheduling.
+
+Clicking a row opens a detail panel with three tabs. **Info** has the file, format, architecture,
+capabilities, context, size, and what a loaded instance is running with. **Load** has
+every load setting, showing what the model runs with now. **Inference** has sampling and thinking,
+alongside the model's own recommendations.
+
+Settings save on the node that holds the model, and Load and Unload act there. The toolbar's two
+buttons act on the whole fleet: [Discover models](#discover-models) and
+[Tune slots](#tune-slots).
+
+The panel slides out over the table from the right. Rows behind it stay clickable, and picking
+another row refills the panel. Pin it with the arrow in its header to dock it beside the table
+(useful on a wide screen), and drag its inner edge to resize. Escape closes it and puts the focus
+ring back on the row you came from. The pin and width are remembered per browser.
+
+<Shot
+  src="/img/dash-local.png"
+  alt="The dashboard's My Models page: every model on every node, grouped by model, each row showing a node that holds it with quantization, size and whether it is loaded, and Load and Unload buttons."
+  caption="My Models, grouped by model. Each model appears once, with the nodes holding it and a Load or Unload for each."
+/>
+
+### Routing
+
+The two routing methods side by side: ModelFabric's own router with its settings, and
+[llm-d](/docs/routing/llm-d) with its scheduling profile. Every model llm-d isn't scheduling goes
+through the router. See [How routing works](/docs/routing#on-the-dashboard).
+
+A summary line shows model, profile, engine and peak prefill, followed by the profiles as a radio
+group. Nothing changes until you hit **Apply**.
+
+The sidebar's **Workload** group is the same three profiles under names for the traffic they suit:
+**Chat**, **Agentic coding**, **Balanced**. See
+[Or pick the workload instead](/docs/routing/llm-d#or-pick-the-workload-instead). The selected one
+is marked with a tick, and clicking one opens a dialog naming the profile and the model before the
+scheduler restarts. An **Advanced settings** link in the dialog brings you back to this page.
+
+<Shot
+  src="/img/dash-routing.png"
+  alt="The dashboard's Routing page: the ModelFabric router and llm-d side by side with which one is routing; a table of every model and who routes it; the router's settings (preferred node, speed-aware routing, prefix affinity, local bias, output ceiling, disk prompt cache); and llm-d's model, scheduling profiles and the paths llama.cpp cannot run."
+  caption="Routing. llm-d's profile for the model it schedules."
+/>
+
+### Activity
+
+What the mesh did, and what this node is doing right now: the dashboard's version of `mfsh log`
+and `mfsh ops`. Three tabs: **Requests**, **Live replies** and **Operations**.
+
+**Requests** has two scopes, because each node keeps its own log in its own memory. **This node**
+(the machine whose dashboard you have open) streams live over SSE. **Whole mesh** adds a **Front
+door** column and merges what every other node reports, polled instead of streamed. A node running
+an older build is marked `older build` and left out.
+
+*Front door* is the node an app connected to; *served by* is the node that ran the model. They are
+often different.
+
+Either way a row carries time, path, model, which node and engine served it, status, latency and
+response size. Requests that crossed the tailnet are marked
+`forwarded`, ones placed by [prefix affinity](/docs/routing/replicas) are marked `affinity`, and
+ones [llm-d](/docs/routing/llm-d) placed are marked `via llm-d`.
+
+Click a row and it opens in a flyout: the model, the machine and engine that ran it, the upstream
+address that was dialled, who chose it, its trace id, and (if capture was on when it ran) the
+request and response bodies, pretty-printed, with a button to copy either.
+
+When more than one node recorded the request (an app hits one front door, another machine serves
+it), the flyout shows a **Path** section listing each node's record in order, and the other rows
+are marked in the table. The shared trace id is what links them. Escape closes the flyout; drag
+its inner edge to resize.
+
+**Capture request & response** is per node (its ring, its memory), so the mesh scope shows one
+switch per machine on its own line. Peers are polled for metadata only; the prompt and reply for a
+request are fetched from the node that holds them when you open that one row, never shipped across
+the tailnet on a timer. The switch is off at every start unless
+[`log_bodies`](/docs/reference/config) says otherwise. On, the node keeps the last N requests'
+bodies **in memory** (N is the *Keep last* select, 100 through 2000), clipping each at 32KB, and
+drops them as the ring rolls over. Switching it off clears what was held. Nothing is written to
+disk unless you set `log_bodies_file`. That is config and not a button, because a file keeps
+everything written to it.
+
+<Callout type="warning">
+  Capture holds whole prompts and completions in the node's memory, and anyone who can reach the
+  dashboard can read them. It is meant for the ten minutes you spend working out why a client gets
+  a 400, not for leaving on.
+</Callout>
+
+**Live replies** shows what the model is writing, token by token, as it arrives: the dashboard's
+`mfsh log -tokens`. Thinking and the reply are separate blocks, because on a reasoning model the
+thinking is most of the output and merging them makes a two-minute think look like an answer being
+written. Untick **Show thinking** to keep only the replies. **Keep last** bounds how many replies
+the page holds; a single reply is clipped at 20,000 characters.
+
+It runs only while the tab is open (leaving the tab stops the tap), and nothing is stored at
+either end. Unlike Requests it has no mesh scope: the tap sits on this node's own front door, so
+watching another machine would mean shipping its reply text across the tailnet. To watch a
+different node, open *its* dashboard. The endpoint behind this is not in the peer allowlist, so a
+peer's request for it is rejected the same way management requests are.
+
+**Which nodes show it** depends on what is dialling the engine:
+
+| what dials the engine | shows the reply |
+|---|---|
+| ModelFabric's router → a local engine | the node the request entered |
+| ModelFabric's router → another node's front door | the node it entered **and** the node that ran it |
+| llm-d (`tuned`, `load-aware`, `optimized-baseline`) → each node's engine shim | the node it entered **and** the node that ran it |
+
+The two report different rates. The entrypoint measures from the moment it accepted the request,
+queueing and network included, which is what the caller experienced. The serving node measures
+from when its engine started writing. On one measured request that was
+10 tok/s at the entrypoint against 59 tok/s at the engine.
+
+**It works even when the caller did not ask for streaming.** A client that sends `stream: false`
+would otherwise show as a single `done` line with no text: the engine generates the whole answer,
+holds it, and sends one body, so the tokens never cross the wire separately. ModelFabric requests a
+stream from the engine anyway, reads it as it arrives, and returns the one JSON body the caller
+expected.
+
+On ModelFabric's own router that upgrade happens **only while something is watching**. On this tab,
+having it open switches it on and closing it turns it off. Under llm-d it is unconditional. This is
+the data path, not a side channel. See [Streaming](/docs/api#streaming) for what is rewritten, what
+is left alone, and why the condition is there.
+
+**Operations** is the durable journal: every load, unload and download **across the mesh**, not
+just this machine, newest first. Each row carries the node it happened on, when it started,
+when it ended, how long it took, and why it failed if it did. Hovering a timestamp gives the full
+date and how long ago; hovering a row gives the instance id.
+
+This is the view for "why is that model not loaded" and "how long does the 27B take to
+start on each box".
+
+<Shot
+  src="/img/dash-activity.png"
+  alt="The dashboard's Activity page on the Requests tab: the capture switch turned on, and a live table of requests with time, path, model, the node and engine that served each, forwarded and affinity marks, status, latency and size."
+  caption="Activity. Operations span the whole mesh, so a load that happened on another machine is right there with the rest."
+/>
+
+<Shot
+  src="/img/dash-activity-mesh.png"
+  alt="Activity in Whole mesh scope: a Front door column showing which node each request arrived at, a capture switch for each other node on its own line, and rows marked forwarded and affinity."
+  caption="Whole mesh. Requests that arrived at this node and were served by another show both: front door on the left, served by on the right."
+/>
+
+<Shot
+  src="/img/dash-activity-detail.png"
+  alt="One request open in the Activity flyout: model, the node and engine that served it, the trace id, who chose the engine, latency and size, then the request and response bodies pretty-printed."
+  caption="A request in full. “Served by” is the machine that ran it; “chosen by” is the router that placed it."
+/>
+
+### Runtime
+
+The hardware survey, plus every engine build available to the node, adopted and ModelFabric-installed
+alike, with its llama.cpp build, whether it fits and why, and which one new loads will use. Check
+for updates, install, update, use, remove.
+
+Installs run on the node as durable operations with a progress bar, so closing the tab doesn't
+cancel a download.
+
+<Shot
+  src="/img/dash-runtime.png"
+  alt="The dashboard's Runtime page: a hardware strip with CPU, GPU, CUDA and Vulkan support; a table of installed engine builds with their llama.cpp build number, backend, source, whether each fits and which is pinned; and the builds available to install or update."
+  caption="Runtime. The hardware strip shows which builds fit."
+/>
+
+### Benchmark
+
+Three tabs, one for each question about speed:
+
+| Tab | What it answers |
+|---|---|
+| **Benchmark** | How fast a model runs on one node. See [Benchmarking a node](/docs/benchmark/node). |
+| **Tune slots** | How many requests each node should serve at once. See [Tuning slots](/docs/benchmark/tuning). |
+| **Cluster benchmark** | How much the whole setup serves through the front door, and which nodes did the work. See [Benchmarking the cluster](/docs/benchmark/cluster). |
+
+Each shows its tables, the command that repeats the run, and the result as text to paste. The
+Cluster benchmark tab also lists the commands for the longer agent and chat benchmarks, which run
+from a terminal. [Benchmarks and tuning](/docs/benchmark) compares all four.
+
+### Mesh
+
+Draws the architecture as it's running, read from every node you own.
+
+Each node's role, tailnet address and GPU. Every port it listens on, coloured by who can reach it
+(loopback, tailnet, public, internal) and labelled with the auth checked there. Its engines, with
+address, slots in use, context and measured prefill rate. And the path a request takes from a
+chosen entry point: apps or the internet, through the front door or the public listener, and then
+straight to one of that node's own engines, through another node's ModelFabric, or through llm-d.
+
+Another node's engines are always reached through that node's tailnet listener, however they are
+bound: the router sends a request to the node, never to its engine. Every other node the entry
+point can reach is linked to its tailnet listener even when nothing is loaded, as "connected,
+nothing routed yet", and a link that would cross another node runs below the cards, through the
+tailnet.
+
+It reads each node's `GET /api/v1/topology` and redraws live.
+
+<Shot
+  src="/img/mesh-architecture.png"
+  alt="The Mesh page's Architecture view: four nodes inside a tailnet boundary, each with its tailnet address, operating system and GPU, the addresses it listens on coloured by who can reach them, and its engines with their slots. Lines trace a request from apps on the chosen node to its own engine and across the tailnet to the others."
+  caption="Architecture. Ports are coloured by who can reach them, the same scheme the diagrams in these docs use."
+/>
+
+**Constellation** draws the same data as a picture: a model at the centre,
+the nodes serving it orbiting around, sized by GPU memory, ringed by their slots and lit while
+busy. Entry points sit on the outer orbit, with the internet reaching in wherever there's a public
+listener, and light flows along each link faster under load.
+
+<Shot
+  src="/img/mesh-constellation.png"
+  alt="The Mesh page's Constellation view: an embedding model and a 27B chat model at the centre, the three GPU nodes around them joined to the models they hold, and the entrypoint on the right connected to the internet."
+  caption="Constellation. Pick one model, or all of them."
+/>
+
+**All models** puts every loaded model at the centre in its own colour, with each node linked to
+what it serves and placed beside them, so shared nodes and cross-node routing, like llm-d
+spreading one model over two machines, show up at a glance.
+
+## Discover models
+
+The button on My Models opens a model browser over the page. Search GGUF models on Hugging Face,
+either a curated set or every publisher, each with its creator's icon, size, architecture, context
+and capabilities. Tool use and reasoning are read from the model's chat template, not from its
+description.
+
+<Shot
+  src="/img/dash-discover.png"
+  alt="The dashboard's Discover models browser: a searchable list of GGUF models on Hugging Face with each creator's icon, size, architecture and context; and the selected model's page with its parameters, licence and capabilities, a download panel with the quantization and a card for each node showing its GPU, free disk and whether it already has the model, and the model card below."
+/>
+
+A model's page shows its facts, its card, and a download panel: pick a quantization, then tick one
+or more nodes, each shown with its GPU, free disk, and whether it already has the model.
+
+The quantization dropdown shows each build's size relative to the largest build in the repository.
+
+Every download runs on its node as a durable operation (hash-checked, resumable, with progress,
+and a **Cancel** that keeps the partial file so you can resume) and survives a closed tab. It lands in
+that node's own models root, never in an adopted library.
+
+Publisher icons are fetched by the node and cached, so the page loads nothing from outside your
+network.
+
+## Tune slots
+
+The other button on My Models runs [`mfsh tune -fleet`](/docs/benchmark/tuning) from the browser:
+how many requests each node should serve at once, measured on each machine. It sits beside the
+node tabs, not on a model's row, because a slot count belongs to a machine and differs from node
+to node.
+
+A confirmation dialog comes first, and it matters. Each node reloads its engine once per slot
+count, so every node is unavailable in turn; anything routed to one mid-sweep fails; and the whole
+run takes several minutes per node. The dialog names the model, lists the nodes to be swept with
+what each is running now, and states that nothing will be applied. Every node serving the model is
+swept by default, all at the same time since each measures only itself; the segmented control
+narrows it to one.
+
+Rows appear as they're measured, and each node shows which slot count it's on, because a row takes
+minutes. **Stop all sweeps** ends it early; stopping still puts each node back on the count it
+started with.
+
+The results table has one row per machine and one column per slot count tried. Nodes stop at
+different places (a 5090 runs out of memory two steps before a 48GB card does), so the columns are
+the union of what was reached. A cell is total tok/s, `OOM` for a count that
+ran out of memory, `failed` for one that broke some other way, and an em dash for one never reached.
+Under it: each node's reasoning and stop condition, any warnings, and a line confirming that
+nothing was changed and every node is back as found. If the sweep couldn't restore a node, that
+node is named in amber, since it needs your attention. If two nodes were swept at different
+contexts, the panel notes that the columns don't compare.
+
+Nothing is applied on its own. Each node has an **Apply** button for its own recommendation, which shows
+a confirmation first (a load drops every conversation resident on that engine), and the equivalent `mfsh load`
+line is printed per node for doing it by hand, on that node.
+
+The sweep runs on the node, not in the browser, so closing the dialog or the whole tab doesn't stop
+it. Reopening polls every node and re-attaches to anything still running. A node running a build
+without the tune API is marked `older build` and left out.
+
+## Managing another node
+
+You reach another node through this one, over the tailnet, and it only accepts management
+requests from its owner's devices. Tailscale identifies every connection, so a node accepts loads, unloads and
+settings from a device of the same Tailscale user, or one sharing a tag with it.
+
+```json filename="config.json"
+{ "mesh_admin": "same-owner" }     // the default; "off" refuses everyone
+```
+
+Anyone else on the tailnet can still use the models. They just can't manage them. See
+[Security](/docs/operations/security).
+
+## Editing the UI
+
+```bash
+make ui           # build web/ into cmd/mfsh/web/dist (embedded at compile time)
+make build
+```
+
+Run `make ui` **before** `go build`, or the binary keeps the old files and your change won't
+appear. See [Development](/docs/reference/development).
+
+<Cards>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    The same state from the command line, plus what the dashboard can't show you.
+  </Card>
+  <Card title="Development" href="/docs/reference/development">
+    Building, testing, and the UI's own checks.
+  </Card>
+</Cards>

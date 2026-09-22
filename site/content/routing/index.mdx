@@ -1,0 +1,207 @@
+---
+title: How routing works
+description: How a node picks who serves your request, what happens when that node dies, and why the mesh can't loop.
+---
+
+# How routing works
+
+When a request arrives, ModelFabric lists everything that could serve it (every healthy local engine
+and every live peer holding that model) and picks the one that would get to it soonest.
+
+Local engines get a small discount first. `local_bias` defaults to `0.5`, measured in requests:
+half a request's worth of preference for staying local. A local engine wins a tie. It loses to a
+peer that's a full request less busy.
+
+```json filename="config.json"
+{ "local_bias": 0.5 }
+```
+
+## Counting what you've already sent
+
+For a local engine, routing uses the larger of its last observed request count and this node's
+active router requests. This includes work sent directly by llm-d while keeping newly dispatched
+router requests visible between polls. The counts overlap, so they are not added together.
+Observed load can lag until the next poll.
+
+A peer's load is whatever it last reported, plus everything you've sent it since.
+
+Nodes poll each other every couple of seconds. If three requests arrive in the gap and each one
+only sees the stale number, all three go to the same idle-looking peer, and you've built a queue on
+a machine that had nothing to do a moment ago. Counting your own in-flight requests against a peer
+spreads the burst.
+
+## When a node dies mid-request
+
+It depends on whether the client has seen any bytes yet.
+
+If the candidate fails before the response starts, ModelFabric sends the request to the next one. A node
+that dies between polls costs you one retry, not the request.
+
+Once tokens are streaming, a failure is returned to the client, not retried. The client already has
+half an answer, and a replacement engine would produce a different one. We return an error because
+splicing two responses together would be worse.
+
+## Why the mesh can't loop
+
+Every forwarded request carries `X-Fabric-Hop`. A node that receives one either serves it from a
+local engine or fails. It never forwards again.
+
+<Arch>
+  <ArchNode title="app" />
+  <Arrow />
+  <ArchNode title="node A" sub="no local engine for this model" />
+  <Arrow label="X-Fabric-Hop" tone="tailnet" />
+  <Stack>
+    <ArchNode title="node B" sub="serves it, or fails" accent="tailnet" />
+    <ArchNode title="node C" sub="never: B is terminal" dashed />
+  </Stack>
+</Arch>
+
+Loop prevention does not require a global topology.
+
+## What decides it
+
+In order:
+
+<Steps>
+
+### A preferred node, if you've set one
+
+Strict precedence, not a bonus: load never overrides it. It still falls back: if that node is
+offline, doesn't have the model, or fails the request, another node serves it. See
+[Preferred node](/docs/routing/preferred-node).
+
+### Prefix affinity, if the prompt matches a warm engine
+
+Sending a conversation back to the engine that already has its prefix cached saves re-reading
+tens of thousands of tokens. Load can still override it: a warm engine that's much busier gets
+passed over. See [Replicas and prefix affinity](/docs/routing/replicas).
+
+### The room filter
+
+Never pick an engine with no free slot while another has room. On llama.cpp a queued request
+waits for a slot and then evicts somebody else's conversation from the KV pool, so queueing
+behind a busy engine costs more than the cache hit was worth.
+
+### How long each would take to get to it, with the local bias
+
+The measure is how long each would take, not how many requests each has. A slow engine's queue
+costs more per entry, in proportion to how much slower it is.
+
+On a mixed fleet this matters a lot. Measured on one afternoon, the same model prefilled at 2,221
+tok/s on an RTX 5090, 1,010 on an RTX 6000 Ada and 301 on an Apple Silicon Mac, a 7.4× spread.
+Comparing queue depth alone, an *idle* Mac beat a 5090 with a single request on it, and the Mac
+ended up absorbing **49% of the fleet's prefill while producing a twelfth of the output**. Routers
+count in slots, and slots are not equal.
+
+So the cost of a candidate is roughly `(outstanding + 1) ÷ its share of the fastest measured
+rate`, in units of one request on the fastest engine. The 5090 absorbs about seven requests before
+the Mac is the better choice, and between two idle engines the faster one wins on rate, not by
+tie-break.
+
+An engine nobody has measured **yet** counts as average, never as slow. Scoring it as slow would
+keep it unmeasured, since nothing would be sent to it.
+
+An engine that can never be measured is scored differently. mlx-lm serves no metrics, so no
+amount of traffic will produce a rate for it. Counted as average, a Mac would stay
+indistinguishable from the fastest card in the fleet forever. These engines are scored at the
+slowest rate measured anywhere in the fleet, and lose a tie to any engine with a measured rate.
+
+The two errors cost different amounts. Over-rating a slow engine degrades everything (that is how a
+24 tok/s Mac took 49% of this fleet's prefill). Under-rating one leaves capacity idle, degrades
+nothing, and corrects itself: cost rises with queue depth, so an unmeasurable engine still takes
+work as the measured ones fill up. It just never gets *preference* without a measurement.
+
+```json filename="config.json"
+{ "rate_weighted_routing": false }
+```
+
+Set that to compare queue depth alone, as ModelFabric did before. Runs from before and after this change
+are not comparable on placement.
+
+</Steps>
+
+## Who picks the engine
+
+ModelFabric, for every model, with one exception. Enable [llm-d](/docs/routing/llm-d) for a model and
+its scheduler picks the engine instead, for that model only:
+
+| the model | path | who picks the engine |
+|---|---|---|
+| any model | ModelFabric's front door → ModelFabric's router → engines | ModelFabric |
+| the one model llm-d owns | ModelFabric's front door → Envoy → EPP → engines | [llm-d's EPP](/docs/routing/llm-d), by queue depth and prefix cache |
+
+ModelFabric is the front door either way, so `mfsh log` and the dashboard see every request whoever
+chose the engine.
+
+The two are both real options, not a default and a fallback. Run a model through each and compare:
+the [SWE benchmark](/docs/benchmark/swe-routing) did exactly that, on the same tasks and GPUs.
+
+### On the dashboard
+
+The **Routing** page starts with the two methods side by side, and a table of every model in the
+mesh with the one routing it right now. Below that are ModelFabric's router's own settings, then
+llm-d's.
+
+| Setting | config.json | Applies |
+|---|---|---|
+| Preferred node | `preferred_node` (the dashboard keeps it in the node's state) | at once |
+| Speed-aware routing | `rate_weighted_routing` | on restart |
+| Prefix affinity | `prefix_affinity` | on restart |
+| Local bias | `local_bias` | on restart |
+| Output ceiling | `max_output_tokens` (0 is no ceiling) | on restart |
+| Disk prompt cache | `cache_disk_mib`, `cache_disk_dir` | on restart |
+
+They are saved the way [Server settings](/docs/operations/server-settings) are: only what changed is
+written, and the previous file is kept as `config.json.bak`.
+
+Each method chooses engines in its own way: ModelFabric's router keeps a conversation on the engine
+holding its prompt (prefix affinity); llm-d scores engines by prefix itself. Below both, the
+[disk prompt cache](/docs/routing/disk-cache) works in each engine's shim, which every request
+passes whichever method sent it, so a conversation's prompt survives its slot being taken, or the
+model being reloaded, under either one. llm-d's own tiered KV offloading, LMCache-style, needs vLLM
+and is listed as unavailable on llama.cpp; the shim is what brings that kind of caching to
+llama.cpp engines.
+
+### Putting something in front
+
+ModelFabric routes its own models and nothing else. It has no budgets, no per-key spend tracking and no
+third-party providers, and we're not adding them. That job is already done well by API gateways
+such as [Bifrost](https://github.com/maximhq/bifrost).
+
+Run one **in front of** ModelFabric and point it at `:1234` like any other OpenAI endpoint. It
+handles keys, budgets and cloud fallback; ModelFabric sees one caller and nothing about who is behind
+it. ModelFabric keeps its own single API key for the hop
+([API keys](/docs/api/api-keys)).
+
+## Tuning the probe loop
+
+| key | default | |
+|---|---|---|
+| `poll_interval` | `2s` | how often peers and local engines are re-checked |
+| `probe_timeout` | `1500ms` | how long a single check may take |
+| `dead_after` | `15s` | how long a peer may fail before it leaves the mesh |
+
+`dead_after` is the one to think about. Too short and a briefly slow node keeps dropping out and
+coming back; too long and a dead one keeps attracting retries. The default tolerates several missed
+probes before dropping a peer, which is usually what you want.
+
+## Watching it happen
+
+```bash
+mfsh log            # routed requests as they happen — bodies only while capture is on
+mfsh status         # who's in the mesh, and what they're serving
+mfsh models         # every model in the mesh, and who holds it
+```
+
+Every response carries `X-Fabric-Node` and `X-Fabric-Engine`, which name where it ran.
+`X-Fabric-Via: llm-d` shows up when llm-d chose the engine instead of ModelFabric.
+
+<Cards>
+  <Card title="Preferred node" href="/docs/routing/preferred-node">
+    Send a model's requests to one machine first, without losing the fallback.
+  </Card>
+  <Card title="Replicas and prefix affinity" href="/docs/routing/replicas">
+    Reusing a warm KV cache, and why `parallel` has to be sized for it.
+  </Card>
+</Cards>

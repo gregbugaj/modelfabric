@@ -1,0 +1,52 @@
+/* ---- Tune slots, over My Models ---- */
+
+/* Wider than the settings dialog and narrower than Discover: the deliverable
+   is a table with one column per slot count, and a fleet that stops at 8 needs
+   four of them plus a recommendation. */
+#tn-dialog {
+  width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--overlay-bg); color: var(--text);
+  box-shadow: var(--shadow-overlay);
+  display: none; flex-direction: column; overflow: hidden;
+}
+#tn-dialog[open] { display: flex; }
+#tn-dialog::backdrop { background: var(--overlay-scrim); }
+
+/* One line per node, in the order the fleet is scanned: which machine, what it
+   is running now, and what it is doing about it. The state sits at the end of
+   the row, where the workload dialog puts its slot count. */
+.tn-node {
+  display: flex; align-items: baseline; gap: 9px; padding: 6px 9px;
+  border-radius: var(--r-sm); font-size: 13px;
+}
+.tn-node:nth-child(odd) { background: var(--surface-muted); }
+.tn-node-name { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.tn-node-now { font-size: 11.5px; color: var(--text-muted); }
+.tn-node-state { margin-left: auto; font-size: 12px; color: var(--text-2); text-align: right; }
+
+/* Indented to the group label above it, not to the dialog's edge. */
+.tn-model { padding: 0 9px; font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* Why each node landed where it did. The number alone does not say whether the
+   sweep found a ceiling or a knee, and those call for different next steps. */
+.tn-why { display: grid; gap: 2px; padding: 7px 9px; font-size: 12.5px; line-height: 1.45; }
+/* A rule between them: three nodes each with a why, a stop reason and a warning
+   ran together as one paragraph of prose. */
+.tn-why + .tn-why { border-top: 1px solid var(--border-soft); }
+.tn-why-node { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+.tn-why-line { color: var(--text-2); }
+.tn-why-warn { color: hsl(var(--warning-text)); }
+
+/* The commands, not an offer to run them: each has to run on its own node. */
+.tn-cmd { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.tn-cmd-node { min-width: 84px; color: var(--text-muted); }
+.tn-cmd code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+
+/* A count that did not run reads differently from one that was never tried, so
+   OOM and failed are marked and the em dash is only muted. */
+td.tn-bad { color: hsl(var(--error-text)); }
+td.tn-rec { font-weight: 700; }
+/* My Models' rows open a detail panel, so .dense marks them as clickable. These
+   are read, not opened — only the Apply button in them acts. */
+#tn-body table.dense tbody tr { cursor: default; }

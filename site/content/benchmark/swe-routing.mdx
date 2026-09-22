@@ -1,0 +1,282 @@
+---
+title: SWE routing results
+description: "SWE-bench routing comparison: tuned finished in 64 minutes against 119 for direct, with lower tail latency."
+---
+
+# SWE routing results: lower tail latency with `tuned`
+
+Both runs here are ModelFabric, on the same three machines, serving the same model to the same 20
+SWE-bench Verified tasks. **The only thing that changed is how ModelFabric picked an engine for each
+turn.**
+
+| the variable | what picks the engine |
+|---|---|
+| `direct` *(reference)* | a plain balancer by in-flight request count, with no information on what any engine has cached or how fast it is |
+| `tuned` | llm-d's scheduler, running [under ModelFabric](/docs/routing/llm-d). Sticks to the engine holding the prefix, with burst co-location and an LRU spread for cold prompts |
+
+An agent resends its whole conversation every turn, so the engine choice determines whether 30–90k
+tokens are read from a warm cache or prefilled from scratch.
+
+The median call came out *marginally faster* without a scheduler. Everything else went the other
+way: `tuned` finished the set in 64 minutes against 119, re-prefilled 4.4× fewer tokens, and cut
+the worst single call from 39 minutes to 7. Resolve rate did not separate the two, and at twenty
+tasks it can't ([see below](#read-these-numbers-with-care)).
+
+<RunSpec items={[
+  ["Model", "Qwen3.8-27B Q4_K_M, MTP on"],
+  ["xpredator", "RTX 5090, llama.cpp b11153 (upstream, CUDA 12.8)"],
+  ["minion", "RTX 6000 Ada, llama.cpp cuda12-avx2@2.40.0 (LM Studio)"],
+  ["helion", "Apple Silicon, Metal advsimd@2.41.0"],
+  ["Per engine", "2 slots, 131k shared KV, 4 checkpoints/slot"],
+  ["Entry", "public HTTPS → entrypoint-01 → the gateway ModelFabric then embedded → mesh"],
+  ["Agent", "mini-swe-agent 2.4.6, 4 workers, 100-step cap"],
+  ["Grader", "swebench 5.0.2 harness"],
+]} />
+
+## All 20 tasks, both runs
+
+Neither run lost a task to the sandbox limit, so this is the whole set on both sides. The agent
+takes its own path each run (temperature 1.0), so turn counts differ. They came out within 1.5%
+here, which makes the timing comparable.
+
+<Kpis cards={[
+  { label: "Prompt tokens served from cache", a: "90.2%", b: "97.4%", delta: "4.4× less prefill" },
+  { label: "Slowest 5% of calls (p95)",       a: "96 s",  b: "70 s",  delta: "1.4× lower" },
+  { label: "Total time waiting on the model", a: "422 min", b: "228 min", delta: "1.9× less" },
+  { label: "Tasks resolved",                  a: "15 / 20", b: "17 / 20", delta: "2 apart, within noise", good: false },
+]} />
+
+## How slow a call gets, by how rare it is
+
+<LatencyCdf />
+
+Each mode's latency read at a percentile, from the median at the left to its slowest call at the
+right. The x axis is stretched so every further nine (p90, p99, p99.9) gets equal width, because
+that is where the two modes differ.
+
+They start level. `direct` is a shade *ahead* at the median, 7.2 s against 7.8 s: a warm
+call was already fast, and a scheduler has nothing to win there. From about p90 the
+unscheduled run climbs away, and by its slowest call it is at 39 minutes against 7.
+
+## The mechanism: without a scheduler, the slowest node sets the pace
+
+<BenchNote>
+
+Averaged over each whole run: the share of one-second polls with at least one request in flight,
+and the mean number in flight.
+
+<EngineState cols={3} nodes={[
+  { name: "xpredator", spec: "RTX 5090 · 1694 tok/s prefill", rows: [
+    { label: "busy, tuned",  value: "83% · 0.93" },
+    { label: "busy, direct", value: "75% · 0.80", hot: true },
+  ]},
+  { name: "minion", spec: "RTX 6000 Ada · 1018 tok/s", rows: [
+    { label: "busy, tuned",  value: "90% · 0.91" },
+    { label: "busy, direct", value: "72% · 1.12", hot: true },
+  ]},
+  { name: "helion", spec: "Apple Silicon · 166 tok/s", rows: [
+    { label: "busy, tuned",  value: "91% · 1.61", hot: true },
+    { label: "busy, direct", value: "87% · 1.32", hot: true },
+  ]},
+]} />
+
+helion prefills roughly **10× slower** than the 5090, so the same request costs ten times as much
+there. The gateway balanced by request count and had no view of that, so under `direct` both GPUs
+idled about a quarter of the time while the Mac stayed pinned, and the set finished at the Mac's
+pace. This result is why we added rate-weighted routing to ModelFabric's own router. That change is
+not yet measured.
+
+Under `tuned` all three sit at 83% or above, and the queue depth sits on helion: the scheduler
+keeps 1.61 requests waiting on the slow node so the fast ones never starve.
+
+</BenchNote>
+
+helion's decode fell to 11.2 tok/s under `tuned`, while all three engines were at least 83% busy.
+This comparison does not isolate the [room filter's](/docs/routing/llm-d#room-filter) contribution.
+The filter counts free slots without weighting them by engine speed. ModelFabric already
+[measures and publishes each engine's prefill rate](/docs/routing/replicas#what-the-mesh-publishes);
+weighting the filter by it is the next thing to test.
+
+## All measurements
+
+Call latency is measured from the agent's message timestamps, from sending a prompt to receiving
+the response. It includes queueing, prefill and generation. "Prefilled" counts prompt tokens the
+engines computed instead of reading from cache.
+
+<AllMeasurements />
+
+## Per task
+
+Cache hit share and model time for each task under each run. Cache shares below 80% are called out.
+
+<PerTask />
+
+Six of the twenty flipped outcome between the runs, in both directions. At temperature 1.0 the
+agent's own sampling moves more tasks than routing does.
+
+What routing moved is the model time. Look at 13236 (57 → 41 min), 14369 (23 → 10) and 14539
+(20 → 6). In each of them `direct`'s cache share sat in the 80s and `tuned` pulled it above 97%.
+Where `direct` was already caching well, the two land within noise of each other.
+
+## Read these numbers with care
+
+**The resolve rates do not support a conclusion.** 17/20 against 15/20 looks like a win for `tuned`,
+but it isn't: only **13 tasks resolved under both**. `tuned` uniquely solved four, `direct`
+uniquely solved two. At temperature 1.0 and n=20 a 2-task gap sits inside the sampling. Read
+resolve rate as a guard against a routing change breaking correctness, not as the comparison.
+
+**The empty patches are context exhaustion, not timeouts.** All three exited
+`ContextWindowExceededError` at a peak context around 130,900 of the 131,072-token pool; the
+100-step cap and the 2-hour sandbox limit were never reached. `astropy-13398` failed this way in
+both modes and is excluded. `astropy-14598` is one to watch, not to cite: `tuned`
+submitted it in 40 turns at a peak of 87k, `direct` took 80 turns and hit the ceiling. Turn count
+is the agent's own path, so a single instance proves nothing, but it shows how routing could cost a
+solve and not only time.
+
+Check `exit` before attributing an empty patch to a timeout or a loop. Raising `-context` trades
+slots for headroom, so it changes what is measured.
+
+**The 2-hour task limit** is a mini-swe-agent default: its sandboxes are `sleep 2h` containers, so
+a task running longer loses its sandbox and ends without a patch. Neither mode hit it here; the
+2026-09-19 two-node run lost three tasks this way.
+
+**The engines were loaded text-only, and need not have been.** Both arms ran `-vision off`, to keep MTP
+speculation: llama.cpp could not draft a prompt carrying an image, so loading the projector cost the
+2× decode. Re-tested on 2026-09-24 at the same context and slot count with the projector loaded, two
+concurrent image requests succeeded with drafting live throughout. The defect is gone from the builds
+this fleet runs. Both arms used identical settings, so nothing above is invalidated, but the flag
+gained nothing and the next run drops it.
+
+**The two modes ran back to back, not interleaved.** `tuned` ran 15:29–16:33 and `direct`
+16:33–18:33, each on a freshly reloaded fleet. Anything that drifted over those four hours lands on
+`direct`. Reversing the order would check this, and hasn't been run.
+
+**Prefill calibration is the one scheduler input that leaks between modes.** It has drifted
+2000 → 1010 → 1192 → 880 → 628 → 614 tok/s across runs; this pair used 614. Pin
+`SWE_PEAK_PREFILL` to compare across days.
+
+**Two cache figures, two denominators.** The 97.4% / 90.2% above come from the agent's own per-call
+`usage`. The engines' lifetime counters gave 84.8% for `direct`, because they also count health
+probes and reset on every reload. Quote the per-call figure. Use the engine counters to attribute work
+per node.
+
+## What runs next
+
+| run | what it answers |
+|---|---|
+| Aider polyglot, same fleet | these tasks reuse 97% of their prompt, so this benchmark mostly measures prefix affinity; polyglot's exercises start cold, which tests placement instead |
+| `direct` first, then `tuned` | rules out four hours of drift landing on one mode |
+| reduced reasoning effort | 98% of the output on these tasks is reasoning; whether that buys the resolve rate is a separate question |
+| a slot weighted by its engine | the room filter treats helion's slot as worth a 5090's, which is why the slow node carries the deepest queue |
+| `load-aware`, ModelFabric's own router | neither is measured on three nodes yet |
+
+## Reproduce this run
+
+```bash
+make ui build                               # ./mfsh with the dashboard; deploy the same binary to every peer
+bench/swe/setup.sh                          # Python env in ~/.local/share/modelfabric/bench/swe
+SWE_ENTRYPOINT=entrypoint-01 \
+SWE_AGENT_BASE=https://api.example.com/v1 \
+SWE_CONTROL_ADDR=http://100.64.0.1:1234 \
+  bench/swe/sequence.sh 0925e tuned direct
+bench/swe/grade.sh 0925e-tuned              # once per run
+python3 bench/swe/report/build.py --run direct=0925e-direct --run tuned=0925e-tuned \
+  --out docs/reports/2026-09-24-swe-routing-3node.html \
+  --docs-data site/data/swe.json
+```
+
+The first `--run` is the baseline everything else is measured against, so pass `direct` first even
+when the sequence ran `tuned` first. `--docs-data` regenerates the numbers on *this* page from the
+same aggregation that builds the standalone report, so the two cannot disagree.
+
+For each mode, `sequence.sh` disables llm-d, reloads the model on all three nodes, checks every
+engine's real context and runtime, enables llm-d with the profile unless the mode is `direct`, then
+runs. **A full run takes 1–2 hours per mode.**
+
+One run on its own:
+
+```bash
+./mfsh llmd enable qwen/qwen3.8-27b -profile tuned   # or: llmd disable, for the router arm
+bench/swe/run.sh my-run
+```
+
+`run.sh` writes the agent's model config at run time with the node's API key, which is owner-only and
+never committed. Everything bulky lives under `$SWE_WORK` (default
+`~/.local/share/modelfabric/bench/swe`): trajectories in `runs/`, grading in `eval/`. Settings are in
+`env.sh`, overridable with `SWE_*` variables. `stats.py RUN_DIR [EVAL_REPORT]` prints per-task
+turns, peak context, cache share, model time and resolution for any run, finished or not.
+
+### The entrypoint
+
+The agent could talk to loopback on the machine running the benchmark. These runs don't: `SWE_ENTRYPOINT` with a public `SWE_AGENT_BASE` sends every request over public HTTPS into
+nginx, to ModelFabric's front door on the [entrypoint](/docs/operations/entrypoint) node, and out across
+the tailnet to whichever engine is chosen. That's the same path a real caller takes, WAN hop included.
+
+Measured, that hop is 85 ms RTT plus 88 ms of TLS once per connection, against a p50 of 7.2 s:
+about 3%, and none of the difference above comes from it. It's in the setup to exercise
+entrypoint routing.
+
+Two things it requires. `SWE_CONTROL_ADDR` must be the entrypoint's own address for management
+calls. Keys and logs are read from a node's own disk and are not served over the mesh, so
+`run.sh` fetches the entrypoint's key over `tailscale ssh`. `public_listen` on the entrypoint must
+stay on loopback, because nginx proxies to it; moving it to the tailnet address takes the public
+URL down.
+
+### Before a run
+
+Each of these has produced a false result at least once.
+
+<Steps>
+
+#### Same binary on every node
+
+Compare `mfsh version` across the fleet. Don't compare `sha256sum` of `./mfsh` against
+`dist/mfsh-linux-amd64`: `make build` compiles with CGO on and `make dist` with `CGO_ENABLED=0`, so
+those two never match and the check reads as a failure every time. A stale binary on minion sized
+its KV cache from old defaults: `mfsh ps` said 65536, the engine got 32768, and every task routed
+there overflowed.
+
+#### Real context on every engine
+
+`reload.sh` prints each engine's `n_ctx` from `/props`. It must read 131072 on all of them.
+
+#### Per-model and per-node settings off
+
+A saved default for this model (the flyout's Load and Inference tabs, or `mfsh defaults`) sits
+under the run's own arguments and silently changes what is measured. `sequence.sh` won't start
+when any node has them; `check-defaults.sh` is the check on its own.
+
+#### No preferred node
+
+`mfsh prefer` must say none. A [preference](/docs/routing/preferred-node) sends everything to one
+machine first, which is not what you're trying to measure. `sequence.sh` won't start otherwise.
+
+#### Tailscale SSH approval
+
+Reaching a peer uses `tailscale ssh`, which needs browser approval periodically and hangs until
+it gets it. `reload.sh` times out and `sequence.sh` stops instead of running on stale engines.
+
+#### Host RAM on the peers
+
+llama.cpp keeps context checkpoints in host RAM, roughly 150&nbsp;MiB + 4&nbsp;KiB per token each,
+up to 32 per slot by default. That OOM-killed minion (15&nbsp;GB of host RAM) twice. ModelFabric now
+defaults to 4.
+
+</Steps>
+
+---
+
+Source: mini-swe-agent trajectories under `$SWE_WORK/runs/0925e-{tuned,direct}`; token counts are
+the engines' own `usage` per call; per-node attribution is from `mfsh log -engines -json` recorded
+alongside each run; grades from the SWE-bench harness, `SWE-bench_Verified` test split, first 20
+instances. The standalone report is `docs/reports/2026-09-24-swe-routing-3node.html`, with its data
+beside it as `.json`.
+
+<Cards>
+  <Card title="llm-d" href="/docs/routing/llm-d">
+    The profiles measured here, and the room filter we added after these results.
+  </Card>
+  <Card title="Replicas and prefix affinity" href="/docs/routing/replicas">
+    ModelFabric's own affinity, and why a load veto is not optional.
+  </Card>
+</Cards>

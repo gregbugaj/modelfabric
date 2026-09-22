@@ -1,0 +1,611 @@
+<title>SWE Routing Across Three Nodes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --surface-0: 220 16% 98%;
+  --surface-1: 0 0% 100%;
+  --surface-2: 220 13% 95%;
+  --text-primary: 224 71% 4%;
+  --text-secondary: 215 20% 40%;
+  --text-muted-token: 215 14% 56%;
+  --brand-primary: 243 55% 56%;
+  --brand-primary-muted: 243 40% 94%;
+  --direct-token: 28 72% 50%;
+  --direct-muted: 28 80% 94%;
+  --border-default: 220 20% 20% / 0.12;
+  --border-subtle: 220 20% 20% / 0.07;
+  --success-token: 142 64% 36%;
+  --success-subtle: 142 60% 94%;
+  --error-token: 0 70% 48%;
+  --error-subtle: 0 80% 96%;
+  --warning-token: 36 90% 42%;
+  --warning-subtle: 40 90% 94%;
+
+  --app-bg: hsl(var(--surface-0));
+  --surface: hsl(var(--surface-1));
+  --surface-muted: hsl(var(--surface-2));
+  --text: hsl(var(--text-primary));
+  --text-2: hsl(var(--text-secondary));
+  --text-3: hsl(var(--text-muted-token));
+  --llmd: hsl(var(--brand-primary));
+  --llmd-bg: hsl(var(--brand-primary-muted));
+  --direct: hsl(var(--direct-token));
+  /* One colour per mode, by position. m0 and m1 are the pilot's two so a
+     rebuilt two-mode page looks exactly as it did; the rest are added for
+     three-node runs, which compare direct against several profiles at once. */
+  --m0: hsl(var(--direct-token));
+  --m1: hsl(var(--brand-primary));
+  --m2: hsl(275 60% 55%);
+  --m3: hsl(28 85% 48%);
+  --m4: hsl(160 55% 38%);
+  --direct-bg: hsl(var(--direct-muted));
+  --border: hsl(var(--border-default));
+  --border-2: hsl(var(--border-subtle));
+  --good: hsl(var(--success-token));
+  --good-bg: hsl(var(--success-subtle));
+  --bad: hsl(var(--error-token));
+  --bad-bg: hsl(var(--error-subtle));
+  --warn: hsl(var(--warning-token));
+  --warn-bg: hsl(var(--warning-subtle));
+  --sans: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-0: 222 18% 9%;
+    --surface-1: 222 16% 12%;
+    --surface-2: 222 14% 16%;
+    --text-primary: 220 30% 94%;
+    --text-secondary: 218 16% 70%;
+    --text-muted-token: 218 12% 54%;
+    --brand-primary: 243 80% 72%;
+    --brand-primary-muted: 243 30% 20%;
+    --direct-token: 30 85% 62%;
+    --direct-muted: 28 40% 18%;
+    --border-default: 220 30% 90% / 0.12;
+    --border-subtle: 220 30% 90% / 0.07;
+    --success-token: 142 55% 55%;
+    --success-subtle: 142 35% 16%;
+    --error-token: 0 75% 65%;
+    --error-subtle: 0 40% 18%;
+    --warning-token: 38 85% 60%;
+    --warning-subtle: 38 40% 16%;
+  }
+}
+:root[data-theme="dark"] {
+  --surface-0: 222 18% 9%;
+  --surface-1: 222 16% 12%;
+  --surface-2: 222 14% 16%;
+  --text-primary: 220 30% 94%;
+  --text-secondary: 218 16% 70%;
+  --text-muted-token: 218 12% 54%;
+  --brand-primary: 243 80% 72%;
+  --brand-primary-muted: 243 30% 20%;
+  --direct-token: 30 85% 62%;
+  --direct-muted: 28 40% 18%;
+  --border-default: 220 30% 90% / 0.12;
+  --border-subtle: 220 30% 90% / 0.07;
+  --success-token: 142 55% 55%;
+  --success-subtle: 142 35% 16%;
+  --error-token: 0 75% 65%;
+  --error-subtle: 0 40% 18%;
+  --warning-token: 38 85% 60%;
+  --warning-subtle: 38 40% 16%;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--app-bg);
+  color: var(--text);
+  font: 15px/1.55 var(--sans);
+  padding-inline: 20px;
+  padding-block: 40px 72px;
+  -webkit-font-smoothing: antialiased;
+}
+.page { max-width: 1040px; margin: 0 auto; display: grid; gap: 44px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(28px, 4vw, 38px); line-height: 1.12; font-weight: 700; }
+h2 { font-size: 21px; font-weight: 650; }
+h3 { font-size: 15px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.mono, td.num, .val { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.lede { font-size: 17px; color: var(--text-2); }
+.stack { display: grid; gap: 14px; }
+.section { display: grid; gap: 18px; }
+.section > header { display: grid; gap: 6px; }
+.section > header p { color: var(--text-2); }
+
+.setup { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  font-size: 12.5px; padding: 4px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-2);
+}
+.chip b { color: var(--text); font-weight: 600; }
+
+.legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.swatch.direct { background: var(--direct); }
+.swatch.llmd { background: var(--llmd); }
+.swatch.m0 { background: var(--m0); } .swatch.m1 { background: var(--m1); }
+.swatch.m2 { background: var(--m2); } .swatch.m3 { background: var(--m3); }
+.swatch.m4 { background: var(--m4); }
+
+.metrics {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+}
+.metric { padding: 18px 20px; display: grid; gap: 10px; align-content: start; }
+.metric + .metric { border-left: 1px solid var(--border-2); }
+.metric .label { font-size: 13px; color: var(--text-2); font-weight: 500; }
+.metric .pair { display: grid; gap: 4px; }
+.metric .row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.metric .who { font-size: 12px; color: var(--text-3); }
+.metric .val { font-size: 22px; font-weight: 500; }
+.metric .val.direct { color: var(--direct); }
+.metric .val.llmd { color: var(--llmd); }
+.metric .val.m0 { color: var(--m0); } .metric .val.m1 { color: var(--m1); }
+.metric .val.m2 { color: var(--m2); } .metric .val.m3 { color: var(--m3); }
+.metric .val.m4 { color: var(--m4); }
+.metric .delta { font-size: 12.5px; font-weight: 600; padding: 2px 8px; border-radius: 6px; justify-self: start; }
+.delta.good { background: var(--good-bg); color: var(--good); }
+.delta.even { background: var(--surface-muted); color: var(--text-2); }
+.delta.bad { background: var(--bad-bg); color: var(--bad); }
+
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.chart-wrap { overflow-x: auto; }
+svg text { fill: var(--text-2); font: 11.5px var(--mono); }
+svg .axis { stroke: var(--border); }
+svg .grid { stroke: var(--border-2); }
+svg .line-direct { stroke: var(--direct); fill: none; stroke-width: 2.25; }
+svg .line-llmd { stroke: var(--llmd); fill: none; stroke-width: 2.25; }
+svg .mark-direct { fill: var(--direct); }
+svg .mark-llmd { fill: var(--llmd); }
+svg .line-m0 { stroke: var(--m0); fill: none; stroke-width: 2.25; }
+svg .line-m1 { stroke: var(--m1); fill: none; stroke-width: 2.25; }
+svg .line-m2 { stroke: var(--m2); fill: none; stroke-width: 2.25; }
+svg .line-m3 { stroke: var(--m3); fill: none; stroke-width: 2.25; }
+svg .line-m4 { stroke: var(--m4); fill: none; stroke-width: 2.25; }
+svg .mark-m0 { fill: var(--m0); } svg .mark-m1 { fill: var(--m1); }
+svg .mark-m2 { fill: var(--m2); } svg .mark-m3 { fill: var(--m3); }
+svg .mark-m4 { fill: var(--m4); }
+svg .note { fill: var(--text); font-weight: 500; }
+
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+/* Five columns per mode: two modes fit, three do not. width:100% squeezed the
+   columns until the last mode was unreadable rather than letting the wrapper
+   scroll, so the table keeps its natural width past that point. */
+#tasks { width: max-content; min-width: 100%; }
+#tasks th, #tasks td { white-space: nowrap; }
+th, td { padding: 9px 12px; text-align: left; white-space: nowrap; }
+thead th { font-size: 12px; font-weight: 600; color: var(--text-2); background: var(--surface-muted); border-bottom: 1px solid var(--border); }
+thead tr.group th { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; border-bottom: none; padding-bottom: 2px; }
+thead tr.group th.direct { color: var(--direct); }
+thead tr.group th.llmd { color: var(--llmd); }
+thead tr.group th.m0 { color: var(--m0); } thead tr.group th.m1 { color: var(--m1); }
+thead tr.group th.m2 { color: var(--m2); } thead tr.group th.m3 { color: var(--m3); }
+thead tr.group th.m4 { color: var(--m4); }
+tbody tr + tr td { border-top: 1px solid var(--border-2); }
+td.num, th.num { text-align: right; }
+td.sep, th.sep { border-left: 1px solid var(--border-2); }
+tbody tr.timeout td { background: var(--warn-bg); }
+td.better { color: var(--good); font-weight: 600; }
+td.worse { color: var(--bad); }
+.pill { font-family: var(--sans); font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.no { background: var(--bad-bg); color: var(--bad); }
+.pill.to { background: var(--warn-bg); color: var(--warn); border: 1px solid currentColor; }
+.pill.np { background: var(--surface-muted); color: var(--text-2); }
+
+.callout {
+  display: grid; gap: 14px; padding: 20px 22px; border-radius: 12px;
+  background: var(--warn-bg); border: 1px solid hsl(var(--warning-token) / 0.35);
+}
+.callout h2 { font-size: 19px; }
+.engines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.engine { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: grid; gap: 6px; }
+.engine .name { font-weight: 600; }
+.engine .gpu { font-size: 12.5px; color: var(--text-3); }
+.engine dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 4px 0 0; font-size: 13.5px; }
+.engine dt { color: var(--text-2); }
+.engine dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.engine.idle dd.state { color: var(--bad); }
+.engine.hot dd.state { color: var(--warn); }
+
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.list { margin: 0; padding-left: 20px; display: grid; gap: 8px; max-width: 68ch; }
+.list li::marker { color: var(--text-3); }
+.status { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--llmd-bg); color: var(--llmd); }
+.status.done { background: var(--good-bg); color: var(--good); }
+.foot { font-size: 12.5px; color: var(--text-3); border-top: 1px solid var(--border-2); padding-top: 18px; }
+code { font-family: var(--mono); font-size: 0.9em; background: var(--surface-muted); padding: 1px 5px; border-radius: 4px; }
+
+@media (max-width: 820px) {
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric:nth-child(3) { border-left: none; }
+  .metric:nth-child(n+3) { border-top: 1px solid var(--border-2); }
+  .two, .engines { grid-template-columns: 1fr; }
+}
+@media (max-width: 440px) {
+  .metrics { grid-template-columns: 1fr; }
+  .metric + .metric { border-left: none; border-top: 1px solid var(--border-2); }
+}
+</style>
+
+<main class="page">
+  <header class="stack">
+    <span class="eyebrow">ModelFabric benchmark · SWE-bench Verified · three nodes · 2026-09-24</span>
+    <h1>Scheduling did not make the median call faster. It removed the tail.</h1>
+    <p class="lede">Qwen3.8-27B on three heterogeneous engines, the same 20 SWE-bench Verified tasks run twice: once with a plain balancer by in-flight request count across the engines, once through llm-d's <code>tuned</code> profile. The median model call was marginally <em>faster</em> without a scheduler. Everything else went the other way — <code>tuned</code> finished the set in 64 minutes against 119, re-prefilled 4.4× fewer tokens, and cut the worst single call from 39 minutes to 7. Resolve rate did not separate the two, and at twenty tasks it cannot.</p>
+    <div class="setup">
+      <span class="chip"><b>Model</b> Qwen3.8-27B Q4_K_M, MTP on</span>
+      <span class="chip"><b>xpredator</b> RTX 5090, llama.cpp b11153 (upstream, CUDA 12.8)</span>
+      <span class="chip"><b>minion</b> RTX 6000 Ada, llama.cpp cuda12-avx2@2.40.0 (LM Studio)</span>
+      <span class="chip"><b>helion</b> Apple Silicon, Metal advsimd@2.41.0</span>
+      <span class="chip"><b>Per engine</b> 2 slots, 131k shared KV, 4 checkpoints/slot</span>
+      <span class="chip"><b>Entry</b> public HTTPS → entrypoint → mesh</span>
+      <span class="chip"><b>Agent</b> mini-swe-agent 2.4.6, 4 workers, 100-step cap</span>
+      <span class="chip"><b>Grader</b> swebench 5.0.2 harness</span>
+    </div>
+  </header>
+
+  <section class="section" aria-labelledby="h-head">
+    <header>
+      <h2 id="h-head">All 20 tasks, both runs</h2>
+      <p>Neither run lost a task to the sandbox limit, so this is the whole set on both sides. The agent takes its own path each run (temperature 1.0), so turn counts differ — they came out within 1.5% here, which is what makes the timing comparable.</p>
+    </header>
+    <div class="legend" id="legend"></div>
+    <div class="metrics" id="metrics"></div>
+  </section>
+
+  <section class="section" aria-labelledby="h-lat">
+    <header>
+      <h2 id="h-lat">How slow a call gets, by how rare it is</h2>
+      <p>Each mode's model-call latency read at a percentile, from the median at the left to its slowest call at the right. The x axis is stretched so every further nine — p90, p99, p99.9 — gets equal width, because that is where the two modes differ. They start level, and from about p90 the unscheduled run climbs away: the same conversation, re-placed onto an engine that no longer held its prefix and re-prefilling 30–90k tokens, or queued behind the slowest node in the fleet.</p>
+    </header>
+    <div class="panel chart-wrap"><svg id="cdf" role="img" aria-label="Model call latency by percentile, each mode as one curve"></svg></div>
+  </section>
+
+  <section class="callout" aria-labelledby="h-pile">
+    <h2 id="h-pile">The mechanism: without a scheduler, the slowest node sets the pace</h2>
+    <p>Averaged over each whole run, the share of polls with at least one request in flight, and the mean number in flight. The numbers are small; the pattern is the finding.</p>
+    <div class="engines">
+      <div class="engine idle">
+        <span class="name">xpredator</span><span class="gpu">RTX 5090 · 1694 tok/s prefill</span>
+        <dl><dt>busy, tuned</dt><dd>83% · 0.93 in flight</dd><dt>busy, direct</dt><dd class="state">75% · 0.80 in flight</dd></dl>
+      </div>
+      <div class="engine idle">
+        <span class="name">minion</span><span class="gpu">RTX 6000 Ada · 1018 tok/s</span>
+        <dl><dt>busy, tuned</dt><dd>90% · 0.91 in flight</dd><dt>busy, direct</dt><dd class="state">72% · 1.12 in flight</dd></dl>
+      </div>
+      <div class="engine hot">
+        <span class="name">helion</span><span class="gpu">Apple Silicon · 166 tok/s</span>
+        <dl><dt>busy, tuned</dt><dd class="state">91% · 1.61 in flight</dd><dt>busy, direct</dt><dd class="state">87% · 1.32 in flight</dd></dl>
+      </div>
+    </div>
+    <p>helion prefills roughly <b>10× slower</b> than the 5090, so the same request costs ten times as much there. A balancer by request count cannot know that, so under <code>direct</code> both GPUs idle about a quarter of the time while the Mac stays pinned, and the set finishes at the Mac's pace. Under <code>tuned</code> all three sit at 83% or above and the queue depth is deliberately parked on helion: the scheduler is <em>choosing</em> to keep 1.61 requests waiting on the slow node so the fast ones never starve.</p>
+    <p>That choice has a cost we did not set out to measure. llm-d's room filter counts a free slot as a free slot regardless of what the engine behind it can do, so the slowest engine looks available longest and ends up the most oversubscribed in the fleet. helion's decode fell to 11.2 tok/s under <code>tuned</code>. A filter that weighted a slot by the engine's measured rate would place that queue differently — that is the next thing to test, not a settled result.</p>
+  </section>
+
+  <section class="section" aria-labelledby="h-agg">
+    <header>
+      <h2 id="h-agg">All measurements</h2>
+      <p>Call latency runs from the agent sending a prompt to the response arriving, so it includes queueing, prefill and generation. "Prefilled" counts prompt tokens the engines computed rather than read from cache.</p>
+    </header>
+    <div class="table-wrap"><table id="agg"></table></div>
+  </section>
+
+  <section class="section" aria-labelledby="h-tasks">
+    <header>
+      <h2 id="h-tasks">Per task</h2>
+      <p>Cache hit share and model time for each task under each run. A dash is a task that mode did not finish; a struck-through row is one no mode finished. Cache and model time are marked against the baseline.</p>
+    </header>
+    <div class="table-wrap"><table id="tasks"></table></div>
+  </section>
+
+  <section class="two">
+    <div class="section">
+      <h2>Read these numbers with care</h2>
+      <ul class="list">
+        <li><b>The resolve rates do not support a conclusion.</b> 17/20 against 15/20 looks like a win for <code>tuned</code> and is not one: only <b>13 tasks resolved under both</b>. <code>tuned</code> uniquely solved four, <code>direct</code> uniquely solved two, so six of twenty flipped. At temperature 1.0 and n=20 that is sampling, and a 2-task gap sits inside it. Routing shows in prefill volume and latency; on correctness this run says nothing.</li>
+        <li><b>The empty patches are context exhaustion, not timeouts.</b> All three exited <code>ContextWindowExceededError</code> at a peak context around 130,900 of the 131,072-token pool; the 100-step cap and the 2-hour sandbox limit were never reached. astropy-13398 failed this way in both modes (58 turns under <code>tuned</code>, 74 under <code>direct</code>) and is excluded. astropy-14598 is the one to watch rather than to cite: <code>tuned</code> submitted it in 40 turns at a peak of 87k, <code>direct</code> took 80 turns and hit the ceiling. Turn count is the agent's own path at temperature 1.0, so a single instance proves nothing — but it is the mechanism by which routing could cost a solve and not merely time.</li>
+        <li><b>The two modes ran back to back, not interleaved.</b> <code>tuned</code> ran 15:29–16:33 and <code>direct</code> 16:33–18:33 on a freshly reloaded fleet each time. Anything that drifted over those four hours — thermals, other load on the tailnet — lands on <code>direct</code>. Alternating the order is the check, and has not been run.</li>
+        <li><b>The engines were loaded text-only, and need not have been.</b> Both arms ran <code>-vision off</code>, on the understanding that llama.cpp could not draft a prompt carrying an image and so a model with its projector loaded lost MTP speculation and its 2× decode. Re-tested on 2026-09-24 with the same context and slot count plus the projector, two concurrent image requests succeeded with drafting live throughout — the defect is gone from the builds this fleet runs. Both arms used identical settings, so nothing here is invalidated; the flag simply bought nothing, and the next run drops it.</li>
+        <li><b>Prefill calibration is the one input that leaks between modes.</b> llm-d schedules against a peak-prefill figure ModelFabric measures and saves; it drifted 2000 → 1010 → 1192 → 880 → 628 → 614 tok/s across runs. This pair used 614. Pin <code>SWE_PEAK_PREFILL</code> to compare across days.</li>
+        <li><b>Two cache figures, two denominators.</b> The table's 97.4% / 90.2% come from the agent's own per-call <code>usage</code>. The engines' lifetime counters gave 84.8% for <code>direct</code>, because they also count health probes and reset on reload. The per-call figure is the one to quote; the engine counters are what attribute work per node.</li>
+      </ul>
+    </div>
+    <div class="section">
+      <h2>What this run asks for next</h2>
+      <ul class="list" id="next">
+        <li><span class="status">queued</span> <b>Aider polyglot</b> on the same fleet. These tasks reuse 97% of their prompt, so this benchmark mostly measures prefix affinity. Polyglot's exercises start cold, which tests placement instead. A profile that wins both is better than one that wins here.</li>
+        <li><span class="status">queued</span> <b>Reduced reasoning effort.</b> 98% of the output on these tasks is reasoning. Whether that buys the resolve rate is a separate question this pair does not answer.</li>
+        <li><span class="status">queued</span> <b>Reverse the order.</b> <code>direct</code> first, then <code>tuned</code>, to rule out drift over the four-hour window.</li>
+        <li><span class="status">open</span> <b>Weight a slot by the engine behind it.</b> The room filter treats helion's slot as worth a 5090's, which is why the slow node carries the deepest queue.</li>
+      </ul>
+      <p style="color:var(--text-2)">Every mode reloads all three engines first, so none inherits another's caches — which also means the engines' lifetime counters must be read before the next reload wipes them.</p>
+    </div>
+  </section>
+
+  <p class="foot">Source: mini-swe-agent trajectories under <code>$SWE_WORK/runs/0925e-{tuned,direct}</code>; token counts are the engine-reported <code>usage</code> per call; per-node attribution is from <code>mfsh log -engines -json</code> recorded alongside each run; grades are from <code>SWE-bench/SWE-bench_Verified</code>, test split, first 20 instances, graded by the official harness.</p>
+</main>
+
+<script>
+const DATA = /*DATA*/null;
+
+const fmt = {
+  pct: v => v.toFixed(1) + "%",
+  s: v => v < 10 ? v.toFixed(1) + " s" : Math.round(v) + " s",
+  min: v => Math.round(v) + " min",
+  m: v => (v / 1e6).toFixed(2) + "M",
+  int: v => v.toLocaleString("en-US"),
+};
+
+function el(tag, attrs = {}, text) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// Headline tiles
+// A ratio only when both sides are real numbers and the divisor is not zero:
+// an empty or failed run used to render "Infinity×" or "NaN×" as a finding.
+function ratio(a, b, word) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return "—";
+  return `${(a / b).toFixed(1)}× ${word}`;
+}
+
+// MODES is the running order; the first is the baseline every delta is
+// measured against. A two-mode page renders exactly as the pilot's did.
+const MODES = (DATA && DATA.modes) || [];
+const BASE = (DATA && DATA.base) || MODES[0];
+const cls = m => "m" + Math.min(4, MODES.indexOf(m));
+const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
+
+(function legend() {
+  const root = document.getElementById("legend");
+  if (!root || !MODES.length) return;
+  for (const m of MODES) {
+    const span = el("span");
+    span.append(el("i", { class: "swatch " + cls(m) }), document.createTextNode(m));
+    root.append(span);
+  }
+})();
+
+(function metrics() {
+  // The generator can leave the placeholder in place if it fails part-way.
+  // Rendering nothing beats a page of "Cannot read properties of null".
+  if (!MODES.length || MODES.some(m => !cmp(m))) return;
+  const b = cmp(BASE);
+  const tiles = [
+    { label: "Prompt tokens served from cache", get: r => fmt.pct(r.cache_pct),
+      delta: r => ratio(b.prefilled, r.prefilled, "less prefill") },
+    { label: "Slowest 5% of calls (p95)", get: r => fmt.s(r.p95),
+      delta: r => ratio(b.p95, r.p95, "lower") },
+    { label: "Total time waiting on the model", get: r => fmt.min(r.model_min),
+      delta: r => ratio(b.model_min, r.model_min, "less") },
+    // Resolve rate is never marked as a win. At twenty tasks and temperature
+    // 1.0 the agent's own sampling moves several tasks in both directions at
+    // once, so a gap of one or two carries no signal about routing — the
+    // 2026-09-24 pair scored 17 and 15 while agreeing on only 13. A green
+    // badge here would state the opposite of what the page goes on to say.
+    { label: "Tasks resolved", get: r => `${r.resolved} / ${r.tasks}`, tone: "even",
+      delta: r => (r.resolved === b.resolved ? "identical" : `${Math.abs(r.resolved - b.resolved)} apart, within noise`) },
+  ];
+  const root = document.getElementById("metrics");
+  for (const t of tiles) {
+    const m = el("div", { class: "metric" });
+    m.append(el("span", { class: "label" }, t.label));
+    const pair = el("div", { class: "pair" });
+    for (const mode of MODES) {
+      const row = el("div", { class: "row" });
+      row.append(el("span", { class: "who" }, mode), el("span", { class: "val " + cls(mode) }, t.get(cmp(mode))));
+      pair.append(row);
+    }
+    m.append(pair);
+    // The delta reads against the baseline, so the baseline has none of its
+    // own: "1.0x less than itself" is noise on every tile.
+    const others = MODES.filter(x => x !== BASE);
+    if (others.length === 1) m.append(el("span", { class: "delta " + (t.tone || "good") }, t.delta(cmp(others[0]))));
+    root.append(m);
+  }
+})();
+
+// Latency by percentile.
+//
+// This was a CDF — share of calls under a given latency, log x. On a run where
+// the modes differ only in the tail it is the wrong chart: two near-identical S
+// curves that separate inside the last two percent of their height, which is a
+// few pixels below the 100% gridline. The finding was invisible in the picture
+// that was supposed to show it.
+//
+// Here the percentile is the x axis, stretched by -log10(1-p) so each further
+// nine gets equal width, and latency is a log y. The left edge is the median,
+// where the modes are level or the scheduler is behind; every step right is
+// ten times rarer, and the curves fan apart.
+(function percentiles() {
+  const svg = document.getElementById("cdf");
+  const W = 960, H = 360, L = 62, R = 118, T = 20, B = 48;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+  svg.style.maxWidth = "100%";
+  svg.style.height = "auto";
+  svg.style.minWidth = "560px";
+  const ns = "http://www.w3.org/2000/svg";
+  const add = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; svg.append(e); return e; };
+
+  if (!DATA || !DATA.lat_hist) return;
+  const series = MODES
+    .map(name => ({ name, v: [...(DATA.lat_hist[name] || [])].sort((a, b) => a - b) }))
+    .filter(s => s.v.length > 1);
+  if (!series.length) return;
+
+  // Nearest-rank percentile, zero-based.
+  const at = (v, p) => v[Math.min(v.length - 1, Math.max(0, Math.ceil(v.length * p) - 1))];
+  // The rightmost percentile any series can actually resolve: past this, every
+  // curve is just its own single slowest call and the lines go flat.
+  const pmax = Math.min(...series.map(s => 1 - 0.5 / s.v.length));
+  const tx = p => -Math.log10(1 - p);
+  const t0 = tx(0.5), t1 = tx(pmax);
+  const x = p => L + (tx(p) - t0) / (t1 - t0) * (W - L - R);
+
+  const ymin = 1;
+  const ymax = Math.max(...series.map(s => s.v[s.v.length - 1])) * 1.15;
+  const y = v => T + (1 - (Math.log10(Math.max(v, ymin)) - Math.log10(ymin)) / (Math.log10(ymax) - Math.log10(ymin))) * (H - T - B);
+
+  // Seconds below a minute, minutes above: "1800 s" is a number to convert,
+  // "30 min" is one to feel.
+  const ylab = v => v < 60 ? v + " s" : (v / 60) + " min";
+  for (const v of [1, 3, 10, 30, 60, 300, 600, 1800, 3600].filter(v => v <= ymax)) {
+    add("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid" });
+    add("text", { x: L - 8, y: y(v) + 4, "text-anchor": "end" }, ylab(v));
+  }
+  for (const p of [0.5, 0.75, 0.9, 0.95, 0.99, 0.999].filter(p => p <= pmax)) {
+    add("line", { x1: x(p), x2: x(p), y1: T, y2: H - B, class: "grid" });
+    add("text", { x: x(p), y: H - B + 18, "text-anchor": "middle" },
+      "p" + String(+(p * 100).toFixed(1)).replace(/^0\./, "."));
+  }
+  add("line", { x1: L, x2: W - R, y1: H - B, y2: H - B, class: "axis" });
+  add("text", { x: (L + W - R) / 2, y: H - 6, "text-anchor": "middle" },
+    "percentile of model calls — each step right is 10× rarer");
+
+  // Curves last so they sit over the grid; labels at the right edge, stacked
+  // by where each curve actually ends so two modes cannot collide.
+  const ends = [];
+  for (const { name, v } of series) {
+    const pts = [];
+    for (let i = 0; i <= 160; i++) {
+      const p = 1 - Math.pow(10, -(t0 + (t1 - t0) * i / 160));
+      pts.push(`${i ? "L" : "M"}${x(p).toFixed(1)},${y(at(v, p)).toFixed(1)}`);
+    }
+    add("path", { d: pts.join(""), class: "line-" + cls(name), fill: "none" });
+    const last = at(v, pmax);
+    add("circle", { cx: x(pmax), cy: y(last), r: 4.5, class: "mark-" + cls(name) });
+    ends.push({ name, v: last, yy: y(last) });
+  }
+  ends.sort((a, b) => a.yy - b.yy);
+  ends.forEach((e, i) => {
+    // Nudge apart only if two labels would overlap; otherwise each sits on its
+    // own curve, which is easier to read back.
+    const yy = i && e.yy - ends[i - 1].yy < 15 ? ends[i - 1].yy + 15 : e.yy;
+    ends[i].yy = yy;
+    // Same units as the y axis: a slowest call of "2316 s" is a number to
+    // convert before it means anything, "39 min" is one that already does.
+    add("text", { x: W - R + 8, y: yy + 4, class: "note" },
+      `${e.name} ${e.v < 90 ? Math.round(e.v) + " s" : (e.v / 60).toFixed(e.v < 600 ? 1 : 0) + " min"}`);
+  });
+})();
+
+// Aggregate table
+(function agg() {
+  const t = document.getElementById("agg");
+  if (!MODES.length || MODES.some(m => !cmp(m))) return;
+  const n = (DATA.common || []).length;
+  const cols = MODES.map(m => [`${m}, same ${n}`, cmp(m), m]);
+  // The baseline's own full run last, behind a rule: it is the only column
+  // that is not like-for-like, and the pilot's page put it there too. When no
+  // mode lost a task it is a character-for-character copy of the first column,
+  // which reads as a third run rather than as the same one twice.
+  const allBase = DATA.all && DATA.all[BASE];
+  if (allBase && allBase.tasks !== n) cols.push([`${BASE}, all ${allBase.tasks}`, allBase, null]);
+  const rows = [
+    ["Tasks resolved", r => `${r.resolved} of ${r.tasks}`],
+    ["Patches submitted", r => `${r.submitted} of ${r.tasks}`],
+    ["Model calls", r => fmt.int(r.turns), "turns"],
+    ["Cache hit share", r => fmt.pct(r.cache_pct), "cache_pct", "hi"],
+    ["Prompt tokens", r => fmt.m(r.prompt)],
+    ["Prefilled from scratch", r => fmt.m(r.prefilled), "prefilled", "lo"],
+    ["Output tokens", r => fmt.m(r.out)],
+    ["Call latency p50", r => fmt.s(r.p50), "p50", "lo"],
+    ["Call latency p90", r => fmt.s(r.p90), "p90", "lo"],
+    ["Call latency p95", r => fmt.s(r.p95), "p95", "lo"],
+    ["Call latency p99", r => fmt.s(r.p99), "p99", "lo"],
+    ["Slowest call", r => fmt.s(r.max), "max", "lo"],
+    ["Total model wait", r => fmt.min(r.model_min), "model_min", "lo"],
+  ];
+  const head = el("thead"), hr = el("tr");
+  hr.append(el("th", {}, "Measure"));
+  cols.forEach(([label, , mode], i) => hr.append(
+    el("th", { class: "num" + (mode === null ? " sep" : "") }, label)));
+  head.append(hr); t.append(head);
+  const body = el("tbody");
+  for (const [label, f, key, dir] of rows) {
+    const tr = el("tr");
+    tr.append(el("td", {}, label));
+    // The best value across the like-for-like columns, so with three modes
+    // the winner is marked rather than a pairwise comparison that only ever
+    // knew about two.
+    let best = null;
+    if (key && dir) {
+      for (const m of MODES) {
+        const v = cmp(m)[key];
+        if (!Number.isFinite(v)) continue;
+        if (best === null || (dir === "hi" ? v > best.v : v < best.v)) best = { m, v };
+      }
+    }
+    cols.forEach(([, r, mode]) => {
+      let c = "num" + (mode === null ? " sep" : "");
+      if (best && mode === best.m) c += " better";
+      tr.append(el("td", { class: c }, f(r)));
+    });
+    body.append(tr);
+  }
+  t.append(body);
+})();
+
+// Per-task table
+(function tasks() {
+  const t = document.getElementById("tasks");
+  if (!MODES.length) return;
+  const head = el("thead");
+  const g = el("tr", { class: "group" });
+  g.append(el("th", {}, ""));
+  MODES.forEach((m, i) => g.append(el("th", { colspan: 5, class: cls(m) + (i ? " sep" : "") }, m)));
+  const h = el("tr");
+  h.append(el("th", {}, "Task"));
+  MODES.forEach((m, i) => {
+    for (const [n, c] of [["Result", ""], ["Turns", "num"], ["Peak context", "num"], ["Cache hit", "num"], ["Model time", "num"]])
+      h.append(el("th", { class: (c + (n === "Result" && i ? " sep" : "")).trim() }, n));
+  });
+  head.append(g, h); t.append(head);
+  const body = el("tbody");
+  const result = r => {
+    if (!r) return el("span", { class: "pill to" }, "timed out");
+    if (r.exit !== "Submitted") return el("span", { class: "pill np" }, "no patch");
+    return el("span", { class: "pill " + (r.resolved ? "ok" : "no") }, r.resolved ? "resolved" : "unresolved");
+  };
+  if (!DATA || !Array.isArray(DATA.tasks)) return;
+  for (const row of DATA.tasks) {
+    const by = row.by || {};
+    // A row is struck through only when every mode lost the task; one mode
+    // timing out is the comparison, not a dead row.
+    const tr = el("tr", MODES.some(m => by[m]) ? {} : { class: "timeout" });
+    tr.append(el("td", { class: "mono" }, row.id.replace("astropy__astropy-", "astropy-")));
+    const b = by[BASE];
+    MODES.forEach((m, i) => {
+      const r = by[m], sep = i ? " sep" : "";
+      const res = el("td", { class: sep.trim() }); res.append(result(r)); tr.append(res);
+      // return, not continue: this is a forEach callback, and `continue` here
+      // is a syntax error that takes the whole script down — the page rendered
+      // blank with no console error, because a script that fails to parse
+      // never runs to throw one.
+      if (!r) { for (let k = 0; k < 4; k++) tr.append(el("td", { class: "num" }, "—")); return; }
+      const cache = el("td", { class: "num" }, fmt.pct(r.cache));
+      const time = el("td", { class: "num" }, fmt.min(r.model_s / 60));
+      // Marked against the baseline, so with three modes each is judged on
+      // the same footing instead of against whichever happened to be next.
+      if (b && m !== BASE) {
+        if (r.cache > b.cache + 2) cache.classList.add("better");
+        if (r.model_s < b.model_s * 0.8) time.classList.add("better");
+        if (r.model_s > b.model_s * 1.25) time.classList.add("worse");
+      }
+      tr.append(el("td", { class: "num" }, r.turns), el("td", { class: "num" }, fmt.int(r.maxctx)), cache, time);
+    });
+    body.append(tr);
+  }
+  t.append(body);
+})();
+</script>

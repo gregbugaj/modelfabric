@@ -1,0 +1,173 @@
+---
+title: Load and inference settings
+description: Every engine setting, set at load time, saved per model, or bundled into a preset.
+---
+
+# Load and inference settings
+
+Every engine setting can be given three ways: passed at load, saved as a per-model
+default, or set through the dashboard's ⚙ on **My Models**.
+
+```bash
+mfsh load qwen/qwen3.8-27b -context 32768 -cache-k q8_0 -cache-v q8_0 -spec mtp -draft-max 4
+mfsh defaults qwen/qwen3.8-27b -offload-ratio 1 -temp 0.6 -thinking off   # every later load
+mfsh defaults qwen/qwen3.8-27b -unset temp
+mfsh defaults qwen/qwen3.8-27b -clear
+mfsh load -h                                   # the current full list
+```
+
+## The settings
+
+| area | flags |
+|---|---|
+| context & GPU | `-context`, `-parallel`, `-gpu-layers` or `-offload-ratio`, `-flash-attention` |
+| speculative decoding | `-spec auto\|mtp\|draft\|off`, `-draft-model`, `-draft-max`, `-draft-min`, `-draft-p-min`, `-draft-gpu-layers` |
+| batching & KV | `-batch`, `-ubatch`, `-cache-k`, `-cache-v`, `-kv-unified`, `-kv-offload`, `-cache-reuse`, `-ctx-checkpoints`, `-cache-ram` |
+| memory & MoE | `-keep-in-memory` (mlock), `-mmap`, `-n-cpu-moe` or `-cpu-moe-ratio` |
+| model & threads | `-rope-base`, `-rope-scale`, `-threads`, `-threads-batch`, `-seed` |
+| sampling defaults | `-temp`, `-top-k`, `-top-p`, `-min-p`, `-repeat-penalty`, `-presence-penalty`, `-frequency-penalty`, `-thinking` |
+| lifecycle | `-replicas`, `-ttl` |
+| anything else | `-arg <flag>`, repeatable |
+
+`-arg` passes a flag straight through to the engine, which covers anything ModelFabric doesn't have a
+name for. The exceptions are the flags ModelFabric manages itself (host, port, model, alias, API key).
+Passing one fails with an error instead of silently overriding it, since changing them would break
+routing and ownership tracking.
+
+## What to set
+
+These are the flags most people change, and what to set them to.
+
+| setting | default | what it does | where to start |
+|---|---|---|---|
+| `-context` | 8192 | how much conversation the model can see, **per request** | As much as you need and no more. The KV pool is `context × parallel`, so doubling this doubles the memory. 32768 is comfortable for agent work on a 24&nbsp;GB card. |
+| `-parallel` | 4 | how many requests the engine serves at once | Match the concurrency that engine will see. [Prefix affinity](/docs/routing/replicas) concentrates traffic, so size for the busy engine, not the average. |
+| `-gpu-layers` / `-offload-ratio` | 99 / none | how much of the model runs on the GPU | Start with everything on the GPU. Drop it only when a load fails for memory: each layer you move to the CPU costs speed. `-offload-ratio 0.8` is easier to reason about than counting layers. |
+| `-flash-attention` | on | a faster attention kernel | Leave it on. Turn it off only if a model misbehaves and you're bisecting why. |
+| `-cache-k` / `-cache-v` | `f16` | how the KV cache is stored | `q8_0` roughly halves KV memory for a small quality cost, which is often the cheapest way to fit a longer context. Go below `q8_0` only if you've measured the damage. |
+| `-temp` | the model's own | creative vs. predictable | Leave it unset: `model.yaml` carries what the publisher tested. Override only for a specific job: 0.2–0.3 for code and extraction, 0.7–1.0 for prose. |
+| `-spec` | `auto` | speculative decoding | `auto` is right. MTP turns on for models that ship a draft head, including vision models (see below). A separate `-draft-model` only pays when it's much smaller than the target. |
+| `-replicas` | 1 | copies of the model on this node | 1 unless you're serving several concurrent conversations on one machine and have the VRAM. See [Replicas](/docs/routing/replicas). |
+| `-ttl` | none | unload after this long idle | Leave unset for models you want resident. `30m` is reasonable for something you use occasionally. |
+
+### Vision defaults and speculative decoding
+
+`auto` uses the model's MTP head when present, including when its image projector is loaded.
+Otherwise it can use a configured draft model. Use `-spec off` to disable drafting explicitly,
+including with an older engine build that cannot draft image prompts reliably.
+
+A separate `-draft-model` is verified and pinned like the main model.
+
+Vision loads default to one slot and 32768 tokens of context per request. Image prompts need
+more KV space than short text prompts, and each extra slot increases the total KV allocation.
+You can edit the node's vision defaults or override them for a load with `-parallel` and `-context`.
+Speculation is independent of that slot policy.
+
+<Callout type="info">
+  If you only change one thing, make it `-context`. It's the setting most likely to be wrong by an
+  order of magnitude in either direction, and both directions hurt: too small and long
+  conversations fail, too large and you've spent VRAM you needed for another model.
+</Callout>
+
+## Ratios become layer counts
+
+`-offload-ratio` and `-cpu-moe-ratio` are worked out from the
+model's own header, so `-offload-ratio 1` means "all of this model's layers" and you don't have to
+look up a number.
+
+## `context_length` is per request
+
+The engine sizes its KV pool as `context_length × parallel`, so every concurrent request can use
+the full length instead of sharing it.
+
+Keep this in mind with [prefix affinity](/docs/routing/replicas), which concentrates same-prefix traffic on one engine. That engine ends up seeing more concurrency than a
+naive split would suggest, and an undersized pool fails those requests with *"context size has
+been exceeded"*. Size `parallel` for the machine, not for the average.
+
+## Which setting wins
+
+Lowest to highest:
+
+<Steps>
+
+### The runtime's defaults
+
+### The model's `model.yaml`
+
+The publisher's sampling defaults and template variables. See
+[The model catalog](/docs/models#what-the-publisher-gets-to-decide).
+
+### Its default preset
+
+### Its saved defaults
+
+`mfsh defaults <model> …`
+
+### A preset named at load
+
+`mfsh load … -preset focused`
+
+### Flags given at load
+
+</Steps>
+
+Changing defaults takes effect on the *next* load, so the dashboard offers *Save & reload* and you
+don't have to unload and load by hand.
+
+A request's own sampling fields beat all of it, since they arrive after the engine is already
+running.
+
+## Presets
+
+Presets are named **inference** settings, not load settings. We want a preset to work on any
+machine, and how many layers fit on a given GPU doesn't carry over.
+
+```bash
+mfsh preset save focused -temp 0.3 -top-p 0.9 -description "for code"
+mfsh preset ls
+mfsh preset rm focused
+mfsh load qwen/qwen3.8-27b -preset focused
+mfsh defaults qwen/qwen3.8-27b -preset focused        # "none" to clear
+mfsh preset import ~/Downloads/creative.preset.json   # -name to rename
+```
+
+Preset files from other tools import directly. Anything a server can't apply, such as a system
+prompt (which belongs to the request, not the engine), gets **listed as skipped** so you know what
+didn't come across.
+
+In the dashboard, presets are at the top of a model's **Inference** tab, next to the settings they
+carry, with *Manage…* for the library.
+
+## When the machine can't do what you asked
+
+Some settings can't be honoured on a machine without the memory for them. ModelFabric adjusts them
+instead of failing the load.
+
+**`-keep-in-memory` (mlock)** gets dropped when the model is bigger than available memory, or when
+the process's memlock limit is too low. The fallback is `mmap`, not no mapping at all. The lock
+was dropped *because memory is tight*, and reading the whole model into anonymous memory on that
+same machine would be strictly worse than letting the kernel page it.
+
+**`-cache-ram`** defaults to 8192&nbsp;MiB, or an eighth of host RAM, whichever is smaller.
+It is lost when the engine stops. The [disk prompt cache](/docs/routing/disk-cache) is the tier
+that survives an unload.
+
+Any adjustment shows up in the effective load config, so `mfsh ps` and `mfsh load`'s echo show
+what the engine ran with, not what you asked for.
+
+<Cards>
+  <Card title="Replicas and prefix affinity" href="/docs/routing/replicas">
+    Why `parallel` and `context_length` interact with routing.
+  </Card>
+  <Card title="llama.cpp" href="/docs/engines">
+    Which llama.cpp build a load uses, and how to pin one.
+  </Card>
+</Cards>
+
+## Default output limits
+
+The router and engine shim apply the same default output-limit rule. An explicit `max_tokens`,
+`max_completion_tokens` or `n_predict` is preserved; a null limit is treated as absent.
+Non-object or malformed JSON is passed through for the engine to reject. Setting the configured
+output ceiling to zero disables this default. The shim inspects known-length bodies up to 8 MiB;
+ModelFabric's router can inspect bodies up to its 256 MiB request limit.

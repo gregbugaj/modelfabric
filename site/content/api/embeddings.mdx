@@ -1,0 +1,82 @@
+---
+title: Embeddings
+description: Turn text into vectors with an embedding model, one string or a batch at a time.
+---
+
+# Embeddings
+
+Turn text into vectors, for search, clustering and retrieval.
+
+- Method: `POST /v1/embeddings`
+- Needs an embedding model. A chat model cannot serve this endpoint.
+- OpenAI's reference: https://platform.openai.com/docs/api-reference/embeddings
+
+## Get an embedding model
+
+```bash
+mfsh get -repo nomic-ai/nomic-embed-text-v1.5-GGUF   # 80 MB
+mfsh ls                                              # it is listed under EMBEDDING
+mfsh load nomic-ai/nomic-embed-text-v1.5-GGUF
+```
+
+ModelFabric reads the model file to tell what kind it is, and starts an embedding model in
+llama.cpp's embeddings mode.
+
+## Example
+
+```bash
+curl http://localhost:1234/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M",
+    "input": "The quick brown fox"
+  }'
+```
+
+```json
+{
+  "object": "list",
+  "model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M",
+  "data": [{ "object": "embedding", "index": 0, "embedding": [0.0123, -0.0456, "..."] }],
+  "usage": { "prompt_tokens": 6, "total_tokens": 6 }
+}
+```
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="modelfabric")
+
+result = client.embeddings.create(
+  model="nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M",
+  input=["a cat", "a kitten"],
+)
+
+print(len(result.data), len(result.data[0].embedding))   # 2 768
+```
+
+`input` is one string or a list of them. A list comes back as one vector each, in the same order.
+
+## Supported payload parameters
+
+```text
+model
+input
+encoding_format
+```
+
+`encoding_format` is `float` (the default) or `base64`. The Python SDK asks for `base64` on its
+own and decodes it for you.
+
+## Limits and errors
+
+- **Input length.** One input has to fit the model's context, which is what the model was trained
+  for: 2048 tokens for the model above, 512 for many others. A longer input is refused by the
+  engine with `input is too large to process`. Split long text into chunks first. `mfsh load
+  -context <n>` changes the limit, up to what the model supports.
+- **The wrong kind of model.** Asking a chat model to embed, or an embedding model to chat, is
+  answered `400` with a message naming the model and what it can serve.
+- **Engine.** Embeddings are served by llama.cpp engines. An MLX model does not serve this
+  endpoint.
+
+An embedding model is routed like any other: load it on one node and every node in the mesh can
+call it.

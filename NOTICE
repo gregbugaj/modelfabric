@@ -1,0 +1,15 @@
+ModelFabric
+Copyright 2026 Greg Bugaj
+
+This product includes software developed by Greg Bugaj
+(https://github.com/gregbugaj).
+
+ModelFabric supervises and distributes binaries from other projects, each under its
+own licence. It does not vendor their source:
+
+  - llama.cpp (MIT) — engine builds fetched from upstream releases at runtime,
+    verified against the published SHA-256. https://github.com/ggml-org/llama.cpp
+  - mlx-lm (MIT) — installed into a managed virtual environment on macOS.
+    https://github.com/ml-explore/mlx-lm
+  - llm-d / Envoy (Apache-2.0) — optional scheduler, installed on request.
+    https://github.com/llm-d/llm-d https://github.com/envoyproxy/envoy

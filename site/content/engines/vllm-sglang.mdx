@@ -1,0 +1,104 @@
+---
+title: vLLM and SGLang
+description: Putting a vLLM or SGLang server into the mesh. ModelFabric routes to it but doesn't supervise it.
+---
+
+# vLLM and SGLang
+
+ModelFabric supervises [llama.cpp](/docs/engines) and [MLX](/docs/engines/mlx). It does **not** start,
+stop or install vLLM or SGLang, but it routes to either, and to anything else that speaks the
+OpenAI API.
+
+You run the server; ModelFabric puts it in the mesh.
+
+## Adding one
+
+Start the engine however you normally would:
+
+```bash
+# vLLM
+vllm serve Qwen/Qwen3-8B --host 127.0.0.1 --port 8000
+
+# SGLang
+python -m sglang.launch_server --model-path Qwen/Qwen3-8B --host 127.0.0.1 --port 8001
+```
+
+Then tell ModelFabric where it is:
+
+```json filename="config.json"
+{
+  "engines": [
+    { "name": "vllm-gpu0",   "base_url": "http://127.0.0.1:8000" },
+    { "name": "sglang-gpu1", "base_url": "http://127.0.0.1:8001" }
+  ]
+}
+```
+
+ModelFabric calls `/v1/models` on each one, so you never list models by hand. Whatever the engine
+reports joins the mesh's union and becomes callable from **every** node: the same `localhost:1234`
+on any machine, forwarded over the tailnet. A fronted engine is one more candidate the router can
+pick.
+
+## What you get, and what you don't
+
+| | supervised (llama.cpp, MLX) | fronted (vLLM, SGLang) |
+|---|---|---|
+| Started and stopped by ModelFabric | yes | no, it's your process |
+| `mfsh load` / `mfsh unload` | yes | no |
+| Appears in `mfsh ps` | yes, with an instance id | it's an engine, not an instance |
+| In `/v1/models` across the mesh | yes | yes |
+| Routable from every node | yes | yes |
+| Scored by outstanding requests | yes | yes |
+| Model list | the node's catalog | whatever its `/v1/models` says |
+| [Integrity pinning](/docs/models/integrity) | yes | no, ModelFabric didn't choose the weights |
+| Restarted on crash | yes, with backoff | no |
+| Load settings from `mfsh load -…` | yes | no, set them on your own command line |
+
+Both kinds can run on the same node. A reasonable setup is llama.cpp under ModelFabric's control for
+the models you swap around, and a long-lived vLLM beside it for the one you always want resident.
+
+## One thing they do better
+
+vLLM and SGLang both export a **KV-cache utilisation metric** on `/metrics`. llama.cpp doesn't,
+which is why ModelFabric has to compute it from `/slots` and run a small shim beside each llama.cpp engine
+to publish it for [llm-d](/docs/routing/llm-d#kv-cache-utilization).
+
+For vLLM and SGLang there's no shim. Name the metric in the engine's runtime traits and llm-d
+scrapes it directly.
+
+## Health, and disappearing
+
+Fronted engines are re-checked on the same interval as everything else: `poll_interval`, two
+seconds by default, bounded by `probe_timeout`. One that stops answering drops out of the candidate
+set, and its models leave the mesh's union if nothing else serves them.
+
+Mid-request, the usual rule applies: before any bytes reach the client, ModelFabric moves on to the
+next candidate; once the response is streaming, the failure is returned to the client and not
+retried. See
+[How routing works](/docs/routing).
+
+## Keep them on loopback
+
+Neither vLLM nor SGLang has authentication worth relying on, and llama.cpp has none at all. Bind
+them to loopback and let ModelFabric be the thing that listens.
+
+<Callout type="warning">
+  `--host 0.0.0.0` puts an unauthenticated inference server on your LAN. If something off-box
+  needs to dial an engine (usually [llm-d's EPP](/docs/routing/llm-d#reachability)), bind the
+  node's **tailnet** address and let tailnet ACLs stand in front of it.
+</Callout>
+
+## A node that only fronts
+
+Leave `models_root` unset and ModelFabric supervises nothing. It exposes the engines you listed and
+routes to the rest of the mesh. Use this when another tool owns the GPU and you want its models
+reachable from everywhere.
+
+<Cards>
+  <Card title="How routing works" href="/docs/routing">
+    How a fronted engine competes with a supervised one for a request.
+  </Card>
+  <Card title="Security" href="/docs/operations/security">
+    Which listener exposes what, and why `engine_bind` is the sharp edge.
+  </Card>
+</Cards>

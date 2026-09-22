@@ -1,0 +1,195 @@
+---
+title: CLI
+description: Every mfsh command, and the full set of load and inference flags.
+---
+
+# CLI reference
+
+```
+ModelFabric — a peer-to-peer model mesh over Tailscale
+```
+
+Commands that need a node **will start one automatically**, so you rarely need to type `mfsh up`.
+Every command takes `-addr` to talk to a node other than `http://127.0.0.1:1234`, and `-h` for its own
+flags.
+
+## Models on disk
+
+| command | |
+|---|---|
+| `mfsh get <user/repo>[@quant]` | download a GGUF model from Hugging Face or by hub id |
+| `mfsh get <model> -from <node>` | copy a model another node has, over the tailnet ([details](/docs/models/downloading#from-another-node)) |
+| `mfsh import <file.gguf>` | adopt a GGUF already on disk (`-as user/repo`) |
+| `mfsh ls` | models available to load on this node |
+| `mfsh ps` | models currently loaded in memory |
+| `mfsh load [model]` | load a model; prompts if not named. `-format gguf\|mlx` picks between [variants](/docs/models#one-model-two-formats); `-vision off` loads a multimodal model text-only. |
+| `mfsh chat` | talk to a loaded model in the terminal: `-model`, `-system`, and `-reasoning` to show its thinking |
+| `mfsh version` | print the build |
+| `mfsh defaults <model>` | a model's saved settings, applied on every load |
+| `mfsh preset [ls\|save\|rm\|import]` | named inference settings; imports preset files |
+| `mfsh unload [instance-id]` | unload one instance, or `-all`; prompts if not named |
+| `mfsh repin <model>` | accept changed model files as the new pinned state |
+| `mfsh recover -clear <model>` | settle an unresolved launch window after a crash |
+
+`mfsh get` takes `-repo` (never treat the argument as a hub id), `-y` (do not ask), `-from <node>`
+(copy from a mesh node instead of Hugging Face) and, with `-from`, `-format gguf|mlx`.
+
+## Mesh
+
+| command | |
+|---|---|
+| `mfsh status` | nodes in the mesh and what they serve |
+| `mfsh models` | every model in the mesh, and who holds it |
+| `mfsh ops` | recent load/unload operations |
+| `mfsh log` | stream routed requests; bodies only while capture is on |
+| `mfsh log -tokens` | follow replies as they are generated, this node only (`-text` prints them) |
+| `mfsh log -engines` | every engine in the mesh: prefill and decode rates, slots, cache (`-json` to record) |
+| `mfsh log engine [instance]` | an engine's own output (`-f`, `-n N`) |
+| `mfsh endpoints` | mesh model servers in llm-d file-discovery format |
+| `mfsh prefer [node]` | prefer a node when several hold the same model (`-none` to clear) |
+| `mfsh llmd init` | write EPP + Envoy configs to put llm-d in front |
+| `mfsh llmd install \| enable \| disable \| status \| profiles` | run llm-d for a model |
+
+### llmd enable flags
+
+| flag | default | |
+|---|---|---|
+| `-profile` | `load-aware` | scheduling profile (`mfsh llmd profiles`) |
+| `-room-filter` | `true` | never pick an engine with no free slot while another has room (Alpha plugin) |
+| `-prefix-cache` | `true` | with `-profile load-aware`: score engines by prefix-cache locality |
+| `-kv-ceiling` | off | skip engines whose KV cache is fuller than this share (0..1) |
+| `-kv-scorer` | off | weight for llm-d's `kv-cache-utilization-scorer` |
+
+See [llm-d](/docs/routing/llm-d) for what the KV options mean on llama.cpp.
+
+## Runtime
+
+| command | |
+|---|---|
+| `mfsh runtime ls` | inference engines this node can launch |
+| `mfsh runtime survey` | hardware, and which runtimes can use it |
+| `mfsh runtime select [name]` | choose the default runtime |
+| `mfsh runtime get` | install an upstream llama.cpp build (`-build b11040`, `-cuda 12.8`, `-y`) |
+| `mfsh runtime update` | newest build of each installed variant; old ones kept |
+| `mfsh runtime remove <name>` | ModelFabric's own builds only; fails on one in use |
+
+## Node
+
+| command | |
+|---|---|
+| `mfsh serve` | run in the foreground (`-config FILE`, `-listen ADDR`, `-port N`, `-node NAME`, `-v`) |
+| `mfsh up` | start the node in the background (`-port N`, `-listen ADDR`, `-config FILE`, `-v`) |
+| `mfsh down` | stop the background node; unloads models first |
+| `mfsh doctor` | check everything ModelFabric depends on, with fixes (`-json`) |
+| `mfsh key` | print this node's API key ([API keys](/docs/api/api-keys)); run it on the node that owns it, as the user it runs as |
+| `mfsh key rotate` | replace the node key: apps holding the old one are refused, named tokens keep working |
+| `mfsh key create <name>` | a named token for one app, printed once; `mfsh key ls` lists, `mfsh key rm <name>` revokes ([named tokens](/docs/api/api-keys#named-tokens)) |
+| `mfsh bench` | the standard benchmark: 1K-32K prompts, then 2, 4 and 8 at once; `-node`, `-fleet`, `-quick`, `-prompts code`; `-cluster` measures the whole cluster through the front door, with `-concurrency` and `-load-pp` ([benchmarking](/docs/benchmark/node)) |
+| `mfsh tune` | measure how many slots this machine should serve; `-fleet` for every node ([tuning](/docs/benchmark/tuning)) |
+| `mfsh service install` | run as a systemd service, headless (`-enable`) |
+
+### Changing the port
+
+`-port 3000` moves the local API and dashboard, as `lms server start --port` does. Only the port
+changes: the bind address stays whatever `listen` says, so a loopback node stays loopback. Use
+`-listen ADDR` to change both. To make it permanent, set `listen` in the
+[config](/docs/reference/config) instead; a flag applies to that run only.
+
+The other commands follow the node, however it was started: a running node records the address it
+holds in `listen.json` in the state directory, and removes it when it stops. Without a live record
+they use the config's `listen`; `MFSH_ADDR` overrides both. The flag is never written into the
+config.
+
+`-port` does not move `mesh_port`, the port peers find each other on. Every node has to agree on
+that one, so it is a config setting only.
+
+## Load and inference flags
+
+These apply to `mfsh load`, `mfsh defaults` and `mfsh preset save` alike, with the same names in all
+three places. `mfsh load -h` prints the current list.
+
+### Context and GPU
+
+| flag | |
+|---|---|
+| `-context` | context length **per request**; the KV pool is `context × parallel` |
+| `-parallel` | concurrent slots |
+| `-gpu-layers` | layers to offload to the GPU |
+| `-offload-ratio` | fraction of layers on the GPU, 0..1 |
+| `-flash-attention` | `on\|off` |
+
+### Speculative decoding
+
+| flag | |
+|---|---|
+| `-spec` | `auto\|mtp\|draft\|off` |
+| `-draft-model` | draft model for speculative decoding (a model key) |
+| `-draft-max`, `-draft-min` | tokens drafted per step |
+| `-draft-p-min` | min draft probability to keep drafting, 0..1 |
+| `-draft-gpu-layers` | draft model layers on the GPU |
+
+### Batching and KV
+
+| flag | |
+|---|---|
+| `-batch` | logical batch size |
+| `-ubatch` | physical batch size |
+| `-cache-k`, `-cache-v` | K/V cache type: `f16\|q8_0\|q4_0\|…` |
+| `-kv-unified` | one KV pool shared by all slots, `on\|off` |
+| `-kv-offload` | KV cache on the GPU, `on\|off` |
+| `-cache-reuse` | min chunk to reuse from the cache by shifting |
+| `-ctx-checkpoints` | context checkpoints per slot |
+| `-cache-ram` | host-RAM prompt cache in MiB, 0 off (default: 8192 or 1/8 of RAM, whichever is less) |
+
+### Memory and MoE
+
+| flag | |
+|---|---|
+| `-keep-in-memory` | lock the model in RAM (mlock), `on\|off` |
+| `-mmap` | memory-map the model, `on\|off` |
+| `-n-cpu-moe` | keep the experts of the first N layers on the CPU |
+| `-cpu-moe-ratio` | fraction of layers whose experts stay on the CPU, 0..1 |
+
+### Model and threads
+
+`-rope-base`, `-rope-scale`, `-threads`, `-threads-batch`, `-seed`
+
+### Inference defaults
+
+`-temp`, `-top-k`, `-top-p`, `-min-p`, `-repeat-penalty`, `-presence-penalty`,
+`-frequency-penalty`, `-thinking`
+
+### Lifecycle
+
+| flag | |
+|---|---|
+| `-replicas N` | ensure this many instances of the model on this node (default 1) |
+| `-ttl` | unload after this long idle: a duration (`30m`), or a plain number of seconds |
+| `-preset` | apply a saved preset's inference settings |
+
+### Anything else
+
+```bash
+mfsh load <model> -arg --some-llama-flag -arg value
+```
+
+`-arg` is repeatable and passes flags straight through. Flags ModelFabric manages (host, port, model,
+alias, API key) are **rejected**, because overriding them would break routing and ownership tracking.
+
+## Environment
+
+| variable | |
+|---|---|
+| `MFSH_STATE_DIR` | override the state directory |
+| `MFSH_LOG_DIR` | override the log directory |
+| `NO_COLOR` | disable coloured table output |
+| `CLICOLOR_FORCE` | re-enable colour when stdout is not a terminal (for `less -R`) |
+
+<Cards>
+  <Card title="config.json" href="/docs/reference/config">
+    Every configuration key and its default.
+  </Card>
+  <Card title="Load and inference settings" href="/docs/models/settings">
+    What these flags mean, and the precedence between them.
+  </Card>
+</Cards>

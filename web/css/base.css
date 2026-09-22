@@ -1,0 +1,174 @@
+/* ModelFabric dashboard — follows the m3-desktop token idiom:
+   HSL component tokens on :root, semantic aliases derived from them, and a
+   dark theme via both an explicit [data-theme] and the OS preference. */
+
+:root {
+  color-scheme: light;
+
+  --surface-0: 220 16% 98%;
+  --surface-1: 0 0% 100%;
+  --surface-2: 220 13% 95%;
+  --surface-inset: 220 14% 96%;
+
+  --text-primary: 224 71% 4%;
+  --text-secondary: 215 20% 45%;
+  --text-muted-token: 215 14% 60%;
+
+  /* A product blue, the colour a console uses for "do the thing" — not the
+     violet every generated dashboard ships with. */
+  --brand-primary: 215 100% 50%;
+  --brand-primary-hover: 216 100% 43%;
+  --brand-primary-muted: 215 100% 96%;
+
+  --border-default: 220 20% 20% / 0.12;
+  --border-subtle: 220 20% 20% / 0.07;
+
+  --success-token: 142 71% 45%;
+  --success-subtle: 142 76% 96%;
+  --success-text: 142 71% 29%;
+  --warning-token: 38 92% 50%;
+  /* The amber above is a fill colour. As *text* on a pale fill it is about
+     2.3:1, so warnings that are a sentence rather than a chip use this darker
+     one; the dark theme lightens it instead. */
+  --warning-text: 32 88% 32%;
+  --error-token: 0 84% 60%;
+  --error-subtle: 0 86% 97%;
+  --error-text: 0 74% 42%;
+
+  --product-rail-bg: 222 16% 18%;
+  --product-rail-fg: 220 35% 94%;
+  --product-rail-muted: 218 18% 70%;
+  --product-rail-hover: 0 0% 100% / 0.08;
+  --product-rail-active: 0 0% 100% / 0.14;
+
+  --app-bg: hsl(var(--surface-0));
+  --surface: hsl(var(--surface-1));
+  --surface-muted: hsl(var(--surface-2));
+  --sidebar: hsl(var(--product-rail-bg));
+  --text: hsl(var(--text-primary));
+  --text-2: hsl(var(--text-secondary));
+  --text-muted: hsl(var(--text-muted-token));
+  --border: hsl(var(--border-default));
+  --border-soft: hsl(var(--border-subtle));
+  --border-strong: hsl(var(--text-muted-token) / 0.55);
+  --primary: hsl(var(--brand-primary));
+  --primary-soft: hsl(var(--brand-primary-muted));
+
+  --radius: var(--r-md);
+  /* Three radii, by what a thing is: a control, a surface, or an overlay.
+     Bars and meters keep their own 2-3px, which is a shape, not a container.
+     Pills (999px) are only for status and filters, circles only for dots. */
+  /* The mono stack was written out five times and referenced as var(--mono)
+     four more, where it was undefined — so those declarations were dropped and
+     the text rendered in the body face. */
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --r-sm: 4px;   /* buttons, inputs, tags, badges */
+  --r-md: 6px;   /* rows, cards, panels */
+  --r-lg: 10px;  /* dialogs, popovers, the tailnet boundary */
+  /* One overlay elevation, and one selection ring. In-page surfaces are
+     separated by their border and background, not by floating. */
+  --shadow-overlay: 0 16px 48px hsl(220 25% 12% / 0.22);
+  /* A dialog's own surface and the scrim behind it. Light theme separates a
+     dialog from the page by being brighter than it; dark theme cannot, since
+     everything is already dark and a dark shadow on a dark page is invisible.
+     Both are tokens so every dialog is lifted the same way. */
+  --overlay-bg: var(--surface);
+  --overlay-scrim: hsl(220 20% 10% / 0.45);
+  --ring: 0 0 0 3px var(--primary-soft);
+  --shadow: 0 1px 2px hsl(220 20% 20% / 0.06), 0 1px 3px hsl(220 20% 20% / 0.04);
+  /* A segment's selected state, and the flyout's edge. Light theme lifts both
+     with a shadow; dark theme has no shadow, so they need a fill and a ring. */
+  --seg-active-bg: hsl(var(--surface-1));
+  --seg-active-shadow: 0 1px 2px hsl(220 20% 20% / 0.06), 0 1px 3px hsl(220 20% 20% / 0.04);
+  --side-shadow: -14px 0 40px hsl(220 40% 12% / 0.18);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: 224 20% 9%;
+  --surface-1: 224 18% 12%;
+  --surface-2: 223 17% 16%;
+  --surface-inset: 224 18% 11%;
+  --text-primary: 220 30% 96%;
+  --text-secondary: 218 15% 70%;
+  --text-muted-token: 218 12% 55%;
+  --brand-primary: 213 100% 62%;
+  --brand-primary-hover: 213 100% 70%;
+  --brand-primary-muted: 215 55% 22%;
+  /* Badge text on a dark surface: the light-theme browns and blues turned the
+     glyph dark-on-dark inside the quantization picker. */
+  --cap-vision-fg: hsl(38 95% 66%);
+  --cap-tool-fg: hsl(213 95% 72%);
+  --cap-reasoning-fg: hsl(142 60% 62%);
+
+  --border-default: 220 30% 80% / 0.14;
+  --border-subtle: 220 30% 80% / 0.08;
+  --success-subtle: 142 40% 16%;
+  --success-text: 142 60% 72%;
+  --error-subtle: 0 45% 18%;
+  --error-text: 0 80% 78%;
+  --product-rail-bg: 224 22% 7%;
+  --shadow: none;
+  --seg-active-bg: hsl(var(--surface-2));
+  --seg-active-shadow: inset 0 0 0 1px hsl(220 14% 32%);
+  --side-shadow: -1px 0 0 hsl(220 14% 30%), -22px 0 60px hsl(224 45% 2% / 0.62);
+  /* Dialogs in the dark: a step lighter than the page rather than the same
+     tone, a hairline ring in place of the shadow that cannot show, and a
+     scrim deep enough that the page reads as behind rather than beside. */
+  --overlay-bg: hsl(var(--surface-2));
+  --overlay-scrim: hsl(224 45% 2% / 0.72);
+  --warning-text: 38 92% 66%;
+  --shadow-overlay: 0 0 0 1px hsl(220 14% 32%), 0 28px 80px hsl(224 45% 1% / 0.75);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --surface-0: 224 20% 9%;
+    --surface-1: 224 18% 12%;
+    --surface-2: 223 17% 16%;
+    --surface-inset: 224 18% 11%;
+    --text-primary: 220 30% 96%;
+    --text-secondary: 218 15% 70%;
+    --text-muted-token: 218 12% 55%;
+    --brand-primary: 213 100% 62%;
+    --brand-primary-hover: 213 100% 70%;
+    --brand-primary-muted: 215 55% 22%;
+    --cap-vision-fg: hsl(38 95% 66%);
+    --cap-tool-fg: hsl(213 95% 72%);
+    --cap-reasoning-fg: hsl(142 60% 62%);
+    --border-default: 220 30% 80% / 0.14;
+    --border-subtle: 220 30% 80% / 0.08;
+    --success-subtle: 142 40% 16%;
+    --success-text: 142 60% 72%;
+    --error-subtle: 0 45% 18%;
+    --error-text: 0 80% 78%;
+    --product-rail-bg: 224 22% 7%;
+    --shadow: none;
+    --seg-active-bg: hsl(var(--surface-2));
+    --seg-active-shadow: inset 0 0 0 1px hsl(220 14% 32%);
+    --side-shadow: -1px 0 0 hsl(220 14% 30%), -22px 0 60px hsl(224 45% 2% / 0.62);
+  /* Dialogs in the dark: a step lighter than the page rather than the same
+     tone, a hairline ring in place of the shadow that cannot show, and a
+     scrim deep enough that the page reads as behind rather than beside. */
+  --overlay-bg: hsl(var(--surface-2));
+  --overlay-scrim: hsl(224 45% 2% / 0.72);
+  --warning-text: 38 92% 66%;
+  --shadow-overlay: 0 0 0 1px hsl(220 14% 32%), 0 28px 80px hsl(224 45% 1% / 0.75);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--app-bg);
+  color: var(--text);
+  font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }

@@ -1,0 +1,37 @@
+---
+title: Benchmarks and tuning
+description: Four ways to measure a mesh, what question each one answers, and where to run it.
+---
+
+# Benchmarks and tuning
+
+| The question | The tool | Where | Takes |
+|---|---|---|---|
+| How fast is this model on this machine? | [Node benchmark](/docs/benchmark/node) | Benchmark page, or `mfsh bench` | minutes |
+| How many requests should each machine serve at once? | [Tune slots](/docs/benchmark/tuning) | Benchmark page, or `mfsh tune` | minutes per node |
+| How much does the whole setup serve, and who does the work? | [Cluster benchmark](/docs/benchmark/cluster) | Benchmark page, or `mfsh bench -cluster` | about a minute and up |
+| Which routing method is better on real agent work? | [Agent and chat benchmarks](#agent-and-chat-benchmarks) | the repository's `bench/` scripts | an hour or more per mode |
+
+The first three are on the dashboard's **Benchmark** page, one tab each, and every one of them
+records the command that repeats the run.
+
+Run them in that order: benchmark each node, tune its slots, then benchmark the cluster.
+`mfsh bench -fleet` does every node in turn. On this project's fleet the tuned slot counts are 4, 2
+and 1.
+
+## Agent and chat benchmarks
+
+Two longer benchmarks drive the cluster with real workloads and compare routing methods:
+[SWE-bench Verified](/docs/benchmark/swe-routing) tasks through a coding agent (long conversations, heavy prompt
+reuse), and Aider's polyglot exercises (short tasks at a high request rate). They need Python, a
+container and an hour or more per mode, so they run from the repository:
+
+```bash
+bench/swe/setup.sh   && bench/swe/sequence.sh   <run> router tuned
+bench/aider/setup.sh && bench/aider/sequence.sh <run> router tuned
+```
+
+Set `SWE_ENTRYPOINT`, `SWE_AGENT_BASE` and `SWE_CONTROL_ADDR` first. `bench/swe/README.md` and
+`bench/aider/README.md` in the repository have the details.
+
+The first SWE-bench run is written up as [SWE routing results](/docs/benchmark/swe-routing).

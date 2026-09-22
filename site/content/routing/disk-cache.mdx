@@ -1,0 +1,117 @@
+---
+title: Disk prompt cache
+description: Keep a conversation's KV cache on disk when its slot is taken, and bring it back when the conversation returns.
+---
+
+# Disk prompt cache
+
+An engine keeps each conversation's KV cache in a slot, and it has only a few. When another
+conversation takes the slot, the first one's cache is gone, and its next turn re-reads the whole
+prompt. With a coding agent that prompt is tens of thousands of tokens.
+
+The disk cache saves the slot to a file before it is lost, and restores it when the conversation
+comes back.
+
+```json filename="config.json"
+{ "cache_disk_mib": 51200 }
+```
+
+That turns it on with a 50 GiB cap. It is off by default, for the reason under
+[What ends up on disk](#what-ends-up-on-disk). Models already loaded keep running without it; it
+applies from the next load.
+
+## What it saves you
+
+Measured on Qwen3-0.6B on the CPU, one slot, two conversations of about 6,000 tokens taking turns:
+
+| | tokens read | time |
+|---|---|---|
+| conversation returns, no disk cache | 6,017 | 24.7 s |
+| conversation returns, restored from disk | 11 | 0.4 s |
+
+The save took 0.2 s and the restore 0.12 s, for a 659 MiB file. File size and save time grow with
+the model and the length of the conversation.
+
+## When a slot is written
+
+A slot is saved when its contents are about to be lost:
+
+- another conversation is taking the slot, or
+- the engine is being unloaded, by hand or by its idle TTL.
+
+It is not saved after every turn. A save rewrites the whole slot, and a long conversation on a
+large model is tens of gigabytes. Writing that on every turn would wear out a disk to protect a
+cache nobody may ask for again.
+
+Three more rules keep the writes down:
+
+- A prompt under about 1,000 tokens is never saved. The engine re-reads it faster than the disk
+  round trip is worth.
+- A slot restored from disk and then extended by a turn or two is not saved again.
+- A later save of a conversation replaces the earlier one.
+
+When the directory passes `cache_disk_mib`, the least recently used files are removed.
+
+## What survives
+
+| | host-RAM cache (`-cache-ram`) | disk cache |
+|---|---|---|
+| another conversation takes the slot | yes, until the RAM cap | yes, until the disk cap |
+| the model is unloaded and loaded again | no | yes |
+| the node restarts | no | yes |
+| the engine crashes | no | only what was already saved |
+
+The two work together. The host-RAM cache is llama.cpp's own and needs no configuration.
+
+## Where it sits
+
+In the engine's shim: the small proxy ModelFabric runs in front of every llama.cpp engine. Every
+routing method passes through it, so the cache serves them all:
+
+| how the request arrives | through the shim |
+|---|---|
+| ModelFabric's router, on this node | yes: with the cache on, the router dials the shim instead of the engine |
+| forwarded from another node | yes: it arrives through this node's router |
+| [llm-d](/docs/routing/llm-d) | yes: llm-d's Envoy always dials the shim |
+
+A conversation can arrive one way and come back another. Measured through a real node: a
+conversation sent straight to the shim, as llm-d sends it, was saved when another took its slot,
+and came back through ModelFabric's router reading 11 tokens instead of 6,016. The same held after
+the model was unloaded and loaded again.
+
+The cost is one more hop on this machine, on loopback, and only while the cache is on. Measuring
+an engine (`mfsh tune`, `mfsh bench`) still dials it directly. [Doctor](/docs/operations/diagnostics)
+lists each engine's shim and what it does, the disk cache included.
+
+## How a conversation is recognised
+
+The same way [prefix affinity](/docs/routing/replicas) does it: the prompt is hashed in 256-byte
+blocks, each chained to the one before, so a block identifies everything up to it. A saved slot
+is filed under its chain. A request whose chain starts the same way is the same conversation, a
+turn later.
+
+That match only decides which file to restore. The engine still compares tokens before it reuses
+anything, so a wrong match costs a re-read and never a wrong answer.
+
+A saved slot is only restored into the same weights, the same engine build and the same KV types.
+
+## Limits
+
+- **llama.cpp only.** MLX engines are not covered.
+- **Not with vision loaded.** llama.cpp refuses to save a slot once the image projector is loaded.
+  Load with `-vision off` to use the disk cache on a multimodal model.
+- **Requests that reach the engine without its shim are not tracked.** Nothing in ModelFabric
+  sends them that way, but something dialling the engine's port directly would. The cache notices
+  that a slot was used by something else and stops trusting what it recorded for it.
+- **A request that sets `id_slot` itself keeps its choice** and is not placed.
+- **A whole slot is the unit.** [oMLX](https://github.com/jundot/omlx), where this idea comes
+  from, runs the model in-process and writes only the blocks that changed. From outside the
+  engine we can only save or restore a slot whole, which is why saves are deferred.
+
+## What ends up on disk
+
+A saved slot contains the conversation's tokens. Turning this on writes prompts to disk, which
+nothing else does unless you ask. The directory is created `0700` and the files `0600`.
+
+By default the files live in `slots/` under the node's state directory. Set `cache_disk_dir` to
+put them on a different disk. Deleting the directory's contents is safe at any time.

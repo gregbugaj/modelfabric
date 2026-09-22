@@ -1,0 +1,151 @@
+---
+title: A public front door
+description: A small cloud VM as the public address of GPUs at home, with no port opened on your router.
+---
+
+# A public front door
+
+Every node is already an entrypoint: any node's `:1234` reaches every model in the mesh.
+
+`"role": "entrypoint"` marks a node that's *only* that. It runs no models, so a $6 cloud VM can be
+the public address of the GPUs in your house.
+
+The internet only ever sees the VM. Its traffic reaches home inside the tailnet's WireGuard
+tunnels, so there's no port forwarded on your router and no home IP published anywhere. Nothing
+changes on the GPU machines themselves.
+
+<Arch down legend={['public', 'tailnet', 'loopback']}>
+  <Zone label="the internet" tone="public">
+    <ArchNode title="your apps" sub="anywhere: Claude Code, scripts, another service" />
+  </Zone>
+
+  <Arrow down tone="public" label="HTTPS" sub="Tailscale Funnel, or nginx with your own certificate" />
+
+  <Zone
+    label="a cloud VM you own"
+    tone="public"
+    note="Runs no models, and won't load one. JIT is off. The only machine with a public address."
+  >
+    <ArchNode title={'front'} sub="role: entrypoint" accent="public">
+      <Port scope="public">public_listen :1235: inference only, key required</Port>
+      <Port scope="loopback">:1234: the router and management, never exposed</Port>
+    </ArchNode>
+  </Zone>
+
+  <Arrow down tone="tailnet" label="your tailnet" sub="WireGuard · no port opened on your router" both />
+
+  <Zone
+    label="home"
+    tone="tailnet"
+    note="Nothing changes on these machines. No home IP is published anywhere."
+  >
+    <ArchNode title="predator" sub="RTX 5090" accent="tailnet">
+      <Port scope="tailnet">mesh :1234</Port>
+      <Port scope="loopback">engines</Port>
+    </ArchNode>
+    <ArchNode title="minion" sub="RTX 6000 Ada" accent="tailnet">
+      <Port scope="tailnet">mesh :1234</Port>
+      <Port scope="loopback">engines</Port>
+    </ArchNode>
+  </Zone>
+</Arch>
+
+## On the VM
+
+```bash
+tailscale up                                   # join the same tailnet
+curl -fsSL https://modelfabric.sh/install.sh | sh
+cat > ~/.config/modelfabric/config.json <<'JSON'
+{ "node": "front", "role": "entrypoint", "public_listen": "127.0.0.1:1235", "web_ui": false }
+JSON
+mfsh service install -enable                   # or: mfsh up
+tailscale funnel --bg 1235                     # https://front.<tailnet>.ts.net, real TLS
+mfsh key                                       # the API key apps send as a Bearer token
+mfsh doctor                                    # "entrypoint: routes N models from M nodes"
+```
+
+Funnel has to be allowed in your tailnet policy. After that, apps use
+`https://front.<tailnet>.ts.net/v1` with the key as `Authorization: Bearer <key>`.
+
+## How a request gets home
+
+It enters at the VM's public listener, is routed by the VM's router, and runs on a GPU at home:
+
+1. The router lists the nodes that hold the model, scores them by load and speed, and picks the
+   cheapest.
+2. It sends the request to that node's tailnet address on the mesh port, marked as forwarded once.
+3. That node's router sees the mark, serves the request from its own engines only, and never
+   forwards it again. The reply comes back the same way.
+
+The router never dials another node's engine. A node's engines are reached by that node's own
+router, at the address `engine_bind` gives them, so the loopback default is all this needs.
+Only something that dials engines itself needs `engine_bind` set, and then to `"tailnet"`, the node's
+Tailscale address, never `0.0.0.0`.
+
+`mfsh prefer <home-node>` on the VM sends traffic to your main box first, with the others (or
+llm-d) picking up the rest. llm-d running on the VM can only schedule engines it can reach directly, so it needs `engine_bind` set on each GPU node.
+
+## Behind your own domain instead of Funnel
+
+If the VM already serves a site over HTTPS, add a location for `/v1/` and the rest of the site
+carries on untouched:
+
+```nginx
+location ^~ /v1/ {                 # ^~ wins over the site's regex locations
+  proxy_pass http://127.0.0.1:1235;  # public_listen: inference only, key required
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_buffering off;             # stream tokens as they are generated
+  proxy_request_buffering off;
+  proxy_read_timeout 3600s;        # long generations
+  proxy_send_timeout 3600s;
+  client_max_body_size 50m;
+}
+```
+
+Apps then use `https://<domain>/v1` with the same Bearer token.
+
+Don't skip the two `proxy_*buffering off` lines. Without them nginx holds the whole response and
+your tokens arrive in a single lump at the end, which looks like the model being slow.
+
+## What to publish, and what never to
+
+<Callout type="warning">
+  Publish `public_listen` and nothing else, and only through Funnel or a TLS proxy. ModelFabric speaks
+  plain HTTP, and `mfsh doctor` warns when a listener would send keys unencrypted.
+
+  Never publish `:1234`; it carries model management.
+</Callout>
+
+## What an entrypoint node won't do
+
+The role changes behaviour. An entrypoint node won't load models at all, and JIT is off so a
+request can't trigger a load. With `web_ui: false` the dashboard is gone too, which is the right
+default on a public VM.
+
+## Tailnet ACLs
+
+The VM needs to reach the GPU nodes' mesh port (1234), plus their engine ports if they use
+`engine_bind`. If you've tagged the fleet, tag the VM too:
+
+```jsonc
+{
+  "tagOwners": { "tag:modelfabric": ["autogroup:admin"] },
+  "acls": [
+    { "action": "accept", "src": ["tag:modelfabric"], "dst": ["tag:modelfabric:1234"] }
+  ]
+}
+```
+
+See [Security](/docs/operations/security).
+
+<Cards>
+  <Card title="Security" href="/docs/operations/security">
+    The two listeners, tailnet authority, and `engine_bind`.
+  </Card>
+  <Card title="Preferred node" href="/docs/routing/preferred-node">
+    `mfsh prefer` on the VM, and the one model it steps aside for.
+  </Card>
+</Cards>

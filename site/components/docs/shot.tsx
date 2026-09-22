@@ -1,0 +1,34 @@
+/*
+ * A screenshot with a caption.
+ *
+ * Bordered and rounded to match the surfaces around it, because a raw
+ * screenshot of a bordered UI on a page with no border reads as a rendering
+ * bug. `loading="lazy"` since these sit well below the fold on long pages.
+ */
+export function Shot({
+  src,
+  alt,
+  caption,
+  width,
+}: {
+  src: string;
+  alt: string;
+  caption?: string;
+  /** Rendered width in px; the file itself is 2× for retina. */
+  width?: number;
+}) {
+  return (
+    <figure className="my-6">
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        style={width ? { maxWidth: width } : undefined}
+        className="w-full rounded-md border border-[hsl(var(--mfsh-rule))]"
+      />
+      {caption ? (
+        <figcaption className="mt-2 text-sm text-[hsl(var(--mfsh-muted))]">{caption}</figcaption>
+      ) : null}
+    </figure>
+  );
+}

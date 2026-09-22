@@ -1,0 +1,248 @@
+---
+title: API keys
+description: Require authentication on a node, give each app its own API token, and revoke them one at a time.
+---
+
+# API keys
+
+ModelFabric accepts API tokens the way OpenAI's API does: `Authorization: Bearer <token>`.
+Anthropic-style `x-api-key` works too. Give each app its own token, so revoking one leaves the rest
+working. Every node also has a node key of its own, which `mfsh key` prints.
+
+ModelFabric checks the token itself, not a proxy in front of it or an engine behind it. A missing or
+wrong one gets a plain `401`.
+
+## Require authentication for each request
+
+By default a node does not ask for a token on its own address, `127.0.0.1:1234`: only this machine
+can reach it. To accept only requests that carry a valid token:
+
+<Steps>
+
+### Open Server settings
+
+On the dashboard's Overview, click **Server settings** beside the address apps connect to.
+
+### Turn on Require Authentication
+
+It is on the **Access** tab.
+
+### Save
+
+It applies at once, with no restart. A request to `/v1` without a token now gets `401`.
+
+</Steps>
+
+<Shot
+  src="/img/server-settings-access.png"
+  alt="The Access tab of Server settings: a Require Authentication switch with the line 'Only accept requests to /v1 that carry an API token or the node key', and below it an Enable CORS switch, turned on, with an Allowed origins box."
+  caption="Access. Require Authentication applies as soon as it is saved."
+/>
+
+<Callout type="info">
+  It covers inference (`/v1`). Management and the dashboard never take a token: they answer only on
+  this machine, or to your own devices on the tailnet. The [Public Front Door](#apps-outside-your-tailnet)
+  always requires a token, whatever this switch says.
+</Callout>
+
+The same setting in config.json is `"require_api_key": true`.
+
+## Creating API tokens
+
+<Steps>
+
+### Open the Tokens tab
+
+In **Server settings**, the **Tokens** tab lists every credential this node accepts.
+
+### Name it and click Create
+
+Name it after what will use it (`laptop`, `ci`, `opencode`), so you can tell later what is safe to
+revoke.
+
+### Copy it now
+
+The token is shown once. ModelFabric keeps only a hash of it, so it cannot be shown again: lose it
+and create another. It is cleared from the page when you leave the tab.
+
+</Steps>
+
+<Shot
+  src="/img/server-settings-tokens.png"
+  alt="The Tokens tab of Server settings: a name box and a Create button, a just-created token in an amber box with a Copy button and the warning that it cannot be shown again, the node key with a Rotate button, and a list of named tokens, each with when it was created and last used and a Revoke button."
+  caption="Tokens. A new token is shown once; the list shows the last four characters of each."
+/>
+
+From the command line, on the node:
+
+```bash
+mfsh key create laptop    # prints the token once
+mfsh key ls               # every credential: name, last four characters, created, last used
+```
+
+## Revoking a token
+
+Click **Revoke** beside it, or:
+
+```bash
+mfsh key rm laptop
+```
+
+The next request with it gets `401`. Every other token, and the node key, keep working. A node
+already running picks the change up on its next request, with no restart.
+
+## API token usage
+
+### REST
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H "Authorization: Bearer $MFSH_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "qwen/qwen3-0.6b", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+### OpenAI Python SDK
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:1234/v1", api_key=os.environ["MFSH_API_TOKEN"])
+reply = client.chat.completions.create(
+    model="qwen/qwen3-0.6b",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+```
+
+### OpenAI TypeScript SDK
+
+```ts
+import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "http://localhost:1234/v1", apiKey: process.env.MFSH_API_TOKEN });
+const reply = await client.chat.completions.create({
+  model: "qwen/qwen3-0.6b",
+  messages: [{ role: "user", content: "Hello" }],
+});
+```
+
+### Anthropic-style clients
+
+Clients that speak Anthropic's API send the token as `x-api-key`, and point at the same base URL:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:1234
+export ANTHROPIC_API_KEY=$MFSH_API_TOKEN
+```
+
+## Apps outside your tailnet
+
+Devices on your tailnet already reach every node at its tailnet address on the mesh port, with no
+key: Tailscale says who they are. For apps anywhere else, turn on **Public Front Door** on the
+**Server** tab. It opens a second listener that serves inference (`/v1`) only, requires a token on
+every request, and never serves the dashboard or management. It listens on `127.0.0.1`, and
+Tailscale Funnel or a TLS proxy publishes it with HTTPS:
+
+```bash
+tailscale funnel 1235
+```
+
+It is `public_listen` in config.json, and it takes effect on the next restart. A node that does
+only this, and runs no models, is an [entrypoint](/docs/operations/entrypoint).
+
+<Callout type="warning">
+  ModelFabric speaks plain HTTP. Bound anywhere but `127.0.0.1`, the front door would send tokens
+  across the network unencrypted, and `mfsh doctor` warns about it. Never expose `:1234` itself: it
+  carries model management.
+</Callout>
+
+## Who checks it
+
+**The node's own address** (`127.0.0.1:1234`) checks when Require Authentication is on.
+
+**The Public Front Door** (`public_listen`) always checks. No opt-out.
+
+**The tailnet listener** doesn't check at all. Identity there comes from Tailscale: every hop is
+WireGuard and every peer is an already-authenticated device. A shared bearer token would mean
+distributing a secret to prove something Tailscale has already established. It restricts
+*authority* instead: it serves discovery, `GET /v1/models` and forwarded inference, and returns
+`403` for anything that would change the node. See [Security](/docs/operations/security).
+
+## What a token is, and is not
+
+- **Accepted wherever the node key is accepted from an app**, which is inference. Nowhere else, and
+  that is deliberate. The node key also proves a request came from this node, which is what lets it
+  carry the mesh's forwarding marker; a token cannot, so an app holding one cannot skip the
+  scheduler.
+- **Stored as a hash.** `~/.modelfabric/tokens.json`, owner-only, holds a SHA-256 of each token,
+  never the token.
+- **Last used** is recorded to the minute, and a token's first use at once, so a token that was used
+  never reads "never".
+- **Not a budget.** A token says who may run a model, not how much. There is no per-caller spend
+  tracking, and none is planned. For that, run an API gateway such as
+  [Bifrost](https://github.com/maximhq/bifrost) in front of ModelFabric, give each caller a key there,
+  and let it call ModelFabric with a token of its own. See
+  [Putting something in front](/docs/routing#putting-something-in-front).
+
+## The node key
+
+Every node has one, created on first use. It is listed on the Tokens tab by its last four
+characters. It can't be revoked, because a node always has exactly one, but it can be rotated.
+
+```bash
+mfsh key                  # print this node's key
+mfsh key rotate           # replace it, and print the new one
+```
+
+Rotating cuts off every app holding the old key from its next request, with no restart. Named
+tokens keep working, which is why apps should use those: rotating the node key then breaks nothing
+you didn't hand it to. On the dashboard, **Rotate** beside the node key on the Tokens tab does the
+same, asks first, and shows the new key. Unlike a token's secret, the node key is kept on disk, so
+`mfsh key` prints it again later.
+
+Run `mfsh key` as the user the node runs as. The key lives in that user's home directory, so as
+anyone else (`root`, say) it would find no key and make a new one that the node never reads. When a
+node is running, every `mfsh key` command asks it where it keeps its keys and refuses to touch any
+other directory:
+
+```text
+error: the node on http://127.0.0.1:1234 keeps its keys in /home/alice/.modelfabric, not /root/.modelfabric: run this as alice, for example `sudo -u alice mfsh key`
+```
+
+| the node | the file |
+|---|---|
+| one that already had a key | `~/.modelfabric/gateway/master.key`, the older location |
+| a fresh one | `~/.modelfabric/api.key` |
+
+The old location is still read first, so a key already sitting in a client's configuration, a
+benchmark environment or a reverse proxy keeps working. Rotating writes the new key to `api.key`
+and removes the old file. `mfsh doctor` checks the file's permissions.
+
+We don't serve the key over the network, so there is no `-addr` form. Pointed at a peer, `mfsh key`
+tells you to run it there instead of printing this machine's key. That mistake authenticates
+against the wrong node and 401s every request, long after everything looks ready.
+
+## The API
+
+| Path | Purpose |
+|---|---|
+| `GET /api/v1/tokens` | `{node_key, rotatable, tokens: [{id, name, hint, created, last_used}]}`. `hint` is the last four characters; no secret, no hash |
+| `POST /api/v1/tokens` | `{"name"}` → `201` with `token`, the secret, this once |
+| `POST /api/v1/tokens/revoke` | `{"id"}`: an id or a name |
+| `GET /api/v1/key` | `{home, file, user}`: where this node keeps its key, and who it runs as. Never the key |
+| `POST /api/v1/key/rotate` | replace the node key; answers `{key, hint}` with the new one |
+
+Management routes, so loopback-only like the rest of `/api/v1`.
+
+<Cards>
+  <Card title="Server settings" href="/docs/operations/server-settings">
+    Every switch on the page, and what it writes to config.json.
+  </Card>
+  <Card title="Security" href="/docs/operations/security">
+    The listeners, tailnet authority, and web pages in your own browser.
+  </Card>
+  <Card title="A public front door" href="/docs/operations/entrypoint">
+    Funnel, nginx, and a token as a Bearer token from the internet.
+  </Card>
+</Cards>

@@ -1,0 +1,22 @@
+/* ---- doctor ---- */
+
+/* One line per check, reading like the CLI does: a mark, what was checked,
+   and what was found — with the fix only where something needs doing. */
+.dr-row {
+  display: grid; grid-template-columns: 18px 190px minmax(0, 1fr);
+  gap: 10px; align-items: baseline;
+  padding: 6px 18px; font-size: 13px; border-bottom: 1px solid var(--border-soft);
+}
+.dr-row:last-child { border-bottom: none; }
+.dr-mark { text-align: center; font-weight: 700; color: var(--text-muted); }
+.dr-ok .dr-mark { color: hsl(var(--success-text)); }
+.dr-warn .dr-mark { color: hsl(var(--warning-text)); }
+.dr-fail .dr-mark { color: hsl(var(--error-text)); }
+.dr-warn { background: hsl(var(--warning-token) / 0.05); }
+.dr-fail { background: hsl(var(--error-token) / 0.05); }
+.dr-name { color: var(--text-2); }
+.dr-detail { overflow-wrap: anywhere; }
+.dr-fix { margin-top: 3px; font-size: 12.5px; color: var(--text-muted); }
+.dr-fix code { font-size: 12px; }
+.dr-arrow { margin-right: 5px; }
+#dr-node { font: inherit; padding: 1px 4px; margin-left: 4px; }

@@ -1,0 +1,74 @@
+---
+title: Structured Output
+description: Make the model's reply match a JSON schema, enforced while it generates.
+---
+
+# Structured Output
+
+Give a JSON schema and llama.cpp constrains generation to it, so a complete reply is valid JSON of
+that shape.
+
+- Endpoint: `POST /v1/chat/completions`, with `response_format`
+- OpenAI's reference: https://platform.openai.com/docs/guides/structured-outputs
+
+## Example
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "messages": [{"role": "user", "content": "Invent a person."}],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "person",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer"}
+          },
+          "required": ["name", "age"]
+        }
+      }
+    }
+  }'
+```
+
+The reply's `content` is a string holding the JSON:
+
+```json
+{ "name": "Elias Wren", "age": 34 }
+```
+
+The SDK builds the schema from a Pydantic model and parses the reply back into it:
+
+```python
+from openai import OpenAI
+from pydantic import BaseModel
+
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="modelfabric")
+
+class Person(BaseModel):
+  name: str
+  age: int
+
+completion = client.chat.completions.parse(
+  model="qwen/qwen3.8-27b",
+  messages=[{"role": "user", "content": "Invent a person."}],
+  response_format=Person,
+)
+
+print(completion.choices[0].message.parsed)   # name='Elara Voss' age=34
+```
+
+## Limits
+
+- **Leave room.** A reply cut off by `max_tokens` is cut off mid-JSON. A reasoning model spends
+  tokens thinking first, so give it a generous limit.
+- **Engines.** llama.cpp enforces the schema. mlx-lm ignores `response_format`, so a request that
+  asks for structured output is kept away from MLX engines, and refused when only those hold the
+  model.
+- `{"type": "json_object"}` asks for any valid JSON without a schema.

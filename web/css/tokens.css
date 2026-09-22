@@ -1,0 +1,121 @@
+/* ---- Server settings flyout, and its Tokens tab ---- */
+
+/* The button sits on the auth line it acts on: "API key required" and where
+   to change it are one fact. */
+.fd-auth-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.fd-auth-row .fd-auth { margin-top: 0; }
+
+/* The panel itself is My Models' .side-panel; only what differs is here. It
+   floats over every page, so it sits above the content's own flyouts. */
+#ss-side { z-index: 60; margin: 0; }
+#ss-side .side-sub { min-width: 0; }
+.ss-file { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ss-form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.ss-form .side-body { flex: 1; }
+.ss-pane { display: grid; gap: 2px; }
+
+/* A row: the setting's name and a line on what it does, its control at the
+   right — LM Studio's Server Settings, which say what each one is. */
+.ss-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--border-soft);
+}
+.ss-row:last-child { border-bottom: none; }
+.ss-row[hidden] { display: none; }
+/* A field a switch reveals sits under it, indented, without its own rule. */
+.ss-row.ss-sub { padding-top: 0; margin-top: -2px; padding-left: 14px; border-left: 2px solid var(--border-soft); }
+.ss-row.ss-wide { grid-template-columns: 1fr; }
+.ss-text { min-width: 0; display: grid; gap: 2px; }
+.ss-name { font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; cursor: default; }
+.ss-desc { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+.ss-q {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 1px solid var(--border-strong); color: var(--text-muted);
+  font-size: 10px; font-weight: 600; cursor: help;
+}
+.ss-q:hover, .ss-q:focus-visible { color: var(--text); border-color: var(--text-muted); outline: none; }
+#ss-side .input { font-size: 12.5px; padding: 5px 8px; }
+#ss-side .input.mono:not(textarea) { width: 190px; }
+#ss-side .ss-port { width: 96px !important; text-align: right; }
+#ss-side textarea.input { width: 100%; resize: vertical; font-size: 12px; }
+.ss-ro { justify-self: end; font-size: 13px; color: var(--text-2); }
+
+/* A switch, as LM Studio's: still a checkbox to the keyboard and to screen
+   readers (role="switch"), drawn as a track and a knob. */
+input.switch {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none; cursor: pointer;
+  position: relative; width: 34px; height: 20px; border-radius: 999px;
+  background: var(--border-strong); transition: background 0.15s ease;
+}
+input.switch::before {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px hsl(0 0% 0% / 0.3); transition: transform 0.15s ease;
+}
+input.switch:checked { background: hsl(var(--success-token)); }
+input.switch:checked::before { transform: translateX(14px); }
+/* A switch that opens this node to other machines is amber when on, as
+   LM Studio's "Serve on Local Network" is: on is a choice to notice. */
+input.switch.exposes:checked { background: hsl(var(--warning-token)); }
+input.switch:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* Saved, but the node still runs the old value. A chip on the row, with the
+   running value in its tooltip: a setting that looks applied and is not is
+   the one thing this page must not do. */
+.ss-restart {
+  padding: 0 6px; border-radius: var(--r-sm);
+  font-size: 10.5px; font-weight: 600; line-height: 17px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: hsl(var(--warning-text)); border: 1px solid hsl(var(--warning-token) / 0.5); cursor: help;
+}
+
+.ss-warn {
+  margin: 0 16px 8px; padding: 7px 10px; border-radius: var(--r-md);
+  border: 1px solid hsl(var(--warning-token) / 0.5);
+  display: grid; gap: 3px; font-size: 12px; color: hsl(var(--warning-text));
+}
+.ss-foot { justify-content: space-between; align-items: center; margin: 0; padding: 10px 16px; bottom: 0; }
+.ss-status { font-size: 12px; color: var(--text-2); min-width: 0; }
+.ss-pending { color: hsl(var(--warning-text)); }
+
+/* display: grid/flex outranks the hidden attribute; without this an empty
+   warning frame and a hidden footer still showed. */
+.ss-warn[hidden], .ss-foot[hidden], .ss-pane[hidden], .tk-secret[hidden] { display: none; }
+
+/* Tokens */
+.tk-create { display: flex; gap: 6px; margin: 2px 0 6px; }
+.tk-create .input { flex: 1; min-width: 0; padding: 4px 8px; font-size: 12.5px; }
+.tk-secret {
+  border: 1px solid hsl(var(--warning-token) / 0.55); border-radius: var(--r-md);
+  padding: 8px 10px; display: grid; gap: 6px; margin: 6px 0 10px;
+}
+.tk-secret-head { font-size: 12px; font-weight: 600; color: hsl(var(--warning-text)); }
+.tk-secret-row { display: flex; align-items: center; gap: 6px; }
+.tk-secret-row code {
+  flex: 1; min-width: 0; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: 12px;
+  background: hsl(var(--surface-inset)); padding: 5px 7px; border-radius: var(--r-sm);
+  user-select: all;
+}
+.tk-list { display: grid; margin-top: 6px; }
+.tk-row { padding: 7px 0; border-bottom: 1px solid var(--border-soft); display: grid; gap: 2px; }
+.tk-row:last-child { border-bottom: none; }
+.tk-main { display: flex; align-items: center; gap: 8px; }
+.tk-name { font-weight: 600; font-size: 13px; }
+.tk-builtin .tk-name { color: var(--text-2); }
+.tk-mask { font-size: 12px; color: var(--text-2); }
+.tk-main .btn { margin-left: auto; }
+.tk-meta { font-size: 11.5px; color: var(--text-muted); }
+
+/* A select sizes to its longest option; capped, a long one cannot squeeze
+   the row's description into a column. */
+#ss-side select.input { width: 190px; text-overflow: ellipsis; }
+
+/* Server Port shows its host beside the box: 127.0.0.1:[1234] beside the
+   tailnet's 100.x:1234 reads as two listeners, not one value twice. */
+.ss-addr { display: inline-flex; align-items: center; gap: 2px; }
+.ss-host { font-size: 12.5px; color: var(--text-muted); }
+.ss-note { font-size: 12px; color: var(--text-2); padding: 8px 10px; margin: 6px 0 2px; border-radius: var(--r-md); background: hsl(var(--surface-inset)); }
+.ss-note[hidden] { display: none; }
+/* Room for a handful of origins, one per line, without scrolling a box two
+   lines tall. */
+#ss-side textarea.input { min-height: 112px; line-height: 1.5; }

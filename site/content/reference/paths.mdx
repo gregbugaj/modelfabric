@@ -1,0 +1,120 @@
+---
+title: Files and paths
+description: Where ModelFabric writes on each platform, and what each directory holds.
+---
+
+# Files and paths
+
+State that must survive (engine ownership records, the operations journal, model pins) and logs follow
+each platform's convention.
+
+| | Linux | macOS |
+|---|---|---|
+| **State** | `~/.local/state/modelfabric` (`$XDG_STATE_HOME`) | `~/Library/Application Support/modelfabric` |
+| **Logs** | its `logs/` subdirectory | `~/Library/Logs/modelfabric` |
+| **Config** | `~/.config/modelfabric/config.json` | the same |
+| **Runtimes, tools, node key** | `~/.modelfabric` | the same |
+| **Benchmark reports** | `~/.local/share/modelfabric/bench` (`$XDG_DATA_HOME`) | `~/Library/Application Support/modelfabric/bench` |
+
+| override | |
+|---|---|
+| `MFSH_STATE_DIR` | the state directory |
+| `MFSH_LOG_DIR` | the log directory |
+| `state_dir` in config.json | the state directory |
+
+<Callout type="info">
+  If a legacy state directory exists at `~/.cache/llm-z`, the node migrates it on startup.
+  Keep it intact until migration completes so engine ownership records are preserved.
+</Callout>
+
+## What is under the state directory
+
+| file | what it is for |
+|---|---|
+| ownership records | which engine process belongs to this node, so a killed node can [adopt its orphans](/docs/models/integrity#picking-up-the-pieces-after-a-crash) |
+| the operations journal | every load, unload, download and install, with its generation; `mfsh ops` reads it |
+| `pins/` | each model's pinned manifest and file stamps, which [verification](/docs/models/integrity) checks against |
+| `up.lock` | held while a node starts, so two concurrent `mfsh up` calls cannot both become the node |
+| `node.json` | the node `mfsh up` started; `mfsh down` stops the process it names |
+| `listen.json` | the address a running node holds, however it was started, so other commands find it on a non-default port; removed when it stops |
+
+These are the files that make a restart non-destructive. Deleting the state directory does not lose
+models, but it does lose the pins. The next load re-pins from whatever is on disk at that moment, and
+verification can't tell you anything about that state.
+
+## What is under ~/.modelfabric
+
+The CUDA and build numbers below are one machine's; yours carry whatever
+[fits your driver](/docs/engines#which-build-you-get).
+
+<Diagram>
+{`~/.modelfabric/
+  runtimes/
+    llama.cpp-upstream-linux-x86_64-cuda-12.8-b11040/   llama-server + libraries,
+        backend-manifest.json                            declares backend, GPU fit, entry point
+    vendor/cudart-12.8-x64/                              CUDA runtime, shared by every
+                                                         CUDA 12.8 build
+    mlx-lm/                                              a Python venv, on a Mac
+  tools/
+    llmd/epp-v0.10.0/epp                                 pulled from llm-d's image by digest
+    llmd/envoy-1.33.14/envoy                             release binary, SHA-256 checked
+  api.key                                                this node's API key, owner-only,
+                                                           or gateway/master.key, on a node
+                                                           that already had one
+  tokens.json                                            named tokens, hashed, owner-only`}
+</Diagram>
+
+`runtimes_root` moves the first of those. Adopted engine packages are left where they are; ModelFabric
+only ever installs into its own tree.
+
+## As a systemd service
+
+The node's own output goes to the journal instead of a log file:
+
+```bash
+journalctl --user -u mfsh -f
+```
+
+`mfsh log` and `mfsh log engine` work the same either way, since they read the node's own records, not
+its stdout.
+
+## Models
+
+Models are **not** under any of the above. They live where you put them:
+
+| setting | what it points at |
+|---|---|
+| `models_root` | the directory scanned for GGUF models, and where `mfsh get` downloads to |
+| `extra_model_roots` | additional directories scanned |
+| an existing model library on the machine | scanned too, **read-only**; ModelFabric never writes there |
+
+A model adopted with `mfsh import` is recorded in the catalog without being moved or copied.
+
+## The node's API key
+
+Owner-only, created on first use. `mfsh doctor` checks its permissions, and `mfsh key` prints it.
+See [API keys](/docs/api/api-keys).
+
+| the node | the file |
+|---|---|
+| one that already had a key | `~/.modelfabric/gateway/master.key`, the older location |
+| a fresh one | `~/.modelfabric/api.key` |
+
+<Callout type="info">
+  The legacy key location is read first so existing client credentials keep working.
+</Callout>
+
+## What ModelFabric never writes to
+
+- **A model library it did not create**: read-only, always.
+- **Engine packages it did not install**: `mfsh runtime remove` won't remove them.
+- **Anything outside a package it is unpacking**: archives that try are rejected.
+
+<Cards>
+  <Card title="config.json" href="/docs/reference/config">
+    `state_dir`, `models_root`, `runtimes_root` and the rest.
+  </Card>
+  <Card title="Integrity and recovery" href="/docs/models/integrity">
+    What the pins directory is for.
+  </Card>
+</Cards>

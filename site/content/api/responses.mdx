@@ -1,0 +1,171 @@
+---
+title: Responses
+description: Create a response with streaming, reasoning effort, stored follow-ups and MCP tools. This is the endpoint Codex uses.
+---
+
+# Responses
+
+Create a response from an input, with streaming, reasoning effort, stored follow-ups and MCP
+tools. This is the endpoint Codex uses.
+
+- Method: `POST /v1/responses`
+- OpenAI's reference: https://platform.openai.com/docs/api-reference/responses
+
+## Example
+
+```bash
+curl http://localhost:1234/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "Say hi in five words.",
+    "reasoning": { "effort": "low" }
+  }'
+```
+
+The reply's `output` lists a `reasoning` item, when the model thought first, and then a `message`
+item holding the text.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:1234/v1", api_key="modelfabric")
+
+response = client.responses.create(
+  model="qwen/qwen3.8-27b",
+  input="Say hi in five words.",
+  reasoning={"effort": "low"},
+)
+
+print(response.output_text)
+```
+
+## Streaming
+
+With `"stream": true` the reply arrives as named events: `response.created`,
+`response.output_text.delta` for each piece of text, `response.reasoning_text.delta` while the
+model thinks, and `response.completed` at the end.
+
+```bash
+curl -N http://localhost:1234/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "Say hi.",
+    "stream": true
+  }'
+```
+
+```python
+stream = client.responses.create(
+  model="qwen/qwen3.8-27b",
+  input="Say hi.",
+  stream=True,
+)
+for event in stream:
+  if event.type == "response.output_text.delta":
+    print(event.delta, end="", flush=True)
+```
+
+The SDK's stream helper works too, and gives you the finished response:
+
+```python
+with client.responses.stream(model="qwen/qwen3.8-27b", input="Say hi.") as stream:
+  for event in stream:
+    if event.type == "response.output_text.delta":
+      print(event.delta, end="", flush=True)
+  final = stream.get_final_response()
+```
+
+## Stateful follow-ups
+
+Every response has an `id`. Pass it as `previous_response_id` and send only the new message: the
+node puts the earlier turns back in front of it.
+
+```bash
+curl http://localhost:1234/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "What is my favourite colour?",
+    "previous_response_id": "resp_2i3quQig69J2ZiqExcfsr6UmlDHvXAXZ"
+  }'
+```
+
+```python
+first = client.responses.create(
+  model="qwen/qwen3.8-27b",
+  input="My favourite animal is the otter. Reply OK.",
+)
+
+second = client.responses.create(
+  model="qwen/qwen3.8-27b",
+  input="Which animal did I mention?",
+  previous_response_id=first.id,
+)
+
+print(second.output_text)   # The otter.
+```
+
+`"store": false` keeps nothing, and that response cannot be continued. Stored conversations follow
+the [same rules as `/api/v1/chat`](/docs/api/chat#where-conversations-are-kept).
+
+## Remote MCP tools
+
+Name an MCP server as a tool and the node runs the model's calls to it, as on
+[`/api/v1/chat`](/docs/api/mcp). The same two switches apply, and both are off by default.
+
+A tool with a `server_url` is a server named in the request (**Allow per-request MCPs**):
+
+```bash
+curl http://localhost:1234/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen/qwen3.8-27b",
+    "input": "What is the top trending model on hugging face?",
+    "tools": [{
+      "type": "mcp",
+      "server_label": "huggingface",
+      "server_url": "https://huggingface.co/mcp",
+      "allowed_tools": ["hub_repo_search"]
+    }]
+  }'
+```
+
+A tool with only a `server_label` names a server in `mcp.json` (**Allow calling servers from
+mcp.json**). This one uses the [test server](/docs/api/mcp#try-it-with-the-test-server):
+
+```python
+response = client.responses.create(
+  model="qwen/qwen3.8-27b",
+  input="What is the secret word? Use the tool.",
+  tools=[{"type": "mcp", "server_label": "test", "allowed_tools": ["secret_word"]}],
+)
+
+for item in response.output:
+  if item.type == "mcp_call":
+    print(item.name, "->", item.output)   # secret_word -> marzipan
+print(response.output_text)
+```
+
+The output lists an `mcp_list_tools` item for each server, an `mcp_call` item for each call with
+its `arguments` and `output`, and then the `message`. Your own `function` tools can sit beside MCP
+ones: a call to one of yours ends the loop and is handed back for you to run.
+
+## What differs from OpenAI
+
+- **A response with MCP tools is not streamed as it is written.** The model's calls have to be read
+  whole before they can be run, so with `"stream": true` the finished response is sent as a
+  correct event stream in one go. Without MCP tools, streaming is live.
+- **A stream's position numbers are added by ModelFabric.** llama.cpp leaves out `output_index`,
+  `content_index` and `sequence_number`, and the list of outputs on `response.created`, all of which
+  the Python SDK's `client.responses.stream()` helper needs. They are filled in, so the helper
+  works. Nothing the engine did send is changed.
+- **Stored responses cannot be fetched or deleted by id.** `GET` and `DELETE /v1/responses/{id}`
+  are not served.
+- **On a node's tailnet address** `/v1/responses` is passed to the engine as it is, without stored
+  conversations or MCP. Apps use `localhost` or the [public front door](/docs/operations/entrypoint).
+
+## Using Codex
+
+Codex talks to `/v1/responses`, so it works by pointing its base URL at
+`http://localhost:1234/v1`. See [Connect your apps](/docs/getting-started/connect-apps).

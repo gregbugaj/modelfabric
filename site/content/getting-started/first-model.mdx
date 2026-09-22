@@ -1,0 +1,114 @@
+---
+title: Your first model
+description: Download a model, load it, call it, and see which machine answered.
+---
+
+# Your first model
+
+<Steps>
+
+### Get a model
+
+`mfsh get` takes the same name your tools use (a hub id), or any Hugging Face repository or URL.
+
+```bash
+mfsh get qwen/qwen3-0.6b
+```
+
+We use a small model here because it downloads quickly and loads in under a second. Swap in something larger once the shape is familiar.
+
+Names are matched exactly. If ModelFabric doesn't recognise one, it lists the near misses and downloads
+nothing. Downloading 19&nbsp;GB of the wrong thing is a slow mistake to discover.
+
+Already have the file? Adopt it where it sits:
+
+```bash
+mfsh import ./my-model.gguf            # -as user/repo to give it a name
+```
+
+### See what you have
+
+```bash
+mfsh ls
+```
+
+```
+You have 1 model, taking up 16.5GB of disk space.
+
+LLM               PARAMS  ARCH    QUANT   SIZE    VISION  STATE
+qwen/qwen3.8-27b  27B     qwen35  Q4_K_M  16.5GB  yes     —
+```
+
+`STATE` is empty because nothing is loaded yet. The model is listed under the name your tools
+would use, not its path on disk. [The model catalog](/docs/models) explains where that name comes
+from.
+
+### Load it
+
+```bash
+mfsh load qwen/qwen3-0.6b
+```
+
+Short names work if they're unambiguous, and `mfsh load` with no argument prompts you to pick.
+Nothing loads on its own unless you turn on
+[JIT](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to). Until then, a
+request for a model nobody has resident gets a `404` instead of tying up your GPU for a minute.
+
+```bash
+mfsh ps                # what's resident, with instance ids and context
+```
+
+### Call it
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen/qwen3-0.6b",
+    "messages": [{"role": "user", "content": "Describe DNS in one sentence."}]
+  }'
+```
+
+Any OpenAI client works against `http://localhost:1234/v1`. See
+[Connect your apps](/docs/getting-started/connect-apps) for SDK snippets and the other request
+shapes.
+
+### See where it ran
+
+Every response tells you which machine did the work:
+
+```bash
+curl -si http://localhost:1234/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"qwen/qwen3-0.6b","messages":[{"role":"user","content":"hi"}]}' \
+  | grep -i x-mfsh
+```
+
+```
+X-Fabric-Node: xpredator
+X-Fabric-Engine: inst-a9f7c92b4d66
+```
+
+With one node the answer is always this machine. That changes once you add a second.
+
+### Unload
+
+```bash
+mfsh unload qwen/qwen3-0.6b        # a model key stops every instance of it
+mfsh unload inst-a9f7c92b4d66      # or one exact instance
+mfsh unload -all
+```
+
+An explicit unload **interrupts**: requests in flight on that instance don't get to finish.
+Idle-TTL expiry and JIT eviction do drain, since nobody asked for those. The reasoning is in
+[Loading and unloading](/docs/models/load-and-unload#unloading-interrupts-it-doesnt-drain).
+
+</Steps>
+
+<Cards>
+  <Card title="Add a machine" href="/docs/getting-started/add-a-node">
+    A second node, found on the tailnet with nothing to register.
+  </Card>
+  <Card title="Load and inference settings" href="/docs/models/settings">
+    Context, GPU offload, speculative decoding and sampling, per load or saved.
+  </Card>
+</Cards>

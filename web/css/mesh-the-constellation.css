@@ -1,0 +1,102 @@
+/* ---- Mesh: the Constellation ---- */
+
+#mesh-view, #mesh-from-wrap, #mesh-model-wrap { display: inline-flex; align-items: center; gap: 8px; }
+#mesh-from-wrap[hidden], #mesh-model-wrap[hidden] { display: none; }
+.mesh-star { padding: 14px; }
+.mesh-star svg { display: block; width: 100%; height: auto; }
+.mesh-star text { font-family: inherit; }
+
+.bg-in { stop-color: hsl(var(--brand-primary) / 0.10); }
+.bg-out { stop-color: hsl(var(--surface-0) / 0); }
+.core-in { stop-color: hsl(var(--brand-primary) / 0.95); }
+.core-out { stop-color: hsl(250 60% 35%); }
+.orbit { fill: none; stroke: hsl(215 80% 55% / 0.35); stroke-width: 1.5; stroke-dasharray: 3 7; }
+.orbit.inner { stroke: hsl(var(--brand-primary) / 0.22); stroke-dasharray: 1 6; }
+.orbit-label { font-size: 11px; font-weight: 600; fill: hsl(215 70% 50%); letter-spacing: 0.08em; }
+
+.core { stroke: hsl(var(--brand-primary) / 0.6); stroke-width: 2; }
+.halo { fill: hsl(var(--brand-primary) / 0.12); stroke: hsl(var(--brand-primary) / 0.25); animation: star-pulse 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.core-pub { fill: rgb(255 255 255 / 0.72); font-size: 11px; }
+.core-name { fill: #fff; font-size: 14px; font-weight: 700; }
+.core-sub { fill: rgb(255 255 255 / 0.8); font-size: 10.5px; }
+
+.node { stroke-width: 2; }
+.node.gpu { fill: var(--surface); stroke: hsl(142 55% 40%); }
+.node.dim { fill: var(--surface); stroke: var(--border-strong); opacity: 0.55; }
+.node-glow { fill: hsl(142 60% 45% / 0.10); }
+.node-glow.hot { fill: hsl(142 70% 45% / 0.35); }
+.plat-star { color: var(--text); }
+
+/* The preset picker sits at the top of the Inference tab, beside the settings
+   it applies to, rather than as a catalogue under the models table. */
+.preset-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; margin-bottom: 12px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: hsl(var(--surface-inset) / 0.6);
+}
+.preset-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.preset-select { flex: 1 1 160px; min-width: 140px; }
+.preset-bar .btn { white-space: nowrap; }
+.preset-dirty {
+  font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+  background: var(--warn-soft, hsl(38 90% 50% / 0.16)); color: hsl(38 90% 38%);
+}
+.btn.small { padding: 3px 9px; font-size: 12px; }
+
+/* llm-d's KV options, under the model row. */
+.kv-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 10px; }
+.kv-opt { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); }
+.kv-opt input[type="checkbox"] { accent-color: var(--primary); }
+.kv-num { width: 68px; padding: 2px 6px; font-size: 12px; font-family: var(--mono); }
+.kv-opts > .small { flex-basis: 100%; }
+
+/* An engine's KV-cache utilization, beside its slots. */
+/* The meter is .kvm, not .kv: .kv is the detail panel's key/value row, and a
+   bare .kv here silently right-aligned every row in that panel. */
+.kvm { display: inline-flex; align-items: center; gap: 5px; justify-content: flex-end; }
+.kv-bar {
+  display: inline-block; width: 40px; height: 6px; border-radius: 3px;
+  background: var(--surface-3, var(--border)); overflow: hidden;
+}
+.kv-fill { display: block; height: 100%; border-radius: 3px; background: currentColor; }
+.kv-pct { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.kv-cool { color: hsl(200 70% 50%); }
+.kv-warm { color: hsl(38 90% 50%); }
+.kv-hot { color: hsl(0 72% 55%); }
+.kv-unknown, .kv-none { color: var(--text-muted); font-size: 11px; }
+.node-name { font-size: 12.5px; font-weight: 700; fill: var(--text); }
+.node-sub { font-size: 11px; fill: var(--text-muted); }
+.slot { fill: none; stroke: hsl(var(--surface-2)); stroke-width: 5; stroke-linecap: round; }
+.slot.busy { stroke: hsl(var(--success-token)); }
+
+.entry { fill: hsl(28 90% 52% / 0.12); stroke: hsl(28 90% 52%); stroke-width: 1.8; }
+.entry-name { font-size: 12px; font-weight: 700; fill: var(--text); }
+.entry-sub { font-size: 10px; fill: var(--text-muted); }
+
+.link { fill: none; stroke-width: 2; opacity: 0.35; }
+.link-direct { stroke: hsl(var(--brand-primary)); }
+.link-forwarded { stroke: hsl(215 70% 50%); }
+.link-llmd { stroke: hsl(280 60% 55%); }
+.link-preferred { stroke: hsl(var(--success-token)); stroke-width: 3; }
+.link-public { stroke: hsl(28 90% 52%); stroke-dasharray: 3 4; opacity: 0.8; }
+.spoke { stroke: hsl(var(--brand-primary) / 0.25); stroke-width: 2; }
+.spoke.hot { stroke: hsl(var(--brand-primary) / 0.55); stroke-width: 3; }
+
+.flow { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 2 14; animation: star-flow 1.8s linear infinite; }
+.flow.hot { stroke-width: 3.4; animation-duration: 0.55s; }
+.flow-direct, .flow-spoke { stroke: hsl(var(--brand-primary)); }
+.flow-forwarded { stroke: hsl(215 70% 50%); }
+.flow-llmd { stroke: hsl(280 60% 55%); }
+.flow-preferred { stroke: hsl(var(--success-token)); }
+.star-empty { fill: var(--text-muted); font-size: 14px; }
+
+@keyframes star-flow { to { stroke-dashoffset: -32; } }
+@keyframes star-pulse { 50% { transform: scale(1.08); opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .flow, .halo { animation: none; } }
+
+.mesh-canvas[hidden], .mesh-star[hidden] { display: none; }
+.globe { fill: hsl(28 90% 52% / 0.12); stroke: hsl(28 90% 52%); stroke-width: 1.6; }
+.globe-lines { fill: none; stroke: hsl(28 90% 52% / 0.7); stroke-width: 1.2; }
+.flow-public { stroke: hsl(28 90% 52%); }
+.core-name.small-core { font-size: 12px; }

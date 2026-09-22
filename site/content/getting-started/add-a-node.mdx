@@ -1,0 +1,136 @@
+---
+title: Add a machine
+description: Join a second node to the mesh. There's nothing to register.
+---
+
+# Add a machine
+
+There's no registration step. A node gets its peer list from the local `tailscaled`, probes the
+agreed port on each one, and whatever answers `/z/state` is in the mesh. Nothing gets written to a
+registry and no node is in charge. Machines can come and go without any other node being told.
+
+<Steps>
+
+### Join the same tailnet
+
+```bash
+tailscale up
+```
+
+### Get the binary over there
+
+```bash
+curl -fsSL https://modelfabric.sh/install.sh | sh
+```
+
+Or copy the one you already have. Make it executable afterwards, because `scp` won't:
+
+```bash
+scp mfsh <machine>:~/.local/bin/mfsh
+ssh <machine> chmod +x ~/.local/bin/mfsh
+```
+
+### Write a config
+
+```json filename="~/.config/modelfabric/config.json"
+{
+  "node": "xpredator",
+  "listen": "127.0.0.1:1234",
+  "mesh_port": 1234,
+  "models_root": "/srv/models"
+}
+```
+
+`node` defaults to the Tailscale hostname, so you can usually drop it. **`mesh_port` has to match
+on every machine.** Discovery probes exactly one agreed port, so with a mismatch two nodes can see
+each other on the tailnet and never join.
+
+### Start it
+
+```bash
+mfsh up
+```
+
+### Check both directions
+
+```bash
+mfsh status
+```
+
+Each node should list the other, and `mfsh models` on either machine should show the union of
+everything, tagged with who holds what.
+
+If it only works one way, run `mfsh doctor` on both. It probes the mesh listener *from the
+tailnet*, not from loopback, which is where a firewall rule or an ACL gap shows up.
+
+</Steps>
+
+## What changes
+
+On the client side, not much. Both machines still answer at their own `localhost:1234`, and both
+still answer for every model. Nothing you configured earlier needs
+touching.
+
+What's different is underneath. `GET /v1/models` now returns the union across the mesh, each model
+tagged with the nodes holding it. A request for something this machine doesn't have gets forwarded
+to one that does. A request for something both have gets scored by how busy each one is, with a
+small nudge toward staying local. See [Routing](/docs/routing).
+
+Two things stay node-local: `mfsh ls` still shows this machine's disk (use `mfsh models` for the
+mesh view), and loading or unloading still happens on the node that holds the model.
+
+## A node that only routes
+
+Leave `models_root` unset and the node hosts nothing; it only routes. That works for a laptop, and
+it's the right setup for a cloud VM fronting the mesh. Mark the VM explicitly:
+
+```json
+{ "node": "front", "role": "entrypoint", "web_ui": false }
+```
+
+An `entrypoint` node can't load models and has JIT off. See
+[A public front door](/docs/operations/entrypoint).
+
+## Your nodes don't have to match
+
+They won't, and that's fine: different llama.cpp builds, different backends (CUDA on Linux, Metal
+or MLX on a Mac), different models on disk. ModelFabric picks the engine build for each machine's
+hardware and publishes each engine's slot count and measured prefill rate separately, because an
+average of a 5090 and a Mac mini means nothing.
+
+Two capabilities do depend on the platform: [MLX and Metal](/docs/engines/mlx) need a
+Mac, and [llm-d](/docs/routing/llm-d) is Linux-only. A Mac node routes and serves normally; it
+just doesn't run an EPP.
+
+## Narrowing who can reach the mesh port
+
+By default ModelFabric probes every online peer in your tailnet. That's fine at home, less so on a
+tailnet shared with other people or devices. Tag the fleet and it only probes the tagged
+ones:
+
+```jsonc
+// tailnet policy
+{
+  "tagOwners": { "tag:modelfabric": ["autogroup:admin"] },
+  "acls": [
+    { "action": "accept", "src": ["tag:modelfabric"], "dst": ["tag:modelfabric:1234"] }
+  ]
+}
+```
+
+```json filename="config.json"
+{ "tag": "tag:modelfabric" }
+```
+
+Either way, reaching a node over the tailnet doesn't give you control of it. That listener serves
+discovery, `GET /v1/models` and forwarded inference, and answers `403` to loading, unloading,
+runtime selection and the dashboard. See [Security](/docs/operations/security).
+
+<Cards>
+  <Card title="How routing works" href="/docs/routing">
+    Who serves your request, what happens when that node dies, and why the mesh can't loop.
+  </Card>
+  <Card title="Preferred node" href="/docs/routing/preferred-node">
+    Send a model's requests to one machine first, without losing the fallback.
+  </Card>
+</Cards>

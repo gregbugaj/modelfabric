@@ -1,0 +1,41 @@
+/* ---- runtime ---- */
+
+.hw-grid { display: flex; flex-wrap: wrap; }
+.hw-item {
+  flex: 1 1 200px; min-width: 0; padding: 9px 14px; background: var(--surface);
+  border-right: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
+}
+.hw-item .label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.hw-value { font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+.hw-value.mono { font-size: 12.5px; font-weight: 500; }
+.hw-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+}
+.pill.fit-yes { background: hsl(var(--success-subtle)); color: hsl(var(--success-text)); }
+.pill.fit-no { background: hsl(var(--error-subtle)); color: hsl(var(--error-text)); }
+.pill.fit-unknown { background: hsl(var(--warning-token) / 0.15); color: hsl(var(--warning-token)); }
+.reason { font-size: 12px; color: var(--text-muted); margin-top: 3px; max-width: 280px; }
+.small { font-size: 12px; }
+
+.install-row { padding: 12px 18px; border-bottom: 1px solid var(--border-soft); }
+.install-head { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+.progress {
+  height: 6px; border-radius: 999px; overflow: hidden;
+  background: hsl(var(--surface-inset)); border: 1px solid var(--border-soft);
+}
+.progress-fill { height: 100%; background: var(--primary); transition: width 0.4s ease; }
+@media (prefers-reduced-motion: reduce) { .progress-fill { transition: none; } }
+
+#rt-options-table, #rt-updates-table { border-top: 1px solid var(--border-soft); }
+
+.rt-name { font-weight: 600; }
+.rt-id { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
+.nowrap { white-space: nowrap; }
+
+.status.muted .dot { background: var(--text-muted); }

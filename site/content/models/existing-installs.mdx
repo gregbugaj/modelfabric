@@ -1,0 +1,93 @@
+---
+title: Existing installs
+description: Reusing an LM Studio install's models and engines, in place and read-only.
+---
+
+# Existing installs
+
+ModelFabric needs nothing else installed. [`mfsh runtime get`](/docs/engines) brings verified llama.cpp
+builds and [`mfsh get`](/docs/models/downloading) brings weights, so you can start from a bare
+machine.
+
+ModelFabric can reuse an existing LM Studio model library and engine packages in place, read-only.
+
+## What gets picked up
+
+**LM Studio's models directory** is scanned in place and listed by `mfsh ls`, with the names LM
+Studio gave them. No copying, no re-downloading. See
+[The model catalog](/docs/models#your-lm-studio-library-works-as-is).
+
+**LM Studio's engine packages** become runtimes in `mfsh runtime ls`, marked with where they came
+from, and you can load models on them.
+
+**A `llama-server` on `PATH`** gets resolved once and then recorded by content digest, so the
+launch stays reproducible even if `PATH` changes later.
+
+**`model.yaml`** is applied: the publisher's sampling defaults, template variables and declared
+capabilities. See [The model catalog](/docs/models#what-the-publisher-gets-to-decide).
+
+**Preset files** import with `mfsh preset import`. Settings a server can't apply, like a system
+prompt, are listed as skipped.
+
+To turn both off:
+
+```json filename="config.json"
+{ "disable_lmstudio_models": true, "disable_lmstudio_runtimes": true }
+```
+
+## Read-only, and it stays that way
+
+Adopting another tool's directory is only safe if ModelFabric never writes to it, so there are three
+guarantees.
+
+Downloads always land in the node's own `models_root`, never in an adopted library.
+`mfsh runtime remove` only removes builds ModelFabric installed and returns an error for the rest.
+Engine packages ModelFabric didn't install are never modified or upgraded.
+
+ModelFabric's own runtime tree lives under `~/.modelfabric/runtimes` (`runtimes_root`), well away from anything
+it found. See [Files and paths](/docs/reference/paths).
+
+## Your names don't change
+
+Models keep the identifier your tools already use, resolved from an installed hub catalog when
+there is one and from the model's own GGUF metadata otherwise. Both routes produce
+`qwen/qwen3.8-27b` for the same file, so nothing you've configured needs touching.
+
+The path-derived key stays valid as an alias. See
+[The model catalog](/docs/models#where-the-name-comes-from).
+
+## Mixed engine builds are normal
+
+Each node runs the build ModelFabric picked for **its own** hardware. Build numbers are compared across
+packagers, so the newest compatible engine is chosen whoever produced it.
+
+A mesh where one machine runs an adopted package and another runs a ModelFabric-installed build is
+normal, not a misconfiguration. See
+[llama.cpp](/docs/engines#which-build-you-get).
+
+## The port
+
+Other local inference servers tend to listen on **1234**, which is also ModelFabric's default front door.
+Only one process can hold it, so either stop the other server or move ModelFabric:
+
+```json filename="config.json"
+{ "listen": "127.0.0.1:1235", "mesh_port": 1235 }
+```
+
+<Callout type="warning">
+  `mesh_port` has to match on **every** node, because discovery probes exactly one agreed port.
+  Changing it is a fleet-wide change, not a per-machine one.
+</Callout>
+
+`mfsh doctor` checks for this specifically and names whichever program is holding the port. Its
+engine inventory also lists every `llama-server` on the machine and who it belongs to, with VRAM,
+which is usually the answer when a load fails for memory.
+
+<Cards>
+  <Card title="llama.cpp" href="/docs/engines">
+    Installing, pinning and selecting ModelFabric's own llama.cpp builds.
+  </Card>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    The engine inventory, the port check, and what else `doctor` sees.
+  </Card>
+</Cards>

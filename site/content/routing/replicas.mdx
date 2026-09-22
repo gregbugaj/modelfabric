@@ -1,0 +1,92 @@
+---
+title: Replicas and prefix affinity
+description: Several copies of one model, and sending each conversation back to the engine that still has it cached.
+---
+
+# Replicas and prefix affinity
+
+```bash
+mfsh load <model> -replicas 4
+```
+
+That runs four copies of one model on a node. Requests sharing a prompt prefix go back to the
+replica that last served them, so the KV cache gets reused instead of rebuilt.
+
+On the 27B, a cache hit takes time-to-first-token from **1.4 seconds to 0.24**.
+
+```json filename="config.json"
+{ "prefix_affinity": false }
+```
+
+## Load still gets a veto
+
+A warm replica that's much busier than the others gets passed over anyway.
+
+Affinity is an optimisation, not a pin. It saves re-reading a long prefix, and that saving is gone
+once the request has to queue behind three others on the same engine. For the same reason the
+[room filter](/docs/routing/llm-d#room-filter) sits in front of everything: prefix affinity must
+never put a request in a queue while another engine is idle.
+
+## Size `parallel` for the concentration, not the average
+
+`context_length` is per request. The engine's KV pool is `context_length × parallel`, so concurrent
+requests can each use the full length.
+
+Think about affinity before you set it. Affinity concentrates same-prefix traffic onto one engine,
+so that engine sees more concurrency than a round-robin split would suggest.
+
+<Callout type="warning">
+  Undersize the pool and those requests fail with *"context size has been exceeded"*. Size
+  `parallel` for the concurrency you expect **on that engine**, not for the average across the
+  mesh.
+</Callout>
+
+```bash
+mfsh load qwen/qwen3.8-27b -context 32768 -parallel 4     # pool: 32768 × 4
+```
+
+## Replicas or more nodes?
+
+Both spread load, and they're not interchangeable.
+
+Replicas share one GPU's memory, so you're bounded by that card. Affinity can pick between them,
+which suits several concurrent conversations on one machine. If the node goes down, all of them go
+with it.
+
+Separate nodes each bring their own memory and survive each other. Affinity works within each one.
+Adding capacity is bounded by your tailnet, not by a single card.
+
+A long agentic workload usually wants both: replicas so several conversations stay warm at once,
+and nodes so one GPU's queue isn't the ceiling.
+
+## Why this exists
+
+Agent traffic is the case this was built for.
+
+Three agent conversations sharing a system prompt are three long prefixes. On a round-robin router
+each one gets re-read from scratch every turn, and at 60k tokens that is most of your wall clock.
+With affinity, each conversation lands back on the engine that already has it.
+
+We measured the failure mode too. In the [SWE-bench runs](/docs/benchmark/swe-routing), affinity without a
+queue check stacked three long conversations onto one GPU while the other sat idle. Each request
+went to the warm engine, queued, and then evicted somebody else's conversation from the KV pool on
+the way in. Affinity with no load check and no room check is worse than no affinity.
+
+## What the mesh publishes
+
+Each engine reports its own slot count and measured prefill rate (`modelfabric.sh/slots`,
+`modelfabric.sh/prefill-tok-s`), not a pooled average. A 5090 and a Mac mini don't have a shared
+"prefill rate", and treating them as if they do makes every scheduling decision slightly wrong.
+
+```bash
+mfsh endpoints             # the mesh's engines in llm-d's file-discovery format
+```
+
+<Cards>
+  <Card title="Load and inference settings" href="/docs/models/settings">
+    `-parallel`, `-context`, `-cache-reuse` and the rest of the KV controls.
+  </Card>
+  <Card title="llm-d" href="/docs/routing/llm-d">
+    Prefix-cache scoring in the EPP, and the room filter in front of every profile.
+  </Card>
+</Cards>

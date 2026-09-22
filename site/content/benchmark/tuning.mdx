@@ -1,0 +1,214 @@
+---
+title: Tuning slots
+description: mfsh tune measures how many requests each machine should serve at once.
+---
+
+# Tuning slots
+
+A slot is one request an engine serves at once. It's llama.cpp's `--parallel`, and the number ModelFabric
+advertises to every router in front of it. Set it too low and the machine idles. Set it too high and
+the same tokens are spread over more requests: every caller gets a slower answer, and every router
+counts the extra slots as free capacity.
+
+Tuning answers how many slots a node should run. How fast a model runs there, in a shape anyone can
+repeat, is [benchmarking](/docs/benchmark/node). Both are on the dashboard's **Benchmark**
+page.
+
+Most people set the same number on every node, because there is nothing obvious to base a
+different number on. On a mesh of mixed hardware that is wrong in both directions at once.
+`mfsh tune` measures it instead: it loads the model at each slot count, pushes that many
+requests through together, and reports where more slots stop buying throughput and start buying
+latency.
+
+```
+$ mfsh tune
+
+  Tuning qwen/qwen3.8-27b
+  65536-token context per request, ~3000-token prompts, 300 tokens out, slots 1, doubling until the engine will not load
+
+  1 slot        60 tok/s together     60 each  first token  2.1s  worst  2.1s
+  2 slots       77 tok/s together     39 each  first token  4.5s  worst  4.5s
+  4 slots   did not run  the GPU ran out of memory while allocating the KV cache
+
+  Recommended: 2 slots at 65536-token context
+  throughput was still climbing at 2 slots, and the sweep stopped before it flattened
+  stopped: 4 slots would not load, so larger counts will not either
+
+  apply with: mfsh load qwen/qwen3.8-27b -context 65536 -parallel 2
+  Run this on each node; the answer is the machine's, not the fleet's.
+  2 slots restored, as found
+```
+
+Nothing is left changed. The sweep puts the node back on the slot count it found, and prints the
+command to apply its recommendation. Applying it is a reload, which drops every conversation
+resident on that engine, so you choose when to run it.
+
+## Why it cannot just be calculated
+
+The arithmetic looks easy: KV cache per token times context times slots against free VRAM. It is not.
+The per-token cost needs attention-head geometry a GGUF does not always carry, and a
+hybrid-attention model (16 of 64 layers full attention, in the case that prompted this) makes the
+obvious calculation wrong by about four times before hardware enters into it. Quantized KV, flash
+attention, unified memory on a Mac and whatever else is resident on the card all move it again.
+
+So `mfsh tune` measures. It costs a few minutes and a handful of reloads, and the answer is for the
+machine you have.
+
+## Tuning the fleet
+
+`-fleet` sweeps every node serving the model and prints them side by side. Each node runs its own
+sweep, since a slot count is a fact about one machine, and they run at the same time.
+
+```
+$ mfsh tune -fleet
+
+  qwen/qwen3.8-27b · 65536-token context
+
+  node          1 slot 2 slots 4 slots 8 slots   recommended
+  xpredator         60      77     OOM       —   2 slots
+  minion            32      42      53     OOM   4 slots
+  helion            10       9       —       —   1 slot
+              total tok/s with that many requests in flight
+
+  xpredator: throughput was still climbing at 2 slots, and the sweep stopped before it flattened
+             stopped: 4 slots would not load, so larger counts will not either
+  minion: throughput was still climbing at 4 slots, and the sweep stopped before it flattened
+  helion: 1 slot gave the most throughput; past that the same tokens are spread over more requests
+          stopped: 2 slots did not beat 1 by more than a tenth, so doubling again would only add latency
+
+  Nothing was changed — back as found: xpredator (2), minion (2), helion (2)
+
+  To apply:
+    xpredator    mfsh load qwen/qwen3.8-27b -context 65536 -parallel 2
+    minion       mfsh load qwen/qwen3.8-27b -context 65536 -parallel 4
+    helion       mfsh load qwen/qwen3.8-27b -context 65536 -parallel 1
+```
+
+Three machines, one model, three different answers. That table is measured on an RTX 5090, a 48GB
+card and an Apple Silicon Mac, all serving the same 4-bit 27B at a 65536-token context.
+
+The fleet had been running two slots everywhere, which is wrong on two of the three. It was costing
+minion half its throughput, and giving helion a second slot that made it slower. The second point
+matters for routing. On two slots, helion advertised capacity it could not serve, and in a benchmark
+run it took **49% of the fleet's prefill while producing a twelfth of the output**. Every router in
+front of it counted both slots, because a slot is the unit they all count in. Tuning helion down to
+one slot is about giving the scheduler a correct number, not about helion's throughput.
+
+A fleet sweep reloads each node's engine several times, so every node is unavailable in turn. It
+prompts for confirmation before starting. `-y` skips the question.
+
+## Flags
+
+| flag | |
+|---|---|
+| `-fleet` | tune every node serving the model, side by side |
+| `-context N` | per-request context. Default: **what the model is loaded with** |
+| `-slots 1,2,4` | the counts to try. Default: **1, doubling until the engine will not load** |
+| `-prompt N` | approximate prompt tokens per request (default 3000) |
+| `-output N` | tokens to generate per request (default 300) |
+| `-y` | do not ask before a fleet sweep |
+
+## What it won't do
+
+**It will not sweep a busy engine.** The check samples requests in flight five times, not once,
+because an engine between two requests looks idle for a moment, and a sweep that reloads it drops
+the conversation.
+
+**It will not run twice on one node.** Two sweeps on the same engine each unload it and then wait for
+a slot count the other has just replaced, so every row times out while the mesh reports the engine
+healthy throughout. We hit this, and a second sweep now gets a 409.
+
+**It will not run a row the machine has no room for.** Before each row it checks host memory, and
+while a row runs it keeps checking. If memory collapses, the row is abandoned and the sweep stops,
+because the next slot count needs more. Both cases are reported as `not attempted`, not as a failed
+load, since ModelFabric stopped the row and the engine didn't fail.
+
+This is a watch, not a prediction. Estimating what a slot count needs would mean inventing the
+number the tool exists to measure. We added it after a sweep took a Mac off the network: mlx-lm
+allocates as a request grows and the model's declared context was 262144 tokens, so no load ever
+failed. There was no out-of-memory kill, no engine error, no row, and the ssh session went down with
+the host. llama.cpp is easier, because its KV is allocated at load and too many slots fails the load,
+which the sweep already reports.
+
+**It will not tune a peer from here.** One node can't load a model on another
+over the tailnet, so `-fleet` calls each node's own API to run the sweep there, and a single-node
+`mfsh tune` has to run on the machine being tuned.
+
+**It flags a context it did not get.** If the engine comes up with a different `n_ctx` than was
+requested, every row says so. An unreported mismatch here has already cost us a benchmark:
+`mfsh ps` reported 65536 while the engine ran 32768, and every long conversation routed there
+overflowed with nothing saying why.
+
+## How much room a conversation has left
+
+The mesh publishes two numbers per engine, because they are easy to confuse:
+`context_length`, how many tokens one conversation may use, and `kv_pool_tokens`, what the engine
+holds in total (that context once for every slot). llama.cpp's `-c` is the second one.
+
+Reading it from the engine is harder than it sounds. `/props` means different things on
+different builds. Measured the same day on one fleet, all serving the same model:
+
+| build | reported | slots | per request |
+|---|---|---|---|
+| LM Studio `cuda12-avx2@2.40.0` | 262144 | 4 | 65536 (the pool) |
+| Metal `advsimd@2.41.0` | 65536 | 1 | 65536 (indistinguishable) |
+| upstream `b11153` | 65536 | 2 | 65536 (per slot) |
+
+So ModelFabric checks the engine's figure against both readings and accepts either. It warns only when
+it matches neither, because that is a load whose settings were ignored. One combination stays
+ambiguous (a pool equal to what was requested, with more than one slot), and there ModelFabric takes the
+optimistic reading. The pessimistic one would warn on every upstream-build engine in the fleet, and
+people stop reading a warning that fires constantly.
+
+`mfsh chat` uses it for headroom, counted against the *next* turn, since that is the one that
+either fits or doesn't:
+
+```
+  conversation       6 turn(s)
+  headroom           48,120 of 65,536 tokens (73%)
+```
+
+The line turns amber past 75%, and past 90% it suggests `/clear`. Beyond that a turn is likely to be
+rejected, and the rejection arrives as an error with the conversation lost. An engine with no
+`/props` (mlx-lm) shows no headroom line.
+
+## Fewer slots means less slack
+
+A node tuned to its throughput optimum has no spare slot, and that changes how
+it fails. Measured here the day the counts above were applied: a client timed out
+without closing its connection, so it stopped reading while the engine kept
+writing. Backpressure stalled the engine mid-generation, and **helion's single
+slot stayed occupied for ninety minutes** while two idle machines went unused.
+A benchmark run reached 22 of 24 exercises and could not finish. On two slots the
+retry would have landed in the spare one and the run would have limped through.
+
+The second slot had been covering for a missing timeout. Tuning removed it and
+exposed the real defect, so change slot counts and timeouts together:
+
+- **`request_stall`** (default 15 minutes) abandons a request that makes no
+  progress in either direction and releases its slot. A client that stops reading
+  without hanging up cannot be detected any other way. See [config](/docs/reference/config).
+- **A client timeout.** Set one explicitly instead of inheriting a library
+  default; the benchmark passes `AIDER_TIMEOUT`.
+
+Both bound *silence*, not duration. A long prefill is silent (a 60k prompt on the
+Apple Silicon node takes minutes before the first token), so a bound tight enough
+to feel responsive would kill legitimate work, a worse failure than the one it
+prevents.
+
+## From the dashboard
+
+The same sweep runs from [the dashboard](/docs/dashboard#tune-slots), across every node. It is the
+same operation: a sweep started from the browser runs on the node and survives the tab closing.
+**Tune slots** on the Benchmark page, or on My Models, opens it, with the same confirmation and the same table, and it doesn't
+apply anything by itself.
+
+## Then what
+
+A slot count is only worth measuring if something downstream reads it. ModelFabric publishes it to
+llm-d and to its own router as `modelfabric.sh/slots`, and both use it to check whether a node has room.
+See [routing](/docs/routing). Benchmarks should record it per node: `bench/swe/env.sh` carries
+the measured counts as `SWE_LOAD_ARGS_<NODE>` overrides, with the table above as the reason.
+
+Re-measure after anything that changes the shape of the problem: a new engine build, a different
+quantization, a context change, or another process taking part of the card.

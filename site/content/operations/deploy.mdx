@@ -1,0 +1,161 @@
+---
+title: Deploy your own build
+description: Build ModelFabric from source, put it on every machine in your mesh, and restart the nodes one at a time.
+---
+
+# Deploy your own build
+
+If you build ModelFabric yourself, whether to run a fix before it's released or because you've changed
+something, this is how you get that build onto every machine and running. You build once, on
+whichever machine has the source, and the script copies the right binary to each of the others.
+
+## What you need
+
+- **Go 1.25** on the machine you build on. Nothing needs to be installed on the others.
+  Node.js is optional: if it's on your `PATH`, the build checks the dashboard's scripts parse
+  before embedding them.
+- **SSH from the build machine to every node**, by tailnet address. Either Tailscale SSH or
+  OpenSSH with a key works. The script runs non-interactively, so a password prompt counts as a
+  failure.
+- **A running node on the build machine.** The script asks it which peers are alive and at which
+  tailnet address. You can also name the machines yourself.
+
+## 1. Build
+
+```bash
+make dist
+```
+
+That writes static binaries for `linux/amd64`, `linux/arm64` and `darwin/arm64` to `dist/`, with
+the dashboard compiled in and a `checksums.txt` beside them. Each node needs only the one file.
+
+<Callout type="warning">
+  `go build ./...` compiles and throws the result away. Always build with `make`.
+</Callout>
+
+## 2. Stage it on the nodes
+
+```bash
+make deploy                    # every live peer
+make deploy NODES="minion"     # only these
+```
+
+For each node, the script:
+
+1. asks the machine for its OS and CPU over SSH and picks the matching binary,
+2. copies it to a temporary name,
+3. checks its SHA-256 on the node against the one computed locally,
+4. renames it over `~/.local/bin/mfsh`.
+
+A copy that arrives wrong is deleted and never replaces a working binary. A node that doesn't
+answer is reported and skipped, so you always know which nodes got the build.
+
+```
+mesh peers: minion entrypoint-01
+  minion (100.64.0.2): staged linux/amd64  3f1c09ab… -> 96449033…
+  entrypoint-01 (100.64.0.3): already this build (linux/amd64)
+
+staged on 2 node(s), skipped 0.
+Nothing was restarted: each node keeps running its old build until you restart it (or pass -restart).
+```
+
+Staging never restarts anything. Replacing the file under a running node is safe, because the old
+process keeps running from the file it opened. Each node picks up the new build the next time it
+starts.
+
+## 3. Restart
+
+To restart as part of the deploy:
+
+```bash
+make deploy-restart                     # stage, then restart each node
+make deploy-restart NODES="minion"
+sh scripts/deploy.sh -restart -force    # restart nodes with models loaded too
+```
+
+Nodes restart **one at a time**. The script waits for each to answer on its own port before
+moving to the next, so the mesh never loses every machine at once. A node started with
+`mfsh service install` is restarted through systemd; any other node gets `mfsh down` then
+`mfsh up`.
+
+**A node with a model loaded is skipped** unless you pass `-force`. Restarting unloads its models,
+and a large model takes a while to load again (about 20 seconds for a 27B on a GPU node), so the
+script leaves that decision to you:
+
+```
+  minion (100.64.0.2): staged linux/amd64  3f1c09ab… -> 96449033…
+    not restarted: it has models loaded, and a restart unloads them (-force to do it anyway)
+```
+
+After each restart the script checks that the node is **running the binary it just staged**, by
+hashing the running process's executable. If a systemd unit points at a different path than
+`~/.local/bin/mfsh`, the node comes back on the old build. The script says so and exits non-zero:
+
+```
+    restarted (systemd), but it is NOT running the staged build: /usr/local/bin/mfsh
+    the systemd unit starts /usr/local/bin/mfsh, not ~/.local/bin/mfsh; point the unit at the staged binary
+```
+
+On macOS there's no way to hash the running process from the shell, so the script reports which
+binary the node runs and says it couldn't check which build that is.
+
+## 4. Check
+
+```bash
+mfsh doctor                         # on any node: version, tailnet, engines
+curl -s localhost:1234/z/version    # on a node: the build it is actually running
+```
+
+## A machine that has never run ModelFabric
+
+The deploy script updates machines that are already in the mesh. For a new one, point
+[`install.sh`](/docs/getting-started) at your own build instead of the published releases. It
+expects `<base>/<version>/mfsh-<os>-<arch>` and a `checksums.txt` beside them, which is exactly
+what `make dist` writes:
+
+```bash
+# on the build machine: serve dist/ as version "local"
+mkdir -p /tmp/mfsh-release/local && cp dist/* /tmp/mfsh-release/local/
+python3 -m http.server --bind 100.64.0.1 8000 --directory /tmp/mfsh-release
+
+# on the new machine
+MFSH_BASE_URL=http://100.64.0.1:8000 MFSH_VERSION=local sh install.sh
+```
+
+<Callout type="warning">
+  That HTTP server listens on your tailnet address, so anyone your Tailscale ACLs let reach the
+  build machine can download the binary while it runs. Stop it once the install is done.
+</Callout>
+
+`install.sh` verifies the binary against `checksums.txt` before installing it. After that the new
+machine is a peer like any other, and the next `make deploy` includes it.
+
+## Options
+
+| | |
+|---|---|
+| `-restart` | restart each node after staging it, one at a time |
+| `-force` | with `-restart`: restart nodes that have models loaded |
+| `NODES="a b"` | only these machines (for `make`; with the script, name them as arguments) |
+| `MFSH_REMOTE_BIN` | where the binary goes on each node, relative to its home directory (default `.local/bin/mfsh`) |
+| `MFSH_PORT` | the node's port, for the restart check (default `1234`) |
+| `SSH_OPTS` | extra options for `ssh` and `scp` |
+
+## When SSH fails
+
+**"Tailscale SSH wants you to re-authenticate."** The node uses Tailscale SSH in *check* mode,
+which asks you to log in again in a browser from time to time. Open the link the script prints, or
+run `ssh <address> true` once and follow it, then run the deploy again. Without this, `ssh` just
+reports a timeout, which looks like the machine is down when it isn't.
+
+**"Permission denied (publickey)."** The build machine's key isn't authorized on that node.
+Add it to the node's `~/.ssh/authorized_keys`, or turn on Tailscale SSH for it.
+
+<Cards>
+  <Card title="Run as a service" href="/docs/operations/service">
+    A systemd unit, and what keeps it running after you log out.
+  </Card>
+  <Card title="Development" href="/docs/reference/development">
+    Building, testing, and the traps in this repository.
+  </Card>
+</Cards>

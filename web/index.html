@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ModelFabric</title>
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2.5' stroke-linecap='round'><circle cx='12' cy='5' r='2.5'/><circle cx='5' cy='19' r='2.5'/><circle cx='19' cy='19' r='2.5'/><path d='M12 7.5 6.5 16.5M12 7.5l5.5 9M7.5 19h9'/></svg>">
+</head>
+<body>
+<div class="app">
+
+  <nav class="rail">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/>
+        <path d="M12 7.5 6.5 16.5M12 7.5l5.5 9M7.5 19h9"/>
+      </svg>
+      ModelFabric
+    </div>
+
+    <div class="rail-label">Mesh</div>
+    <a href="#overview" data-view="overview" class="active">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/>
+        <rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>
+      </svg>
+      Overview
+    </a>
+    <a href="#mesh" data-view="mesh">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M10.7 7.2 6.3 15.8M13.3 7.2l4.4 8.6M7.5 18h9"/>
+      </svg>
+      Mesh
+    </a>
+    <a href="#local" data-view="local">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>
+      </svg>
+      My Models
+    </a>
+
+    <a href="#models" data-view="models">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="m3 17 9 5 9-5"/><path d="m3 12 9 5 9-5"/>
+      </svg>
+      Serving
+    </a>
+    <div class="rail-label">System</div>
+    <a href="#routing" data-view="routing">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h4l6-6M11 12l6 6"/>
+      </svg>
+      Routing
+    </a>
+    <a href="#runtime" data-view="runtime">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/>
+      </svg>
+      Runtime
+    </a>
+    <a href="#bench" data-view="bench">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/>
+      </svg>
+      Benchmark
+    </a>
+    <a href="#activity" data-view="activity">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12h4l3 8 4-16 3 8h4"/>
+      </svg>
+      Activity
+    </a>
+
+    <a href="#doctor" data-view="doctor">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 2a2 2 0 0 0-2 2v6.5a5 5 0 1 0 10 0V9"/><circle cx="19" cy="7" r="2"/><path d="M5 2v6a4 4 0 0 0 4 4"/>
+      </svg>
+      Doctor
+    </a>
+
+    <!-- The same three scheduling profiles the Routing page offers, named for
+         the traffic they suit rather than the plugins they load. A preset is a
+         framing, not a fourth profile: each one says which it applies. -->
+    <div class="rail-label">Workload</div>
+    <div id="rail-presets"></div>
+
+    <!-- Not a fourth workload. Any of the profiles above can schedule a model
+         that takes images; this works around a llama.cpp defect in how it
+         chunks them, and applies whichever profile is running. -->
+    <div class="rail-label">Engine</div>
+    <div id="rail-engine"></div>
+
+    <div class="rail-foot">
+      <button class="theme-toggle" id="theme-toggle" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+        </svg>
+        <span id="theme-label">Theme</span>
+      </button>
+      <div id="node-name" class="mono">—</div>
+    </div>
+  </nav>
+
+  <main class="content">
+    <div class="page-head">
+      <h1 id="page-title">Overview</h1>
+      <span class="badge live" id="conn"><span class="dot"></span>connecting</span>
+    </div>
+    <p class="page-sub" id="page-sub" hidden></p>
+
+    <section data-view="overview">
+      <!-- The front door: the one address apps use, and what happens behind it. -->
+      <section class="frontdoor" aria-label="Where apps connect">
+        <div class="fd-eyebrow">Apps connect to</div>
+        <div class="fd-address">
+          <code id="fd-url">—</code>
+          <button class="btn fd-copy" id="fd-copy" type="button" title="Copy the address">Copy</button>
+        </div>
+        <div class="fd-auth-row">
+          <div class="fd-auth" id="fd-auth"></div>
+          <button class="btn sm" id="ss-open" type="button">Server settings</button>
+        </div>
+        <ol class="fd-path" id="fd-path" aria-label="What a request passes through"></ol>
+      </section>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span>Nodes <span class="hint">discovered by probing the tailnet</span></span>
+          <span class="pulse" id="pulse"></span>
+        </div>
+        <p class="panel-note" id="pref-note" hidden></p>
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Address</th><th>Engines</th><th>Status</th><th>In flight</th><th>Models</th><th>Last seen</th><th>Preferred</th></tr>
+          </thead>
+          <tbody id="nodes-body"></tbody>
+        </table>
+        <div class="empty" id="nodes-empty" hidden></div>
+      </div>
+    </section>
+
+    <!-- What the mesh serves, on its own surface. The engines behind those
+         models are a different object and keep their own. -->
+    <section data-view="models" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          Models
+          <span class="hint">union across the mesh — request any of these at <code>/v1/chat/completions</code></span>
+        </div>
+        <table>
+          <thead><tr><th>Model</th><th>Replicas</th><th>Served by</th></tr></thead>
+          <tbody id="models-body"></tbody>
+        </table>
+        <div class="empty" id="models-empty" hidden></div>
+      </div>
+
+      <!-- Engines are their own object: the processes behind the models above,
+           not another reading of them. Their own surface says so. -->
+      <div class="panel">
+        <div class="panel-head">Engines <span class="hint">every engine process in the mesh</span></div>
+        <table>
+          <thead><tr><th>Node</th><th>Model</th><th>Status</th><th>In flight</th><th>Load 2m</th><th>Prefill</th><th>Decode</th><th>Drafts</th><th>KV cache</th><th>Address</th><th>Runtime</th></tr></thead>
+          <tbody id="engines-body"></tbody>
+        </table>
+        <div class="empty" id="engines-empty" hidden></div>
+      </div>
+
+      <!-- Rates say how fast an engine is; this says how much of the fleet's
+           work it was actually given, which is what a placement decision
+           produces. A fast engine handed nothing and a slow one buried both
+           look healthy on rates alone. -->
+      <div class="panel">
+        <div class="panel-head">Work done <span class="hint">tokens each engine has processed since it started</span></div>
+        <table>
+          <thead><tr><th>Node</th><th>Prefilled</th><th>Share</th><th>From cache</th><th>Cache hit</th><th>Generated</th></tr></thead>
+          <tbody id="work-body"></tbody>
+        </table>
+        <div class="empty" id="work-empty" hidden></div>
+      </div>
+    </section>
+
+    <section data-view="mesh" hidden>
+      <div class="panel mesh-panel">
+        <div class="mesh-toolbar">
+          <span class="mesh-from">
+            <span class="seg" id="mesh-view">
+              <button class="seg-btn active" type="button" data-view="arch">Architecture</button>
+              <button class="seg-btn" type="button" data-view="star">Constellation</button>
+            </span>
+            <span id="mesh-from-wrap"><span class="muted small">Requests entering at</span> <span class="seg" id="mesh-from"></span></span>
+            <span id="mesh-model-wrap" hidden><span class="muted small">Model</span> <span class="seg" id="mesh-model"></span></span>
+          </span>
+          <span class="mesh-legend">
+            <span><i class="lg lg-direct"></i>direct to engine</span>
+            <span><i class="lg lg-forwarded"></i>through a node's ModelFabric</span>
+            <span><i class="lg lg-llmd"></i>llm-d</span>
+            <span><i class="lg lg-preferred"></i>preferred node</span>
+            <span><i class="lg lg-peer"></i>connected, nothing routed yet</span>
+            <span><i class="dot-scope scope-loopback"></i>loopback</span>
+            <span><i class="dot-scope scope-tailnet"></i>tailnet</span>
+            <span><i class="dot-scope scope-public"></i>public</span>
+            <span><i class="dot-scope scope-internal"></i>internal</span>
+          </span>
+        </div>
+        <div class="mesh-star" id="mesh-star" hidden><svg id="star-svg" role="img" aria-label="The chosen model, the nodes serving it and the entry points routing to it"></svg></div>
+        <div class="mesh-canvas" id="mesh-canvas">
+          <div class="mesh-entries" id="mesh-entries"></div>
+          <div class="tailnet">
+            <div class="tailnet-label">tailnet · WireGuard, every hop encrypted and authenticated</div>
+            <div class="mesh-nodes" id="mesh-nodes"></div>
+          </div>
+          <svg class="mesh-svg" id="mesh-svg" aria-hidden="true"></svg>
+        </div>
+      </div>
+    </section>
+
+    <section data-view="local" hidden>
+      <div class="mm">
+        <div class="panel mm-main">
+          <div class="mm-toolbar">
+            <div class="seg" id="mm-nodes" role="tablist" aria-label="Node"></div>
+            <span class="mm-tools">
+              <span class="seg seg-sm" id="mm-group" role="group" aria-label="Group models by"></span>
+              <input class="input mm-search" id="mm-search" type="search" placeholder="Filter models…" aria-label="Filter models">
+              <!-- Beside the node tabs rather than on a model's row: a slot
+                   count is a fact about a machine, and the answer is only
+                   useful as the comparison across every node serving one
+                   model. -->
+              <button class="btn" id="tn-open" type="button" title="Measure how many requests each node should serve at once">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-6M4 11V3M12 21v-9M12 8V3M20 21v-4M20 13V3"/><path d="M1 15h6M9 8h6M17 17h6"/></svg>
+                Tune slots
+              </button>
+              <button class="btn primary" id="dv-open" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+                Discover models
+              </button>
+            </span>
+          </div>
+          <div class="mm-unreachable" id="mm-unreachable" hidden></div>
+          <div class="table-scroll">
+            <table class="dense" id="mm-table">
+              <thead id="mm-head"></thead>
+              <tbody id="mm-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="mm-empty" hidden></div>
+          <div class="mm-foot" id="mm-foot"></div>
+        </div>
+        <aside class="panel side-panel" id="mm-side" hidden aria-label="Model details"></aside>
+      </div>
+
+
+    </section>
+    <section data-view="routing" hidden>
+      <!-- Two routing methods, side by side: ModelFabric's own router, which
+           places every model, and llm-d, which can take one model over and
+           schedule it its own way. Which one has each model is the first
+           thing the page says; each method's controls follow. -->
+      <div class="rg-methods" id="rg-methods"></div>
+      <div class="panel" id="rg-models-panel">
+        <div class="panel-head"><span>Who routes each model</span><span class="hint">right now, across the mesh</span></div>
+        <table class="rg-models"><thead><tr><th>Model</th><th>Routed by</th><th>Held by</th></tr></thead><tbody id="rg-models"></tbody></table>
+      </div>
+
+      <div class="panel" id="rg-router">
+        <div class="panel-head"><span>ModelFabric router <span class="hint">every model llm-d is not scheduling</span></span><span id="rg-router-status"></span></div>
+        <div class="rg-router-body" id="rg-router-body"></div>
+        <div class="rg-foot"><span class="rg-router-msg" id="rg-router-msg"></span><button class="btn primary" id="rg-router-save" type="button" disabled>Save</button></div>
+      </div>
+
+      <div class="empty" id="rt-na" hidden>llm-d is not available on this node: it runs on Linux. ModelFabric's router places every request here.</div>
+      <!-- One subject: llm-d — its state, and which profile it schedules with.
+           Each choice is a list of rows rather than a grid of cards, because it
+           is one pick out of several — cards inside a card said it louder. -->
+      <div id="routing-body">
+        <div class="panel">
+          <div class="panel-head">
+            <span>llm-d <span class="hint">an alternative scheduler for one model, with its own prefix-aware scoring and caching</span></span>
+            <span id="rg-llmd-state"></span>
+          </div>
+          <div id="rg-llmd"></div>
+          <div class="section-head">Scheduling profile <span class="hint">llm-d's well-lit paths, as far as llama.cpp can run them</span></div>
+          <div class="choices" id="rg-profiles"></div>
+          <div class="unavailable" id="rg-unavailable"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- This machine and what it can run share a surface: the hardware is only
+         there to explain which builds fit. Installing new ones is a separate
+         act, so it keeps its own. -->
+    <!-- Benchmark: the standard suite, run on a node against its own engine,
+         reported with everything needed to repeat it. Tune slots sits beside
+         it: a different question (how many slots should this machine run),
+         asked of the same engines. -->
+    <section data-view="bench" hidden>
+      <!-- Two tools, so two tabs that read as a choice at a glance: the
+           flyout's small underline tabs here went unnoticed. -->
+      <div class="bn-tabs" role="tablist">
+        <button class="bn-tab active" type="button" role="tab" data-bn-tab="bench" aria-selected="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></svg>
+          <span><b>Benchmark</b><small>How fast a model runs on a node</small></span>
+        </button>
+        <button class="bn-tab" type="button" role="tab" data-bn-tab="tune" aria-selected="false">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-6M4 11V3M12 21v-9M12 8V3M20 21v-4M20 13V3"/><path d="M1 15h6M9 8h6M17 17h6"/></svg>
+          <span><b>Tune slots</b><small>How many requests each node should serve at once</small></span>
+        </button>
+        <button class="bn-tab" type="button" role="tab" data-bn-tab="cluster" aria-selected="false">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="8" height="6" rx="1"/><rect x="14" y="3" width="8" height="6" rx="1"/><rect x="8" y="15" width="8" height="6" rx="1"/><path d="M6 9v2a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9M12 12v3"/></svg>
+          <span><b>Cluster benchmark</b><small>How much the whole setup serves</small></span>
+        </button>
+      </div>
+      <div id="bn-bench">
+        <div class="panel bn-config">
+          <div class="panel-head"><span>Configuration</span><span class="hint">runs on the node, against its own engine</span></div>
+          <div class="bn-form">
+            <label class="bn-field">Node <select class="input" id="bn-node"></select></label>
+            <label class="bn-field">Model <select class="input" id="bn-model"></select></label>
+            <div class="bn-field">Prompts
+              <span class="seg seg-sm" id="bn-prompts" role="group" aria-label="Prompt set">
+                <button class="seg-btn active" type="button" data-v="prose" title="ModelFabric's docs, summarised: output the model cannot predict">Prose</button>
+                <button class="seg-btn" type="button" data-v="code" title="ModelFabric's Go source, continued: predictable output, where speculative decoding helps most">Code</button>
+              </span>
+            </div>
+            <label class="bn-field">Runs per test <select class="input" id="bn-reps"><option value="1">1</option><option value="3">3 (median)</option><option value="5">5 (median)</option></select></label>
+          </div>
+          <div class="bn-tests">
+            <div><div class="bn-label">Single request</div><div class="bn-checks" id="bn-pp"></div><div class="bn-help">Generation length: 128 tokens, exactly</div></div>
+            <div><div class="bn-label">Continuous batching</div><div class="bn-checks" id="bn-batch"></div><div class="bn-help">Batch tests use pp1024 / tg128, with one prompt shared and with each its own</div></div>
+          </div>
+          <div class="bn-actions">
+            <button class="btn primary" id="bn-run" type="button">Run benchmark</button>
+            <button class="btn" id="bn-stop" type="button" hidden>Stop</button>
+            <span class="bn-status" id="bn-status"></span>
+          </div>
+          <div class="bn-note">The engine is reloaded for each phase (one long slot, then eight short ones) and put back afterwards. Requests routed to this node meanwhile wait or fail.</div>
+        </div>
+        <div id="bn-results"></div>
+      </div>
+      <div id="bn-tune" hidden>
+        <div class="panel bn-tune">
+          <div class="panel-head"><span>Tune slots</span></div>
+          <p class="bn-tune-text">A node's slot count is how many requests it serves at once. More slots buy throughput until the GPU is saturated, then buy only latency. Tuning loads the model at each count, measures, and recommends one per node: the answer is a fact about each machine, so the fleet is tuned side by side.</p>
+          <button class="btn primary" id="bn-tune-open" type="button">Tune slots…</button>
+        </div>
+      </div>
+      <!-- The cluster as one system: requests through this node's front door,
+           placed as an app's are. Nothing is reloaded. -->
+      <div id="bn-cluster" hidden>
+        <div class="panel bn-config">
+          <div class="panel-head"><span>Configuration</span><span class="hint" id="bc-door">through this node's front door, to every node holding the model</span></div>
+          <div class="bn-form">
+            <label class="bn-field">Model <select class="input" id="bc-model"></select></label>
+            <div class="bn-field">Prompts
+              <span class="seg seg-sm" id="bc-prompts" role="group" aria-label="Prompt set">
+                <button class="seg-btn active" type="button" data-v="prose" title="ModelFabric's docs, summarised: output the model cannot predict">Prose</button>
+                <button class="seg-btn" type="button" data-v="code" title="ModelFabric's Go source, continued: predictable output, where speculative decoding helps most">Code</button>
+              </span>
+            </div>
+            <label class="bn-field">Runs per test <select class="input" id="bc-reps"><option value="1">1</option><option value="3">3 (median)</option><option value="5">5 (median)</option></select></label>
+          </div>
+          <div class="bc-holders" id="bc-holders"></div>
+          <div class="bn-tests">
+            <div><div class="bn-label">One request at a time</div><div class="bn-checks" id="bc-pp"></div><div class="bn-help">Generation length: 128 tokens, exactly. Shows which node the router picks for each length.</div></div>
+            <div><div class="bn-label">Requests at once</div><div class="bn-checks" id="bc-conc"></div><div class="bn-help">Each level at pp1024 / tg128, with each request its own prompt and then one prompt shared</div></div>
+          </div>
+          <div class="bn-actions">
+            <button class="btn primary" id="bc-run" type="button">Run cluster benchmark</button>
+            <button class="btn" id="bc-stop" type="button" hidden>Stop</button>
+            <span class="bn-status" id="bc-status"></span>
+          </div>
+          <div class="bn-note">Nothing is reloaded: the cluster is measured as it is configured, and other traffic shares it. Each result records the nodes that served it.</div>
+        </div>
+        <div id="bc-results"></div>
+        <div class="panel bn-panel">
+          <div class="panel-head"><span>Agent and chat benchmarks</span><span class="hint">run from a terminal</span></div>
+          <p class="bn-tune-text">Two longer benchmarks drive the cluster with real workloads and compare routing methods: SWE-bench Verified tasks through a coding agent (long conversations, heavy prompt reuse), and Aider's polyglot exercises (short tasks at a high request rate). They need Python, a container and an hour or more per mode, so they run from the repository, not this page.</p>
+          <div class="bn-cmd"><code>bench/swe/setup.sh &amp;&amp; bench/swe/sequence.sh &lt;run&gt; router tuned</code></div>
+          <div class="bn-cmd"><code>bench/aider/setup.sh &amp;&amp; bench/aider/sequence.sh &lt;run&gt; router tuned</code></div>
+          <p class="bn-note bc-readme">Set SWE_ENTRYPOINT, SWE_AGENT_BASE and SWE_CONTROL_ADDR first; bench/swe/README.md and bench/aider/README.md have the details.</p>
+        </div>
+      </div>
+    </section>
+
+    <section data-view="runtime" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <span>Runtimes <span class="hint" id="rt-selection"></span></span>
+          <button class="btn" id="rt-auto" type="button" hidden>Select automatically</button>
+        </div>
+        <div class="hw-grid" id="hw-grid"></div>
+        <div class="section-head">Installed <span class="hint">what engine builds are matched against the hardware above</span></div>
+        <table>
+          <thead>
+            <tr><th>Runtime</th><th>llama.cpp</th><th>Backend</th><th>Source</th><th>Fits</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody id="rt-body"></tbody>
+        </table>
+        <div class="empty" id="rt-empty" hidden></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span>Get runtimes <span class="hint" id="rt-upstream-hint">upstream llama.cpp builds, verified and tested on this machine</span></span>
+          <button class="btn" id="rt-check" type="button">Check for updates</button>
+        </div>
+        <div id="rt-installing"></div>
+        <table id="rt-options-table" hidden>
+          <thead><tr><th>Runtime</th><th>Backend</th><th>Download</th><th>Why</th><th></th></tr></thead>
+          <tbody id="rt-options"></tbody>
+        </table>
+        <table id="rt-updates-table" hidden>
+          <thead><tr><th>Installed variant</th><th>Installed</th><th>Latest</th><th></th></tr></thead>
+          <tbody id="rt-updates"></tbody>
+        </table>
+        <div class="empty" id="rt-get-empty"></div>
+      </div>
+    </section>
+
+    <!-- What the node did, and what it is doing. Two readings of the same
+         subject — one durable and one live — so they share a surface with a
+         rule between them rather than sitting in separate cards. -->
+    <section data-view="activity" hidden>
+      <div class="panel">
+        <!-- Three views of one node's activity, as tabs rather than three
+             stacked tables: each carries its own controls, and together they
+             made a page you had to scroll past two of to reach the third.
+             Tabs also give the live tap a natural on/off — it runs only while
+             its own tab is showing. -->
+        <div class="panel-head">
+          <div class="tabs" id="act-tabs" role="tablist">
+            <button class="tab active" type="button" role="tab" data-tab="requests">Requests</button>
+            <button class="tab" type="button" role="tab" data-tab="replies">Live replies</button>
+            <button class="tab" type="button" role="tab" data-tab="operations">Operations</button>
+          </div>
+          <span class="pulse" id="act-live"></span>
+        </div>
+
+        <div class="act-tab" data-tab="requests">
+        <div class="meta-line">
+          <span class="hint" id="act-scope-hint">every request this node answered.</span>
+          <span class="grow"></span>
+          <!-- Requests are held per node, so the scope is a choice rather than
+               a given: this node streams live, the mesh is polled. -->
+          <div class="seg" id="act-scope">
+            <button class="seg-btn active" type="button" data-scope="node">This node</button>
+            <button class="seg-btn" type="button" data-scope="mesh">Whole mesh</button>
+          </div>
+        </div>
+        <!-- Capture is a deliberate act, so the switch is in plain sight with
+             what it does written next to it, rather than buried in settings. -->
+        <div class="meta-line" id="act-capture">
+          <label class="act-toggle">
+            <input type="checkbox" id="act-bodies">
+            <span>Capture request &amp; response</span>
+          </label>
+          <span class="hint" id="act-bodies-note">Off — only metadata is recorded.</span>
+          <span class="sep">·</span>
+          <label class="hint">Keep last
+            <select id="act-keep" title="How many requests this node holds">
+              <option value="100">100</option>
+              <option value="200" selected>200</option>
+              <option value="500">500</option>
+              <option value="1000">1000</option>
+              <option value="2000">2000</option>
+            </select>
+          </label>
+          <!-- In mesh scope each node keeps its own ring, so each gets its own
+               switch; this node's stays the one on the left. -->
+          <span class="act-peers" id="act-peers" hidden></span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Time</th><th class="act-front" hidden>Front door</th><th>Path</th><th>Model</th><th>Served by</th><th>Status</th><th>Latency</th><th>Size</th></tr>
+          </thead>
+          <tbody id="act-log"></tbody>
+        </table>
+        <div class="empty" id="act-log-empty"></div>
+        </div>
+
+        <!-- Live replies. Deliberately has no mesh scope: the tap sits on this
+             node's own front door, so unlike Requests it cannot be merged
+             across the mesh without shipping reply text between machines.
+             Runs only while this tab is open — opening it is the deliberate
+             act, leaving it stops the tap, and nothing is kept at either end. -->
+        <div class="act-tab" data-tab="replies" hidden>
+        <div class="meta-line">
+          <span class="hint">what this node is generating right now, as it arrives — open another node&rsquo;s dashboard to watch that one</span>
+        </div>
+        <div class="meta-line" id="tok-controls">
+          <label class="act-toggle">
+            <input type="checkbox" id="tok-on">
+            <span>Follow live output</span>
+          </label>
+          <span class="hint" id="tok-note">Nothing is recorded; leaving this tab stops it.</span>
+          <span class="sep">·</span>
+          <label class="hint"><input type="checkbox" id="tok-thinking" checked> Show thinking</label>
+          <span class="sep">·</span>
+          <!-- A reasoning model writes thousands of tokens a minute and the
+               whole fleet can be answering at once. This bounds what the page
+               holds; the node keeps nothing either way. -->
+          <label class="hint">Keep last
+            <select id="tok-keep" title="How many replies this page holds">
+              <option value="3">3</option>
+              <option value="6" selected>6</option>
+              <option value="12">12</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+            </select>
+            replies
+          </label>
+          <span class="sep">·</span>
+          <span class="hint" id="tok-rate"></span>
+        </div>
+        <div id="tok-stream" class="tok-stream" hidden></div>
+        <div class="empty" id="tok-empty" hidden>Waiting for a request to this node…</div>
+        </div>
+
+        <div class="act-tab" data-tab="operations" hidden>
+        <div class="meta-line">
+          <span class="hint">every node, always: loads, unloads and downloads from each machine&rsquo;s durable journal</span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Operation</th><th>Node</th><th>Kind</th><th>Model</th><th>State</th><th>Started</th><th>Ended</th><th>Elapsed</th><th>Detail</th></tr>
+          </thead>
+          <tbody id="act-ops"></tbody>
+        </table>
+        <div class="empty" id="act-ops-empty" hidden></div>
+        </div>
+      </div>
+
+      <!-- One request, in full: how it was routed, and what was said on the
+           wire if capture was on when it happened. -->
+      <aside class="panel side-panel" id="act-side" hidden aria-label="Request details"></aside>
+    </section>
+
+    <!-- Every check this node can make about itself, or about a peer. The
+         node runs them; this page only renders what it is told. -->
+    <section data-view="doctor" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <span>Health <span class="hint" id="dr-hint">everything ModelFabric depends on, checked now</span></span>
+          <span class="meta-line">
+            <label class="hint">Node
+              <select id="dr-node"></select>
+            </label>
+            <button class="btn" id="dr-run" type="button">Run again</button>
+          </span>
+        </div>
+        <div id="dr-body"></div>
+        <div class="empty" id="dr-empty" hidden></div>
+      </div>
+    </section>
+
+  </main>
+
+</div>
+<dialog id="dv-dialog" class="modal-lg" aria-label="Discover models">
+  <div class="modal-head">
+    <div>
+      <div class="dlg-title">Discover models</div>
+      <div class="dlg-sub">GGUF models on Hugging Face, downloaded to any node you own.</div>
+    </div>
+    <button class="btn icon" id="dv-close" type="button" title="Close (Esc)">×</button>
+  </div>
+  <div class="dv">
+        <div class="panel dv-list">
+          <div class="dv-search">
+            <input class="input" id="dv-q" type="search" placeholder="Search models on Hugging Face…" aria-label="Search models">
+            <div class="seg" id="dv-source">
+              <button class="seg-btn active" type="button" data-author="">LM Studio picks</button>
+              <button class="seg-btn" type="button" data-author="all">All GGUF</button>
+            </div>
+          </div>
+          <div class="dv-results" id="dv-results"></div>
+        </div>
+        <div class="panel dv-page" id="dv-page">
+          <div class="empty">Pick a model to see its page and download it to a node.</div>
+        </div>
+      </div>
+</dialog>
+<!-- Slot tuning, opening over My Models the way Discover does: how many
+     requests a node should serve at once is part of managing what it runs.
+     Two stages in one dialog — what is about to happen, then what it found.
+     The first is not a formality: the sweep reloads each node's engine once
+     per slot count, so a fleet sweep takes every engine down in turn. -->
+<dialog id="tn-dialog" aria-labelledby="tn-title">
+  <div class="dlg-head">
+    <div>
+      <div class="dlg-title" id="tn-title">Tune slots</div>
+      <div class="dlg-sub" id="tn-sub"></div>
+    </div>
+    <button class="btn" id="tn-close" type="button">Close</button>
+  </div>
+  <div class="dlg-body" id="tn-body"></div>
+  <div class="dlg-foot">
+    <span class="err-text" id="tn-error"></span>
+    <span class="dlg-actions" id="tn-actions"></span>
+  </div>
+</dialog>
+<!-- A preset says what it is about to schedule before it does it. llm-d serves
+     one model at a time, so the model is a real question when it is off; when
+     it is already running this is a confirmation with the answer filled in. -->
+<dialog id="wl-dialog">
+  <form method="dialog" id="wl-form">
+    <div class="dlg-head">
+      <div>
+        <div class="dlg-title" id="wl-title">Workload</div>
+        <div class="dlg-sub" id="wl-sub"></div>
+      </div>
+      <button class="btn" value="cancel" type="submit">Close</button>
+    </div>
+    <div class="dlg-body" id="wl-body"></div>
+    <div class="dlg-foot">
+      <a class="wl-advanced" id="wl-advanced" href="#routing">Advanced settings →</a>
+      <span class="dlg-actions">
+        <button class="btn" value="cancel" type="submit">Cancel</button>
+        <button class="btn primary" id="wl-start" value="start" type="submit">Start</button>
+        <button class="btn primary" id="wl-reload" value="save-reload" type="submit" hidden>Save &amp; reload</button>
+      </span>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="settings-dialog">
+  <form method="dialog" id="settings-form">
+    <div class="dlg-head">
+      <div>
+        <div class="dlg-title" id="dlg-title">Settings</div>
+        <div class="dlg-sub" id="dlg-sub"></div>
+      </div>
+      <button class="btn" value="cancel" type="submit">Close</button>
+    </div>
+    <div class="dlg-body" id="dlg-body"></div>
+    <div class="dlg-foot">
+      <span class="err-text" id="dlg-error"></span>
+      <span class="dlg-actions" id="dlg-actions"></span>
+    </div>
+  </form>
+</dialog>
+<!-- Server settings, in the flyout My Models and Activity use: tabs for
+     the server, access, tokens and on-demand loading. Built by
+     serversettings.js; saved to the config file the node runs from. -->
+<aside class="panel side-panel" id="ss-side" hidden aria-label="Server settings"></aside>
+<div id="notice" role="status" hidden></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

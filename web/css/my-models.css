@@ -1,0 +1,150 @@
+/* ---- My Models ---- */
+
+.btn.sm { font-size: 12px; padding: 3px 11px; }
+/* Scoped to the detail panel's pin and close: as a bare `.btn.icon` this had
+   the same specificity as the dialog rule above and silently re-padded every
+   icon button in the app. */
+.side-actions .btn.icon { padding: 1px 8px; font-size: 15px; line-height: 1.2; }
+.table-scroll { overflow-x: auto; }
+
+/* The table owns the page; the detail panel flies out over it and can be
+   pinned to dock beside it, the way marie-studio's side panel works. Only a
+   pinned panel takes a column. */
+.mm { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.mm.has-pinned { grid-template-columns: minmax(0, 1fr) var(--side-w, 420px); }
+.mm .panel { margin-bottom: 0; }
+@media (max-width: 1100px) { .mm.has-pinned { grid-template-columns: minmax(0, 1fr); } }
+
+/* A model and the nodes that hold it. The group row states the model once;
+   the rows beneath carry only what differs between machines. */
+.mm-group-row > td { background: hsl(var(--surface-inset) / 0.7); padding: 7px 10px; }
+.mm-group-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mm-group-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.mm-group-tags { display: inline-flex; gap: 4px; }
+.mm-group-where { margin-left: auto; font-size: 11.5px; color: var(--text-muted); }
+.mm-group-where.on { color: hsl(var(--success-text)); font-weight: 600; }
+.mm-sub { padding-left: 22px; }
+.mm-sub-row td { border-top: 1px solid var(--border-soft); }
+.seg-sm .seg-btn { padding: 3px 9px; font-size: 12px; }
+
+.mm-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--border-soft);
+}
+.mm-search { width: 240px; max-width: 100%; }
+.mm-unreachable {
+  padding: 6px 14px; font-size: 12.5px; color: hsl(var(--warning-token));
+  background: hsl(var(--warning-token) / 0.08); border-bottom: 1px solid var(--border-soft);
+}
+.mm-foot { padding: 7px 14px; font-size: 12.5px; color: var(--text-muted); border-top: 1px solid var(--border-soft); }
+
+.seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--r-md); background: hsl(var(--surface-inset)); flex-wrap: wrap; }
+.seg-btn {
+  font: inherit; font-size: 12.5px; font-weight: 500; padding: 3px 10px; border-radius: var(--r-sm);
+  border: none; background: none; color: var(--text-2); cursor: pointer; display: inline-flex; gap: 6px; align-items: center;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: var(--seg-active-bg); color: var(--text); box-shadow: var(--seg-active-shadow); }
+.seg-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+table.dense th { padding: 6px 10px; }
+table.dense td { padding: 5px 10px; font-size: 12.5px; white-space: nowrap; }
+table.dense tbody tr { cursor: pointer; }
+table.dense tbody tr:hover td { background: var(--surface-muted); }
+table.dense tbody tr.selected td { background: var(--primary-soft); }
+td.node { font-weight: 500; }
+td.node.self::after, .node.self::after { content: " •"; color: var(--primary); }
+.mm-name { display: flex; align-items: center; gap: 8px; }
+
+.tag {
+  display: inline-block; margin-right: 4px; padding: 0 6px; border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: 11px; line-height: 17px;
+  border: 1px solid var(--border); color: var(--text-2); background: var(--surface);
+}
+.caps { display: inline-flex; gap: 3px; }
+.cap { display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; font-family: inherit; }
+.cap-vision { background: hsl(38 92% 50% / 0.14); color: var(--cap-vision-fg, hsl(32 80% 38%)); }
+.cap-tool_use { background: hsl(215 80% 55% / 0.13); color: var(--cap-tool-fg, hsl(215 70% 42%)); }
+.cap-reasoning { background: hsl(142 60% 40% / 0.13); color: var(--cap-reasoning-fg, hsl(142 60% 30%)); }
+
+/* Flyout: fixed to the right edge, sliding in over the page. No backdrop —
+   the table stays readable and usable behind it, which is the point of a
+   flyout rather than a modal. Used by My Models for a model, and by Activity
+   for one request. */
+.side-panel {
+  position: fixed; top: 0; right: 0; z-index: 50;
+  width: var(--side-w, 420px); max-width: 100vw; height: 100vh;
+  display: flex; flex-direction: column;
+  border: none; border-left: 1px solid var(--border); border-radius: 0;
+  box-shadow: var(--side-shadow);
+  transform: translateX(0);
+  transition: transform 0.28s ease, width 0.16s ease;
+}
+.side-panel[hidden] { display: flex; transform: translateX(101%); }
+.side-panel.pinned {
+  position: sticky; top: 16px; z-index: auto;
+  width: auto; height: auto; max-height: calc(100vh - 32px);
+  border: 1px solid var(--border); border-radius: var(--r-md); transform: none;
+}
+.side-panel.resizing { transition: none; user-select: none; }
+/* A faint scrim only while dragging, so the pointer cannot land on the table. */
+.side-scrim { position: fixed; inset: 0; z-index: 49; background: hsl(220 40% 10% / 0.08); }
+
+/* The drag handle sits on the panel's inner edge, 4px wide, with a grip that
+   appears on hover — invisible until wanted, like the original. */
+.side-grip {
+  position: absolute; left: -2px; top: 0; width: 6px; height: 100%;
+  cursor: col-resize; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.side-grip::before {
+  content: ""; width: 2px; height: 100%; background: transparent; transition: background 0.12s ease;
+}
+.side-grip:hover::before, .side-panel.resizing .side-grip::before { background: var(--primary); }
+.side-panel.pinned .side-grip { display: none; }
+.side-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.side-head { padding: 16px 16px 13px; border-bottom: 1px solid var(--border-soft); display: grid; gap: 9px; }
+.side-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; }
+.side-title .mono { overflow-wrap: anywhere; }
+.side-sub { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--text-2); }
+.side-sub .btn { margin-left: auto; }
+/* The flyout's tabs, in marie-studio's idiom: a rule across the panel with the
+   active tab underlined in the brand colour. The segmented control this used
+   to be relied on a fill that barely differs from the panel in dark mode, so
+   the other two pages were invisible. */
+.side-tabs {
+  display: flex; gap: 0; margin: 10px 0 0; padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.side-tab {
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 8px 12px 9px; margin-bottom: -1px;
+  border: none; border-bottom: 2px solid transparent;
+  background: none; color: var(--text-muted); cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.side-tab:hover { color: var(--text); }
+.side-tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+.side-tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; border-radius: var(--r-sm); }
+.side-body { overflow-y: auto; padding: 12px 16px 18px; }
+.side-note { font-size: 12px; margin: 4px 0 8px; }
+.kv-list { display: grid; margin-bottom: 14px; }
+.kv-list > .kv:last-child { border-bottom: none; }
+.kv-head { font-size: 11.5px; font-weight: 600; color: var(--text-2); margin: 8px 0 3px; }
+.kv { display: grid; grid-template-columns: minmax(84px, 34%) minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; }
+.kv-label { color: var(--text-muted); }
+.kv-value { overflow-wrap: anywhere; }
+.kv-value.mono { font-size: 12px; }
+
+.side-group { margin-bottom: 10px; }
+.side-group-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); margin: 8px 0 3px; }
+.setting { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 8px; align-items: center; padding: 3px 0; font-size: 12.5px; }
+.setting-label[title] { text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; cursor: help; }
+.setting .input, .setting .select { width: 100%; padding: 3px 7px; font-size: 12.5px; }
+.side-foot {
+  display: flex; justify-content: flex-end; gap: 6px; padding-top: 10px; margin-top: 4px;
+  border-top: 1px solid var(--border-soft); position: sticky; bottom: -12px; background: var(--surface); padding-bottom: 4px;
+}
+
+/* With the side panel open, the table drops what it can spare. */
+.mm.has-pinned table.dense .opt { display: none; }

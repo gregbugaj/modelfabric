@@ -1,0 +1,136 @@
+---
+title: Getting models
+description: Downloading by name, copying a model from another node, adopting files you already have, and pulling models onto several machines at once.
+---
+
+# Getting models
+
+## By name
+
+`mfsh get` takes the same identifier your tools use:
+
+```bash
+mfsh get qwen/qwen3-0.6b
+mfsh get qwen/qwen3.8-27b@Q4_K_M       # a specific quantization
+```
+
+It resolves the name through a local hub catalog if one lists it, and otherwise finds the matching
+public GGUF build on Hugging Face.
+
+Matching is exact. Near misses are listed and nothing downloads. We added that friction:
+downloading 19&nbsp;GB of almost-the-right-model is a slow and annoying mistake to discover.
+
+`-repo` forces the argument to be treated as a Hugging Face repository instead of a hub id, and
+`-y` skips the confirmation. Plain repositories and URLs work the same way:
+
+```bash
+mfsh get -repo lmstudio-community/Qwen3.8-27B-GGUF
+mfsh get https://huggingface.co/…/model-Q4_K_M.gguf
+```
+
+Everything lands in that node's own `models_root`.
+
+## From another node
+
+If a machine in the mesh already has the model, copy it from there instead of downloading it again:
+
+```bash
+mfsh get qwen/qwen3.8-27b -from xpredator
+mfsh get lmstudio-community/Qwen3.8-27B-MLX-4bit -from macbook -format mlx
+```
+
+The copy goes over the tailnet at whatever your network does, not whatever Hugging Face gives you
+that hour. It carries every file the model needs: all shards of a split GGUF, the vision projector,
+and the publisher's `model.yaml`. For an MLX model it's the whole directory. Files land at the same
+path under this node's `models_root` as they had on the other node, so a model named by its path
+keeps its name.
+
+Each file is checked against the SHA-256 the other node lists for it while it streams, and only
+renamed into place once it matches. An interrupted copy resumes. If a file with the same name but
+different contents is already here, the copy stops and names it instead of overwriting it.
+
+`-format` picks the weights when the other node has the model in both formats.
+
+A few things to know:
+
+- **Only your own devices can copy.** The files are served under the management API, so the other
+  node hands them over only to a device Tailscale reports as the same owner, the same rule as
+  [managing a node remotely](/docs/operations/security#managing-a-node-from-another-machine). Weights
+  can be gated or licensed, and the mesh doesn't redistribute them to everyone on your tailnet.
+  With `mesh_admin` set to `"off"` on the other node, copying from it is off too.
+- **The first copy of a model waits while the other node hashes it.** For a 20&nbsp;GB model that's
+  most of a minute of disk reads before the transfer starts. The node remembers the digests, so the
+  next copy starts straight away.
+- **A name from LM Studio's catalog may not travel.** If the other node names the model from its LM
+  Studio hub catalog and this one has no such entry, the files arrive and are listed here under their
+  path. `mfsh get` says so and points you at `mfsh ls`.
+- **Both nodes need this build.** An older node doesn't serve its files and answers 404.
+
+## Files you already have
+
+```bash
+mfsh import ./my-model.gguf
+mfsh import ./my-model.gguf -as myorg/my-model      # give it the key your tools will use
+```
+
+Importing adopts the file into the configured models root. The default `-mode link` creates a
+hard link where possible and falls back to copying. Use `-mode copy`, `-mode symlink` or
+`-mode move` to choose another method. A missing config uses defaults; an unreadable or invalid
+config stops the import before any file is adopted.
+
+## From the dashboard
+
+**Discover models** on the My Models page opens a browser over the page: search GGUF models on
+Hugging Face, either a curated set or every publisher, each with its creator's icon, size,
+architecture, context and capabilities.
+
+Tool use and reasoning are read from the model's chat template, not from its description.
+
+A model's page shows its facts, its card, and a download panel: pick a quantization, then tick
+**one or more nodes**. Each node shows its GPU, free disk, and whether it already has the model.
+One action downloads to all of them.
+
+Publisher icons are fetched by the node and cached, so the page itself loads nothing from outside
+your network.
+
+## Downloads belong to the node, not the browser
+
+Every download runs on the machine that will hold the model, as a durable operation. It's
+hash-checked against what the repository published, resumable, and reported with progress.
+
+**Cancel** keeps the partial file, so starting again resumes the download. Closing the tab doesn't
+stop it: the operation runs on the node and will still be going when you come back.
+
+Resumed model and runtime downloads validate the server's byte range before appending to a
+partial file. A server that ignores the range and returns the whole file starts a fresh download;
+invalid range metadata is reported without altering the existing partial file.
+
+```bash
+mfsh ops             # recent operations, downloads included
+```
+
+That's the same journal that records loads and unloads.
+
+<Callout type="info">
+  A download is an operation on one node. To put a model on three machines, tick three nodes in the
+  download panel, or download it once and run `mfsh get <model> -from <node>` on the others. There's
+  no replication service that does it for you.
+</Callout>
+
+## Getting rid of one
+
+ModelFabric won't delete weights it didn't download into its own root, and it never writes to a library
+it didn't create. Remove the files from `models_root` yourself and the catalog catches up on the
+next scan.
+
+If a model was loaded when its files changed underneath it, the
+[integrity pin](/docs/models/integrity) reports it.
+
+<Cards>
+  <Card title="Loading and unloading" href="/docs/models/load-and-unload">
+    Manual loads, JIT, idle TTL and eviction.
+  </Card>
+  <Card title="Integrity and recovery" href="/docs/models/integrity">
+    What pinning catches, and what it doesn't.
+  </Card>
+</Cards>

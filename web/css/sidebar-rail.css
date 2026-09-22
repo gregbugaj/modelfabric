@@ -1,0 +1,105 @@
+/* ---- sidebar rail ---- */
+
+/* Pinned to the viewport rather than stretched down the page: the rail is a
+   fixed frame around whatever the content does. As a plain grid item it took
+   the height of the document, so a long table scrolled the nav off the top and
+   left the footer stranded at the bottom of the page. align-self keeps the
+   grid from stretching it, which is what makes sticky take effect at all. */
+.rail {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  height: 100dvh; /* mobile browsers, where the toolbar eats part of 100vh */
+  overflow-y: auto;
+  background: var(--sidebar);
+  color: hsl(var(--product-rail-fg));
+  padding: 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px 18px;
+  font-weight: 700; font-size: 16px; letter-spacing: -0.01em;
+}
+.brand svg { color: hsl(var(--brand-primary)); flex: none; }
+
+.rail-label {
+  padding: 14px 10px 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: hsl(var(--product-rail-muted));
+}
+
+.rail a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--r-md);
+  color: hsl(var(--product-rail-fg));
+  text-decoration: none;
+  transition: background 0.12s ease;
+}
+.rail a:hover { background: hsl(var(--product-rail-hover)); }
+.rail a.active { background: hsl(var(--product-rail-active)); font-weight: 600; }
+.rail a svg { flex: none; opacity: 0.85; }
+
+/* Workload presets. They sit in the rail but choose rather than navigate, so
+   the selected one is marked with a tick at the end instead of the filled row
+   the links use: a fill there means "the page you are on", and these are a
+   setting. Without the difference the two read as the same kind of thing. */
+/* Sized as the links are — same padding, gap, type and spacing — so the rail
+   keeps one rhythm; only the mark at the end says these choose. */
+.rail-preset {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 10px; margin-bottom: 4px; border: none; border-radius: var(--r-md);
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.rail-preset:hover:not(:disabled) { background: hsl(var(--product-rail-hover)); }
+.rail-preset:disabled { opacity: 0.5; cursor: default; }
+.rail-preset.active .rail-preset-title { font-weight: 600; }
+.rail-preset > svg { flex: none; opacity: 0.8; }
+.rail-preset.active > svg { opacity: 1; }
+.rail-preset-title {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Holds the tick, and reserves its width so the labels do not shift when the
+   selection moves from one preset to another. */
+.rail-preset-mark {
+  margin-left: auto; flex: none; width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+/* The tick carries the brand colour; the empty ring must not, or it reads as
+   a faint blue smudge on a dark rail rather than an unchosen option. */
+.rail-preset-mark svg { color: hsl(var(--brand-primary)); opacity: 1; }
+.rail-preset-mark .spinner { width: 12px; height: 12px; }
+/* The unchosen ones keep the slot and show a faint ring, so the three read as
+   one set with a choice made, not as links that happen to be unlit. Not
+   `.empty`: that is the dashboard's empty-state message, whose 22px padding
+   made every workload row 58px tall against the links' 37px. */
+.rail-preset-mark.unchosen::before {
+  content: ""; flex: none; box-sizing: border-box;
+  width: 11px; height: 11px; border-radius: 50%;
+  border: 1.5px solid currentColor; opacity: 0.38;
+}
+.rail-preset:hover .rail-preset-mark.unchosen::before { opacity: 0.7; }
+.rail-preset-note { padding: 2px 10px 0; font-size: 11px; opacity: 0.6; }
+
+.rail-foot {
+  margin-top: auto;
+  padding: 10px;
+  font-size: 12px;
+  color: hsl(var(--product-rail-muted));
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+.theme-toggle {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: 1px solid hsl(var(--product-rail-hover));
+  color: hsl(var(--product-rail-fg));
+  padding: 6px 10px; border-radius: var(--r-md);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.theme-toggle:hover { background: hsl(var(--product-rail-hover)); }

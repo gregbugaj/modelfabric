@@ -1,0 +1,194 @@
+---
+title: The model catalog
+description: Where a model's name comes from, and what the publisher gets to decide about it.
+---
+
+# The model catalog
+
+ModelFabric resolves model IDs from a local hub catalog or GGUF metadata and retains path-derived
+keys as aliases.
+
+```bash
+mfsh ls              # what's on this node's disk, and whether it's loaded
+mfsh models          # every model in the mesh, and who holds it
+mfsh ps              # what's resident in memory right now
+```
+
+## Finding models
+
+**Discover models**, on the dashboard's My Models page, searches Hugging Face and downloads to any
+node you own. From a terminal it is `mfsh get`. See [Downloading models](/docs/models/downloading).
+
+<Shot
+  src="/img/dash-discover.png"
+  alt="The dashboard's Discover models browser: a searchable list of GGUF models on Hugging Face with each creator's icon, size, architecture and context; and the selected model's page with its parameters, licence and capabilities, a download panel with the quantization and a card for each node showing its GPU, free disk and whether it already has the model, and the model card below."
+/>
+
+## Where the name comes from
+
+Two sources, in order.
+
+If there's a hub catalog on the machine (LM Studio keeps one), ModelFabric uses it. Each entry's
+`manifest.json` names the model and lists the Hugging Face repositories it came from, and that repo
+path *is* the directory layout on disk, so a file maps back to its real identity.
+
+Failing that, ModelFabric reads the GGUF's own metadata: `general.basename` (`Qwen_Qwen3.8`) plus
+`general.size_label` (`27B`) becomes `qwen/qwen3.8-27b`.
+
+The catalog wins when both are available, because it *states* identity where metadata only implies
+it. A model with missing or eccentric metadata still ends up named correctly. Usually both sources
+agree, so whatever your tools were already configured with keeps working.
+
+The path-derived key stays valid as an alias. If two quantizations end up sharing one id, the first
+is canonical and the other is still reachable by its path.
+
+<Callout type="info">
+  Short names work on the command line when they're unambiguous: `mfsh load qwen3.8-27b` is fine.
+  Use the full key over the API, since a client shouldn't depend on what else happens to be
+  installed alongside it.
+</Callout>
+
+## What the publisher gets to decide
+
+Most models ship a `model.yaml` ([modelyaml.org](https://modelyaml.org)) alongside the weights, and
+ModelFabric applies it.
+
+The sampling defaults matter most. Qwen3.8-27B specifies temperature 1.0, top-k 20, top-p 0.95,
+min-p off. llama.cpp's own defaults are 0.8, 40, 0.95, 0.05. That's a different distribution, and
+with it the model doesn't behave the way its publisher tested it.
+
+Template variables like `enable_thinking` and `reasoning_effort` become `--chat-template-kwargs`
+defaults. Capabilities the GGUF has no way to declare (`tool_use`, `reasoning`) show up in the
+model listing, along with the publisher's stated memory floor.
+
+Your request still wins. Sampling fields or `chat_template_kwargs` sent with a call override all of
+this, and `mfsh load` echoes the effective config so you can see what the defaults were before you
+changed them.
+
+ModelFabric has no dependencies, so `model.yaml` goes through a small strict parser. A file it can't
+read completely is ignored with a warning, not half-applied, and `mfsh doctor` lists any it
+skipped.
+
+## Which setting wins
+
+Lowest to highest:
+
+<Steps>
+
+### The runtime's defaults
+
+### The model's `model.yaml`
+
+### Its default preset
+
+### Its saved defaults
+
+`mfsh defaults <model> …`
+
+### A preset named at load
+
+`mfsh load … -preset focused`
+
+### Flags given at load
+
+`mfsh load … -context 32768`
+
+</Steps>
+
+Changing defaults takes effect on the next load. The dashboard offers *Save & reload* so you don't
+have to unload and reload by hand. Full detail in
+[Load and inference settings](/docs/models/settings).
+
+## Vision models
+
+Drop an `mmproj-*.gguf` next to a vision model and ModelFabric finds it and passes `--mmproj`
+automatically.
+
+The failure here is silent. Without the projector the model loads fine and answers text-only, but
+it can't see the images you're sending. That looks like success. `mfsh ls` has a `VISION` column so
+you can check before you rely on a result.
+
+## Where models can live
+
+`models_root` is the directory ModelFabric scans, and `extra_model_roots` adds more. Downloads always
+land in `models_root`.
+
+### Your LM Studio library works as-is
+
+If LM Studio is installed, ModelFabric finds its models directory and reads it **in place**: no copying,
+no re-downloading, no second 17&nbsp;GB on disk. There's nothing to configure; it shows up in
+`mfsh ls`:
+
+```
+$ mfsh ls
+You have 2 models, taking up 17.0GB of disk space.
+
+LLM               PARAMS  ARCH    QUANT   SIZE     VISION  STATE
+qwen/qwen3-0.6b   0.6B    qwen3   Q4_K_M  461.8MB  —       loaded
+qwen/qwen3.8-27b  27B     qwen35  Q4_K_M  16.5GB   yes     —
+```
+
+Those models keep the names LM Studio gave them, because ModelFabric reads the same hub catalog for
+identity. So a tool already pointed at `qwen/qwen3.8-27b` carries on working, and the same key
+means the same weights on every node in the mesh.
+
+### One model, two formats
+
+A Mac often holds the same weights twice, `Qwen3.8-27B-GGUF` for llama.cpp and
+`Qwen3.8-27B-MLX-4bit` for [MLX](/docs/engines/mlx). Both carry the same identity, so they are one
+catalog entry:
+
+```
+qwen/qwen3.8-27b (2 variants)  27B  qwen35  Q4_K_M  16.5GB  yes  loaded
+```
+
+`-format` picks which to load. Without it you get whichever the catalog made primary (a
+single-format model only has the one):
+
+```bash
+mfsh load qwen/qwen3.8-27b -format mlx    # Apple's engine
+mfsh load qwen/qwen3.8-27b -format gguf   # llama.cpp
+```
+
+The format matters: only one of the two may have an engine installed on that machine, and mlx-lm
+[ignores `response_format`](/docs/engines/mlx#what-a-mac-node-cant-do) where llama.cpp enforces it.
+If you ask for a format that is not on that machine, the error names the formats that are:
+
+```
+qwen/qwen3.8-27b is not available as mlx weights here (have gguf)
+```
+
+Both variants can be resident at once. They are different engines serving one model id, the same
+as the mesh does across machines.
+
+Access to the LM Studio library is one-way:
+
+- **Read-only, always.** ModelFabric never writes into that directory: no downloads, renames or
+  deletions.
+- **Downloads go elsewhere.** `mfsh get` writes to this node's own `models_root`.
+- **LM Studio doesn't need to be running.** ModelFabric reads the files, not the app.
+
+Turn it off if you'd rather be explicit:
+
+```json filename="config.json"
+{ "disable_lmstudio_models": true }
+```
+
+`mfsh doctor` shows what it found:
+
+```
+Models
+  ✓ catalog             2 models, 17.0GB, in ~/.modelfabric/models, ~/.lmstudio/models
+  · LM Studio           found at ~/.lmstudio; its models and engines are used read-only
+```
+
+Its engine packages get the same treatment. See [Existing installs](/docs/models/existing-installs).
+
+<Cards>
+  <Card title="Getting models" href="/docs/models/downloading">
+    `mfsh get`, `mfsh import`, and the dashboard's Hugging Face browser.
+  </Card>
+  <Card title="Existing installs" href="/docs/models/existing-installs">
+    What ModelFabric adopts from a machine that already has models and engines on it.
+  </Card>
+</Cards>

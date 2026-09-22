@@ -1,0 +1,100 @@
+/* ---- Mesh: the architecture ---- */
+
+/* The diagram frames itself: the tailnet boundary is the container, and each
+   node is a card because a node is a real object. A panel border around all
+   of that is a third box saying nothing. */
+.mesh-panel { overflow: visible; background: none; border: none; border-radius: 0; }
+.mesh-toolbar {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 9px 14px; border-bottom: 1px solid var(--border-soft);
+}
+.mesh-from { display: inline-flex; align-items: center; gap: 8px; }
+.mesh-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--text-muted); }
+.mesh-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.lg { display: inline-block; width: 22px; height: 0; border-top: 2px solid; }
+.lg-direct { border-color: hsl(var(--brand-primary)); }
+.lg-forwarded { border-color: hsl(215 70% 50%); border-top-style: dashed; }
+.lg-peer { border-color: hsl(215 70% 55% / 0.75); border-top-style: dotted; }
+.lg-llmd { border-color: hsl(280 60% 55%); border-top-style: dotted; border-top-width: 3px; }
+.lg-preferred { border-color: hsl(var(--success-token)); border-top-width: 3px; }
+.dot-scope { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.scope-loopback { background: hsl(var(--text-muted-token)); }
+.scope-tailnet { background: hsl(215 80% 55%); }
+.scope-public { background: hsl(28 90% 52%); }
+.scope-internal { background: hsl(280 55% 60%); }
+
+.mesh-canvas {
+  position: relative; padding: 22px 18px 22px; display: grid; grid-template-columns: 210px minmax(0, 1fr);
+  gap: 56px; align-items: start;
+}
+@media (max-width: 1100px) { .mesh-canvas { grid-template-columns: minmax(0, 1fr); gap: 20px; } }
+.mesh-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.mesh-entries { display: grid; gap: 14px; padding-top: 70px; }
+.mesh-entry {
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--r-lg);
+  border: 1px dashed var(--border-strong); background: var(--surface); color: var(--text-2);
+}
+.mesh-entry-title { font-weight: 600; color: var(--text); font-size: 13px; }
+
+.tailnet {
+  position: relative; border: 1.5px solid hsl(215 80% 55% / 0.35); border-radius: var(--r-lg);
+  background: hsl(215 80% 55% / 0.045); padding: 26px 16px 16px;
+}
+.tailnet-label {
+  position: absolute; top: -10px; left: 16px; padding: 1px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; color: hsl(215 70% 45%); background: var(--surface);
+  border: 1.5px solid hsl(215 80% 55% / 0.35);
+}
+.mesh-nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 56px; align-items: start; }
+.mesh-node {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+  display: grid; position: relative;
+}
+.mesh-node.from { border-color: var(--primary); box-shadow: var(--ring); }
+.mesh-node.unreadable { opacity: 0.7; }
+.mesh-node-head { padding: 10px 12px; border-bottom: 1px solid var(--border-soft); display: grid; gap: 3px; }
+.mesh-node-title { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 14px; }
+.mesh-node-sub { font-size: 11.5px; color: var(--text-2); }
+.role { font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: var(--r-sm); text-transform: none; }
+.role-gpu { background: hsl(142 60% 40% / 0.13); color: hsl(142 60% 30%); }
+.role-entrypoint { background: hsl(28 90% 52% / 0.14); color: hsl(28 80% 38%); }
+.role-router { background: hsl(var(--surface-inset)); color: var(--text-2); }
+.mesh-note { padding: 10px 12px; }
+.mesh-block { padding: 7px 12px 9px; border-bottom: 1px solid var(--border-soft); display: grid; gap: 3px; }
+.mesh-block:last-child { border-bottom: none; }
+.mesh-block-title { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 2px; }
+.mesh-row {
+  display: grid; grid-template-columns: minmax(0, 1.3fr) auto; gap: 1px 10px; align-items: center;
+  padding: 4px 6px; border-radius: var(--r-md); font-size: 12.5px; background: hsl(var(--surface-inset) / 0.6);
+}
+/* name · address · slots · KV; the meta line spans beneath them all. */
+.mesh-row.engine { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.mesh-row.off { opacity: 0.5; }
+.mesh-row-name { display: flex; align-items: center; gap: 6px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mesh-addr { font-size: 11.5px; color: var(--text-2); }
+.mesh-auth { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); padding-left: 14px; }
+.slots { display: inline-flex; gap: 2px; }
+.slots i { width: 7px; height: 12px; border-radius: 2px; background: hsl(var(--surface-2)); border: 1px solid var(--border); }
+.slots i.busy { background: hsl(var(--success-token)); border-color: hsl(var(--success-token)); }
+
+.edge { fill: none; stroke-width: 1.8; }
+.edge-direct { stroke: hsl(var(--brand-primary)); }
+.edge-forwarded { stroke: hsl(215 70% 50%); stroke-dasharray: 6 4; }
+.edge-llmd { stroke: hsl(280 60% 55%); stroke-dasharray: 2 3; stroke-width: 2.2; }
+.edge-preferred { stroke: hsl(var(--success-token)); stroke-width: 2.8; }
+.edge-entry { stroke: var(--text-muted); stroke-width: 1.4; }
+/* Reachable over the tailnet, with nothing routed there yet: quieter than a
+   path a request takes, so a loaded model's route still stands out. */
+.edge-peer { stroke: hsl(215 70% 55% / 0.75); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.arrow-direct { fill: hsl(var(--brand-primary)); }
+.arrow-forwarded { fill: hsl(215 70% 50%); }
+.arrow-llmd { fill: hsl(280 60% 55%); }
+.arrow-preferred { fill: hsl(var(--success-token)); }
+.arrow-entry { fill: var(--text-muted); }
+.arrow-peer { fill: hsl(215 70% 55% / 0.75); }
+
+/* Role marks on "Requests entering at". */
+.seg-role { font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: var(--r-sm); line-height: 16px; }
+.seg-ico { color: hsl(142 60% 35%); }
+#mesh-from .seg-btn { gap: 6px; }
+#mesh-from .seg-btn.active .role-entrypoint { box-shadow: 0 0 0 1px hsl(28 90% 52% / 0.5); }

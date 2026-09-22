@@ -1,0 +1,84 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+/*
+ * ModelFabric docs. The palette follows the dashboard's own tokens rather than
+ * Nextra's default violet: a product blue for links and accents, and a
+ * neutral grey scale, so the docs and the UI read as one product.
+ */
+
+@layer base {
+  :root {
+    --nextra-primary-hue: 215deg;
+    --nextra-primary-saturation: 88%;
+
+    --mfsh-ink: 222 22% 11%;
+    --mfsh-muted: 220 9% 46%;
+    --mfsh-rule: 220 13% 91%;
+    --mfsh-surface: 0 0% 100%;
+    --mfsh-surface-sunken: 220 14% 98%;
+
+    /* Scope colours, the same four the Mesh page uses for who can reach a
+       port. They appear in the docs wherever a listener is described. */
+    --mfsh-loopback: 215 88% 50%;
+    --mfsh-tailnet: 160 60% 38%;
+    --mfsh-public: 28 92% 48%;
+    --mfsh-internal: 220 9% 55%;
+  }
+
+  .dark {
+    --nextra-primary-hue: 212deg;
+    --nextra-primary-saturation: 80%;
+
+    --mfsh-ink: 220 14% 90%;
+    --mfsh-muted: 220 9% 62%;
+    --mfsh-rule: 220 13% 22%;
+    --mfsh-surface: 222 20% 9%;
+    --mfsh-surface-sunken: 222 20% 12%;
+
+    --mfsh-loopback: 212 90% 62%;
+    --mfsh-tailnet: 160 50% 52%;
+    --mfsh-public: 32 90% 58%;
+    --mfsh-internal: 220 9% 58%;
+  }
+}
+
+/* The architecture diagrams in this documentation are ASCII, the same ones the
+   README and `mfsh status` print. They must not wrap or be re-typeset. */
+.mfsh-diagram {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  color: hsl(var(--mfsh-ink));
+  background: hsl(var(--mfsh-surface-sunken));
+  border: 1px solid hsl(var(--mfsh-rule));
+  border-radius: 6px;
+  padding: 1rem 1.15rem;
+  margin: 1.5rem 0;
+  tab-size: 2;
+}
+
+/* Tables carry most of the reference material here — endpoint surfaces,
+   config keys, flag-to-llama.cpp mappings — so they get a denser, quieter
+   treatment than prose-width tables usually do. */
+.nextra-content table {
+  font-size: 0.875rem;
+}
+.nextra-content table code {
+  white-space: nowrap;
+}
+
+/* Nextra centres table headers. Almost every table here is a two-column
+   term/description list, so a centred header sits off-axis from the cells
+   under it. Left-align both. */
+.nextra-content table th {
+  text-align: left;
+}
+
+/* The per-task benchmark table puts two runs side by side. Without a rule
+   between them the last column of one group reads as the first of the next. */
+.nextra-content table .mfsh-group {
+  border-left: 1px solid hsl(var(--mfsh-rule));
+}

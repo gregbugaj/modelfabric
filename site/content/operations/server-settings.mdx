@@ -1,0 +1,156 @@
+---
+title: Server settings
+description: The node's port, network access, authentication, CORS, API tokens and on-demand loading, from the dashboard.
+---
+
+# Server settings
+
+**Server settings**, on the dashboard's Overview beside the address apps connect to, opens a panel
+with four tabs: Server, Access, Tokens and Loading. Each switch is a key in the config file the node
+runs from, shown at the top of the panel.
+
+Saving writes only what you changed. Every other key in config.json, including ones this page does
+not show, stays as it was, and the previous file is kept beside it as `config.json.bak`. A value the
+node would refuse at startup is refused when you save, and nothing is written.
+
+Four settings apply as soon as they are saved: **Require Authentication**, **Enable CORS** and the two **MCP** switches. The rest
+are read when the node starts. Until it restarts, a saved one is marked **Restart** on its row, and
+its tooltip says what the node is still running.
+
+```bash
+mfsh down && mfsh up      # restart a node started with mfsh up
+```
+
+Every row has a line on what it does; the **?** beside a name has the rest.
+
+## Server
+
+<Shot
+  src="/img/server-settings-server.png"
+  alt="The Server tab of Server settings: Server Port 1234 beside its host 127.0.0.1; Tailnet 100.64.0.1:1234, read-only; a Public Front Door switch turned off; Managed from Other Nodes on; Engine Bind set to Tailnet; and Serve Dashboard on."
+  caption="Server. What Tailscale decides is shown here and never edited."
+/>
+
+| Setting | config.json | Applies |
+|---|---|---|
+| **Server Port** | the port of `listen` | on restart |
+| **Tailnet** | read-only: Tailscale's address, on `mesh_port` | |
+| **Public Front Door** | `public_listen`, on `127.0.0.1` | on restart |
+| **Managed from Other Nodes** | `mesh_admin`: on is `same-owner`, off is `off` | on restart |
+| **Engine Bind** | `engine_bind`: `""` or `"tailnet"` | on restart |
+| **Serve Dashboard** | `web_ui` | on restart |
+
+The node listens twice, and the tab shows each as a host and a port, so the same `1234` on both reads
+as two listeners and not one setting repeated.
+
+**Server Port** is this machine's address. It changes only the port: the node stays on `127.0.0.1`,
+so a port change never makes it reachable from anywhere new. `mfsh up -port 3000` does the same for
+one run without saving it.
+
+**Tailnet** is where your tailnet devices and the other nodes reach this node: its Tailscale address
+on the mesh port. They need no key there, because Tailscale says who they are, and management is
+accepted only from devices it reports as yours. The address is Tailscale's to assign, and the port is
+the mesh port, which every node must share. The tailnet is how the mesh distributes work, so nothing
+here edits either: change `mesh_port` in each node's config.json together.
+
+**Public Front Door** is for apps outside your tailnet. It opens a second listener on `127.0.0.1`
+that serves inference (`/v1`) only, requires an [API token](/docs/api/api-keys) on every request, and
+never serves the dashboard or management. Tailscale Funnel or a TLS proxy publishes it with HTTPS
+(`tailscale funnel 1235`). Its port must differ from the Server Port and the mesh port. Tailnet devices
+don't need it. Any node can have one, whether or not it runs models. A node set up to do only
+this, with `"role": "entrypoint"`, loads no models, and the tab says so at the top; see
+[A public front door](/docs/operations/entrypoint).
+
+**Engine Bind** is where this node's engines listen, and the address its own router dials them at:
+this machine only (the default), or the tailnet. It is not how other nodes reach this one. A
+request for a model on another node goes to that node's **Tailnet** address on the mesh port, and
+that node's router hands it to its own engine. So this machine only is all ModelFabric needs; only
+something that dials engines itself, which is llm-d scheduling from another node, needs them on the
+tailnet. The tailnet address is looked up from Tailscale each time
+the node starts, never typed. A config that has a tailnet address written out (`100.x.y.z`, as older
+advice said) is the same thing: the page shows it as Tailnet, and engines follow Tailscale's current
+address even if it has changed since, with a line in the log saying so.
+
+Saving a change that opens this node to more than it was asks first and says what it opens: engines
+on the tailnet, CORS for any origin, or the dashboard off.
+
+## Access
+
+<Shot
+  src="/img/server-settings-access.png"
+  alt="The Access tab: Require Authentication off, Enable CORS turned on, and an Allowed origins box with http://localhost:5173, not yet saved."
+  caption="Access. Both settings apply as soon as they are saved."
+/>
+
+| Setting | config.json | Applies |
+|---|---|---|
+| **Require Authentication** | `require_api_key` | at once |
+| **Enable CORS** | `cors_origins`: off is none | at once |
+
+**Require Authentication** makes `/v1` on this address accept only requests that carry an API token
+or the node key. See [API keys](/docs/api/api-keys).
+
+**Enable CORS** (Cross-Origin Resource Sharing) lets a web app served from another origin, such as a
+chat UI on `http://localhost:5173`, call `/v1` from the browser. Without it the browser blocks the
+app from reading the reply. List each origin as `scheme://host[:port]`, one per line; `*` allows any,
+which means any site you visit can call this node from your browser. CORS only ever opens `/v1`:
+management and the dashboard refuse other origins whatever it says. See
+[Web pages in your own browser](/docs/operations/security#web-pages-in-your-own-browser).
+
+## Tokens
+
+<Shot
+  src="/img/server-settings-tokens.png"
+  alt="The Tokens tab: a name box and Create button, a just-created token shown once with a Copy button, the node key with a Rotate button, and three named tokens, each with a Revoke button."
+  caption="Tokens. Create one per app; revoke them one at a time."
+/>
+
+Create, list and revoke [API tokens](/docs/api/api-keys#creating-api-tokens). Tokens save as you
+go, so this tab has no Save button. A new token is shown once and cleared when you leave the tab.
+
+## MCP
+
+<Shot
+  src="/img/server-settings-mcp.png"
+  alt="The MCP tab: two switches, Allow per-request MCPs and Allow calling servers from mcp.json, both off."
+  caption="MCP. Both switches are off until you turn them on."
+/>
+
+Two switches for [MCP tools on `/api/v1/chat`](/docs/api/mcp). Both are off by default and apply
+as soon as they are saved.
+
+| Setting | config.json | Applies |
+|---|---|---|
+| **Allow per-request MCPs** | `mcp_allow_ephemeral` | at once |
+| **Allow calling servers from mcp.json** | `mcp_allow_configured` | at once |
+
+Read [what turning these on means](/docs/api/mcp#what-turning-these-on-means) first. The page asks
+you to confirm either one.
+
+## Loading
+
+<Shot
+  src="/img/server-settings-loading.png"
+  alt="The Loading tab: Just-in-Time Model Loading off, Auto unload unused JIT loaded models on with an Idle for box reading 60m, and Only Keep Last JIT Loaded Model on."
+  caption="Loading. On-demand loading, as LM Studio's JIT settings."
+/>
+
+| Setting | config.json | Applies |
+|---|---|---|
+| **Just-in-Time Model Loading** | `jit_load` | on restart |
+| **Auto unload unused JIT loaded models**, **Idle for** | `jit_ttl`: off is `0`, empty is 60 minutes | on restart |
+| **Only Keep Last JIT Loaded Model** | `jit_auto_evict` | on restart |
+
+With JIT on, a request naming a downloaded model that no node is serving loads it here, and
+`/v1/models` lists every downloaded model. Models you load yourself are never unloaded by these.
+See [Load and unload](/docs/models/load-and-unload).
+
+## The API
+
+| Path | Purpose |
+|---|---|
+| `GET /api/v1/server-settings` | `saved` (the config file), `running` (what is in effect), `live` (what applies without a restart), and the file's path |
+| `PUT /api/v1/server-settings` | change some of them: only the keys sent are written |
+
+Management routes, so loopback-only like the rest of `/api/v1`. A node started without `-config`
+has no file to save to, and answers `404`.

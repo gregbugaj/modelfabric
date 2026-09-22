@@ -1,0 +1,134 @@
+---
+title: Development
+description: Building, testing, the UI's checks, and the traps that have cost real debugging time.
+---
+
+# Development
+
+```bash
+make build        # compile the node binary
+make test         # unit tests, with the race detector
+make vet
+make fmt
+make ui           # stage the web UI into cmd/mfsh/web/dist (embedded at compile time)
+make test-ui      # unit-test the pure view model
+make install      # build with UI, install to ~/.local/bin
+make run          # a node in the foreground, verbose
+make dist         # static binaries for every machine in the mesh
+make clean
+```
+
+`make dist` cross-compiles for `linux/amd64`, `linux/arm64` and `darwin/arm64`, all
+`CGO_ENABLED=0`, and writes a `checksums.txt` beside them that `install.sh` verifies against. The
+UI is compiled in, so deploying a node stays a single file.
+
+## Traps
+
+Each of these has cost debugging time at least once.
+
+<Callout type="warning">
+  **`go build ./...` does not produce the `./mfsh` the node runs.** It compiles and discards. Use
+  `make build`.
+</Callout>
+
+**A rebuilt binary doesn't replace a running node.** `mfsh doctor` checks for this and reports it.
+The *running* node validates requests, so a change to validation needs a restart, not just a
+rebuild.
+
+**`make build` stages the UI before compiling.** `make install` and `make dist` also stage it.
+If you invoke `go build` directly, run `make ui` first or the binary embeds stale web files.
+
+**`scp` doesn't carry the executable bit.** A binary copied to another node arrives `0644` and
+fails with "Permission denied", which looks like a filesystem problem, not a missing mode bit.
+`chmod +x` after copying.
+
+## The UI
+
+There's no bundler and no `node_modules`. `make ui` copies `index.html`, `styles.css`, all JavaScript
+modules and the `css/` stylesheets into the embed directory, removing stale staged files first.
+The dashboard uses hand-written ES modules
+and CSS, following the house `m3-desktop` idiom.
+
+Two checks guard it:
+
+| target | |
+|---|---|
+| `check-ui` | runs automatically as part of `make ui`: parses every `web/*.js` module with `node --check` before embedding |
+| `test-ui` | `node --test web/*.test.mjs`: UI unit tests; use Node 22 or newer |
+
+`check-ui` exists because staging a file with a syntax error gives you a blank dashboard and a
+console message nobody's looking at. It's skipped with a warning when there's no `node` on `PATH`, because `go build` must never
+require one.
+
+`ui-model.js` holds the pure functions (grouping, formatting, state derivation) so they can be
+tested without a browser. Anything that can be pure belongs in there.
+
+## Testing
+
+```bash
+make test                          # go test -race ./...
+go test -race ./internal/mesh/     # one package
+GOOS=darwin go build ./...         # the cross-platform check that catches the most
+```
+
+Don't skip that last one. The fleet is heterogeneous on purpose, and platform-specific files
+(`_linux.go`, `_darwin.go`) are easy to break from Linux without noticing: termios ioctls, sysctl
+encodings, rlimits. A `GOOS=darwin` build takes seconds and catches it
+before a Mac node does.
+
+Where a decision could plausibly be "corrected" into something worse, it's pinned by a named test,
+not only a comment.
+`TestDroppingMlockFallsBackToMmapNotNone` is the pattern: the name states the conclusion, and the
+comment states why the obvious alternative is wrong.
+
+## Verifying against the real thing
+
+A lot of ModelFabric exists because of behaviour that's only discoverable by running it. The EPP ignoring
+a per-endpoint `metricsPort`. llama.cpp answering with whatever it has loaded regardless of what the
+request said, and publishing no KV-utilisation metric at all.
+
+None of that is in anyone's documentation. Prefer a live check to a plausible inference.
+`mfsh doctor`, `mfsh log engine`, `mfsh ops` and the dashboard's Mesh page all exist partly to make
+that cheap.
+
+## Layout
+
+| directory | what is in it |
+|---|---|
+| `cmd/mfsh/` | the CLI and the embedded UI |
+| `internal/mesh/` | discovery, peer state, candidates |
+| `internal/router/` | candidate scoring and forwarding |
+| `internal/supervisor/`, `internal/process/` | engine lifecycle and ownership records |
+| `internal/runtime/` | runtime definitions, hardware survey, engine launch |
+| `internal/catalog/`, `internal/hub/` | model identity, model.yaml, Hugging Face |
+| `internal/inputs/` | pinned manifests and verification |
+| `internal/llmd/`, `internal/discovery/` | Envoy, the EPP, endpoint discovery |
+| `internal/server/` | the HTTP surface |
+| `web/` | the dashboard |
+| `bench/swe/` | the SWE-bench harness used to measure routing changes |
+| `site/` | this documentation |
+
+## This documentation
+
+```bash
+cd site
+pnpm install
+pnpm dev            # http://localhost:3344
+pnpm build          # and pagefind indexes it via postbuild
+```
+
+Nextra 4 with the app router. Pages are MDX under `content/`, and each directory's `_meta.tsx` sets its
+order and titles. `Callout`, `Steps`, `Tabs`, `Cards`/`Card` and `Diagram` are registered globally in
+`mdx-components.tsx`, so pages use them without imports.
+
+`Diagram` renders ASCII as-is: ModelFabric's own output is line-drawn text, so the docs show the same text
+instead of redrawing it in SVG.
+
+<Cards>
+  <Card title="config.json" href="/docs/reference/config">
+    Every configuration key, its default, and what it changes.
+  </Card>
+  <Card title="Dashboard" href="/docs/dashboard">
+    What each page of the UI shows and how to use it.
+  </Card>
+</Cards>

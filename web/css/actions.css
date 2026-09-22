@@ -1,0 +1,67 @@
+/* ---- actions ---- */
+
+/* Buttons are square-shouldered and flat: a 4px radius, one weight of blue for
+   the action that matters, a plain bordered button for everything else. No
+   gradients, no glow — the colour carries the emphasis. */
+.btn {
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 6px 13px; border-radius: var(--r-sm); cursor: pointer;
+  /* A button is the size of its label. Without these, a button that is itself
+     a flex item gets sized by the UA instead of by its content: the Discover
+     dialog's download button rendered 34x19 with its label spilling over the
+     node tiles, one word per line. */
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: fit-content; min-height: fit-content;
+  border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--text);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.btn.primary {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) {
+  background: hsl(var(--brand-primary-hover)); border-color: hsl(var(--brand-primary-hover)); color: #fff;
+}
+/* A row's action: blue, but outlined. A column of solid blue blocks shouts;
+   the page's own primary action (Download, Discover, Enable) stays solid so it
+   still reads as the one thing to do. */
+.btn.accent { color: var(--primary); border-color: hsl(var(--brand-primary) / 0.55); background: var(--surface); }
+.btn.accent:hover:not(:disabled) { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); }
+.btn.danger { color: hsl(var(--error-text)); border-color: hsl(var(--error-token) / 0.45); }
+.btn.danger:hover:not(:disabled) { color: hsl(var(--error-text)); border-color: hsl(var(--error-token)); }
+.btn.danger:hover:not(:disabled) { background: hsl(var(--error-subtle)); }
+
+td.actions { text-align: right; white-space: nowrap; }
+
+.spinner {
+  display: inline-block; width: 12px; height: 12px; margin-right: 6px;
+  border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; vertical-align: -2px;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.instance-line {
+  font-size: 12px; color: var(--text-muted); margin-top: 3px;
+}
+
+#notice {
+  position: fixed; right: 20px; bottom: 20px; z-index: 50;
+  max-width: 460px; padding: 11px 15px; border-radius: var(--r-md);
+  background: var(--surface); border: 1px solid var(--border);
+  box-shadow: var(--shadow-overlay);
+  font-size: 13px;
+}
+#notice[hidden] { display: none; }
+#notice[data-tone="error"] {
+  background: hsl(var(--error-subtle)); color: hsl(var(--error-text));
+  border-color: hsl(var(--error-token) / 0.35);
+}
+#notice[data-tone="success"] {
+  background: hsl(var(--success-subtle)); color: hsl(var(--success-text));
+  border-color: hsl(var(--success-token) / 0.35);
+}

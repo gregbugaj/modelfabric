@@ -1,0 +1,177 @@
+---
+title: Check it works
+description: Check that the node, the mesh and your app's path all work. It takes about a minute.
+---
+
+# Check it works
+
+Four checks, each covering a different layer. Run them in order and you'll see how far your setup
+gets before something breaks.
+
+## 1. Ask ModelFabric to check itself
+
+```bash
+mfsh doctor
+```
+
+This is the fast one, and it covers more than you'd check by hand: config and disk, whether the
+node is up and running the binary you think it is, Tailscale and whether peers can reach you,
+hardware and runtime fit, the model catalog, every engine on the machine, and whether anything is
+exposed further than it should be.
+
+```
+ModelFabric
+  ✓ config              no config file; running on defaults
+  ✓ disk space          147.8GB free
+
+Node
+  ✓ node                running on 127.0.0.1:1234, pid 2649389, up 8h2m36s
+  ✓ binary              node runs the current build
+
+Tailnet
+  ✓ tailscale           xpredator at 100.x.y.z
+  ✓ mesh listener       peers reach this node at 100.x.y.z:1234
+  ✓ peers               helion (1 model), minion (2 models)
+
+Runtimes
+  · hardware            NVIDIA GeForce RTX 5090, 31.8GB, compute 12.0, driver 580.173.02
+  ✓ default runtime     llama.cpp-upstream-linux-x86_64-cuda-12.8@b11040 (pinned)
+
+Security
+  ✓ management API      loopback only (127.0.0.1:1234)
+  ✓ engines             loopback only
+```
+
+Every warning comes with a `→` line telling you the command that fixes it. It exits non-zero when
+something is broken, so it works as a health check:
+
+```bash
+mfsh doctor -json | jq '.checks[] | select(.status != "ok")'
+```
+
+<Callout type="info">
+  `doctor` never starts the node or changes anything. It reports the state the machine is in now.
+</Callout>
+
+## 2. Check the API answers
+
+```bash
+curl http://localhost:1234/v1/models
+```
+
+You should get the union of every model in the mesh, each tagged with the nodes that hold it. If
+this returns nothing, you have no models yet. See [Getting models](/docs/models/downloading).
+
+Then make a real request:
+
+```bash
+curl http://localhost:1234/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen/qwen3-0.6b",
+    "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+    "max_tokens": 10
+  }'
+```
+
+A `404` here means nothing has that model loaded. That's the default, not a fault: run
+`mfsh load <model>` or turn on
+[JIT](/docs/models/load-and-unload#nothing-loads-by-itself-unless-you-ask-it-to).
+
+## 3. Find out which machine answered
+
+This check covers the *mesh*, not just the node. Request a model that only **another** machine
+holds:
+
+```bash
+mfsh models      # which node holds what, so you know what to ask for
+```
+
+```bash
+curl -si http://localhost:1234/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen/qwen3.8-27b","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
+  | grep -i '^x-mfsh'
+```
+
+```
+X-Fabric-Node: minion
+X-Fabric-Engine: inst-5c3d1a8e0686
+```
+
+If `X-Fabric-Node` names that other machine, routing and forwarding both work end to end.
+
+<Callout type="info">
+  This works under [llm-d](/docs/routing/llm-d) too: ModelFabric maps the upstream in the reply back to
+  the node, and you'll also see `X-Fabric-Via: llm-d`, naming what chose the engine.
+
+  If the node headers are missing but `X-Fabric-Via` is there, ModelFabric couldn't place that upstream in
+  the mesh, usually because the route pointed at an engine that has since gone. `mfsh llmd status` lists the engines
+  llm-d holds.
+</Callout>
+
+## 4. Watch a request as it happens
+
+Leave this running in a second terminal and send another request:
+
+```bash
+mfsh log
+```
+
+You get one line per routed request: model, node, engine, timing. Metadata only; prompts and
+completions are never logged.
+
+If a **load** fails, not a request, the reason is in the engine's own output:
+
+```bash
+mfsh log engine
+```
+
+## When something is wrong
+
+| what you see | what it usually is |
+|---|---|
+| `curl: (7) Failed to connect` | the node isn't running: `mfsh up`, then `mfsh doctor` |
+| `404` on a model you can see in `mfsh models` | nothing has it resident; `mfsh load <model>` or enable JIT |
+| `401` | `require_api_key` is on; send `Authorization: Bearer $(mfsh key)` |
+| A peer missing from `mfsh status` | `mesh_port` differs between nodes, or an ACL blocks it. `doctor` probes from the tailnet, which is where this shows up. |
+| `doctor` says "running old code" | you rebuilt under a running node: `mfsh down && mfsh up`. Note `go build ./...` doesn't produce the binary that runs; use `make build`. |
+| A model answers but ignores your images | its `mmproj-*.gguf` is missing. `mfsh ls` has a `VISION` column. This failure looks exactly like success. |
+
+More in [Diagnostics](/docs/operations/diagnostics) and the
+[FAQ](/docs/getting-started/faq).
+
+## Checking the exposed listener
+
+If you've set up a [public front door](/docs/operations/entrypoint), test it from *outside* your
+network. A phone on cellular is the easy way:
+
+```bash
+curl https://front.<tailnet>.ts.net/v1/models \
+  -H "Authorization: Bearer $(mfsh key)"
+```
+
+Two things to confirm while you're there. Without the key you should get a plain `401`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://front.<tailnet>.ts.net/v1/models   # expect 401
+```
+
+The management port must not be reachable at all (no dashboard, no model loading) from anywhere
+but loopback:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://front.<tailnet>.ts.net/api/v1/models  # expect 404
+```
+
+`mfsh doctor`'s Security section checks the same thing locally, and warns if any listener would
+send keys over plain HTTP.
+
+<Cards>
+  <Card title="Connect your apps" href="/docs/getting-started/connect-apps">
+    Base URLs, SDK snippets, and the other request shapes ModelFabric answers.
+  </Card>
+  <Card title="Diagnostics" href="/docs/operations/diagnostics">
+    Everything `mfsh doctor` checks, and the rest of the toolkit.
+  </Card>
+</Cards>

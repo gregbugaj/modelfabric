@@ -1,0 +1,98 @@
+/* ---- panels & tables ---- */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  font-weight: 600;
+}
+.panel-head .hint { font-weight: 400; font-size: 12px; color: var(--text-muted); }
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; padding: 7px 14px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-muted);
+  background: hsl(var(--surface-inset));
+  border-bottom: 1px solid var(--border-soft);
+}
+td {
+  padding: 7px 14px;
+  font-size: 13.5px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+tr:last-child td { border-bottom: none; }
+td.num { font-variant-numeric: tabular-nums; }
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.muted { color: var(--text-muted); }
+
+/* A node's platform: the glyph carries it, the version reads beside it, and
+   the full detail is in the title. */
+.plat {
+  display: inline-flex; align-items: center;
+  margin-right: 8px; vertical-align: -4px;
+  /* currentColor is the penguin's body, so it must read against the row. */
+  color: var(--text);
+}
+.plat-ver {
+  margin-left: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.self-tag {
+  margin-left: 7px; padding: 1px 7px; border-radius: var(--r-sm);
+  font-size: 11px; font-weight: 600;
+  background: var(--primary-soft); color: var(--primary);
+}
+
+.chip {
+  display: inline-block;
+  padding: 2px 8px; margin: 2px 4px 2px 0;
+  border-radius: var(--r-sm);
+  background: hsl(var(--surface-inset));
+  border: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.status { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+.status .dot { width: 8px; height: 8px; border-radius: 50%; }
+.status.up .dot { background: hsl(var(--success-token)); }
+.status.down .dot { background: hsl(var(--error-token)); }
+
+.empty { padding: 22px 14px; text-align: center; color: var(--text-muted); }
+/* A section that happens to be empty should not punch a hole in a shared
+   surface: its message sits on one line, left with its own heading. */
+.section-head + table + .empty, .section-head ~ .empty { padding: 12px 14px; text-align: left; font-size: 12.5px; }
+.empty code {
+  background: hsl(var(--surface-inset));
+  padding: 1px 6px; border-radius: var(--r-sm);
+  font-size: 12px;
+}
+
+.err-text { color: hsl(var(--error-text)); font-size: 12px; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; }
+  /* A row across the top on a narrow screen, so it is as tall as its content
+     and scrolls sideways rather than being a full-height column. */
+  .rail {
+    position: static; height: auto; align-self: stretch;
+    flex-direction: row; align-items: center; overflow-x: auto; overflow-y: visible; padding: 10px;
+  }
+  .rail-label, .rail-foot { display: none; }
+  .brand { padding: 6px 10px; }
+  .content { padding: 20px 16px 40px; }
+}
