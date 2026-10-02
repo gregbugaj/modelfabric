@@ -30,7 +30,7 @@
     "postcss": "^8.4.49",
     "simple-icons": "^16.32.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.3"
   },
   "pnpm": {
     "overrides": {
