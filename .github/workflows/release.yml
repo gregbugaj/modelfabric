@@ -33,7 +33,7 @@ jobs:
       id-token: write # sign the provenance
       attestations: write # record it
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # The version is `git describe`, so the tag has to be there.
           fetch-depth: 0
