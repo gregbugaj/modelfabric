@@ -46,6 +46,9 @@ mfsh serve -config ./other.json     # a different file
 | `local_bias` | `0.5` | favour local engines, in units of outstanding requests |
 | `preferred_node` | none | resolve a model here first when several nodes hold it. A preference, not a pin. Set it with `mfsh prefer`. |
 | `prefix_affinity` | on | route requests sharing a prompt prefix to the engine that last served it |
+| `placement` | cache-aware | how an engine is chosen among those serving a model, with `prefix_affinity` on. The default is described under [How a request is placed](/docs/routing/replicas#how-a-request-is-placed). `"no-room-rule"` is the default without [the room rule](/docs/routing/replicas#the-room-rule). `"home-slot"` selects the earlier rule: the engine holding the prompt while it has a free slot, otherwise the fewest requests in flight |
+| `queue_wait` | off | hold a request on this node, for up to this long, while no engine has a slot it should take (for example `"60s"`). Needs `prefix_affinity` |
+| `queue_grace` | `2s` | with `queue_wait`: how long a slot must have stayed free before a waiting request from another conversation may take it |
 | `cache_disk_mib` | `0` (off) | cap for the [disk prompt cache](/docs/routing/disk-cache): a conversation's KV cache is saved when its slot is taken and restored when it returns. The files contain prompts. |
 | `cache_disk_dir` | `slots/` in the state directory | where those files are kept |
 

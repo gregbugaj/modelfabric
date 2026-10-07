@@ -22,12 +22,22 @@ AGENT_KEY_NODE=${SWE_AGENT_KEY_NODE:-$ENTRYPOINT}
 # The model config carries the node's API key, so it is written at run time,
 # owner-only, and never committed.
 umask 077
-if [ -n "$AGENT_KEY_NODE" ]; then
+if [ -n "${SWE_AGENT_KEY:-}" ]; then
+  # The litellm arm: the key litellm.sh generated for this run's proxy.
+  KEY=$SWE_AGENT_KEY
+elif [ -n "$AGENT_KEY_NODE" ]; then
   KEY=$(tailscale ssh "$AGENT_KEY_NODE" '~/.local/bin/mfsh key' </dev/null | tr -d '\r\n')
   [ -n "$KEY" ] || { echo "could not read $AGENT_KEY_NODE's API key over ssh" >&2; exit 1; }
 else
   KEY=$("$MFSH" key)
 fi
+# Sampling, when pinned (see SWE_TEMPERATURE in env.sh). Left out entirely
+# otherwise, so an unpinned run sends exactly what it always sent.
+SAMPLING=""
+[ -n "$TEMPERATURE" ] && SAMPLING="$SAMPLING
+    temperature: $TEMPERATURE"
+[ -n "$SEED" ] && SAMPLING="$SAMPLING
+    seed: $SEED"
 cat > model.yaml <<YAML
 model:
   model_name: "openai/$MODEL"
@@ -38,7 +48,7 @@ model:
     max_tokens: 16384
     timeout: 1800
     drop_params: true
-    parallel_tool_calls: true
+    parallel_tool_calls: true$SAMPLING
 agent:
   step_limit: 100
   cost_limit: 0

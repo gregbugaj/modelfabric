@@ -95,11 +95,22 @@ func TestApplyAffinityPrefersWarmWithinSlack(t *testing.T) {
 	}
 }
 
+// Rewritten 2026-10-05. This used to say "much busier" by raising b's Score
+// past the slack. A score is a request count times how slow the engine is, and
+// the slack is a request count; comparing them is what broke affinity for
+// every engine but the fastest. Busier is now requests in flight, on engines
+// whose capacity is unknown (the only case the slack is for).
 func TestApplyAffinityYieldsToLoad(t *testing.T) {
-	cs := cands("a", "b")
-	cs[1].Score = cs[0].Score + AffinitySlack + 1
+	cs := []mesh.Candidate{
+		{Name: "a", Local: true, Inflight: 0},
+		{Name: "b", Local: true, Inflight: AffinitySlack + 1},
+	}
 	if got := order(applyAffinity(cs, "b", "")); got != "ab" {
 		t.Fatalf("a warm but much busier candidate must not win, got %s", got)
+	}
+	cs[1].Inflight = AffinitySlack
+	if got := order(applyAffinity(cs, "b", "")); got != "ba" {
+		t.Fatalf("a warm candidate within the slack should lead, got %s", got)
 	}
 }
 
@@ -134,12 +145,11 @@ func TestAffinityLRUBoundsAndExpiresEntries(t *testing.T) {
 }
 
 // The SWE-bench pile-up: the warm engine is full (2 running + 1 queued on a
-// 2-slot engine) and the other has room. The in-flight gap (3 vs 1) is within
-// AffinitySlack, but the slot rule must still refuse the warm engine.
+// 2-slot engine) and the other has room. The slot rule refuses the warm engine.
 func TestApplyAffinityRefusesFullWarmEngine(t *testing.T) {
 	cs := []mesh.Candidate{
-		{Name: "idle", Score: 1, Inflight: 1, Slots: 2},
-		{Name: "warm", Score: 3, Inflight: 3, Slots: 2},
+		{Name: "idle", Local: true, Score: 1, Inflight: 1, Slots: 2},
+		{Name: "warm", Local: true, Score: 3, Inflight: 3, Slots: 2},
 	}
 	if got := order(applyAffinity(cs, "warm", "")); got != "idlewarm" {
 		t.Fatalf("a full warm engine must not beat one with room, got %s", got)
@@ -149,26 +159,134 @@ func TestApplyAffinityRefusesFullWarmEngine(t *testing.T) {
 	if got := order(applyAffinity(cs, "warm", "")); got != "warmidle" {
 		t.Fatalf("a warm engine with room should lead, got %s", got)
 	}
-	// When everything is full, warmth decides again (queueing somewhere is
-	// unavoidable, and there it at least finds its cache).
-	cs[0].Inflight, cs[1].Inflight = 2, 2
-	if got := order(applyAffinity(cs, "warm", "")); got != "warmidle" {
-		t.Fatalf("with every engine full the warm one should lead, got %s", got)
+	// Rewritten 2026-10-05. With everything full this used to expect the warm
+	// engine, "where it at least finds its cache". It does not: an engine is
+	// full of other conversations because one of them took that slot. Queueing
+	// there again is what kept an engine one conversation over for a whole
+	// run, a cold read in every slot. The fewest in flight wins instead.
+	cs[0].Inflight, cs[1].Inflight = 2, 3
+	if got := order(applyAffinity(cs, "warm", "")); got != "idlewarm" {
+		t.Fatalf("with every engine full the less loaded one should lead, got %s", got)
 	}
 }
 
-// Affinity and the disk cache share one hashing, which only works if the
-// longer chain begins with the shorter one.
+// Affinity now covers the full prompt: truncating at 64 KiB erased the cost
+// of later turns. It must still agree with the disk cache over their overlap.
 func TestPrefixChainExtendsAffinityBlocks(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + strings.Repeat("abcdefgh", 20000) + `"}]}`)
 	short := prefixBlocks("m", body)
 	long := prefixchain.Chain("m", body, prefixchain.ColdMaxPrefix)
-	if len(long) <= len(short) {
-		t.Fatalf("long chain has %d blocks, affinity's has %d", len(long), len(short))
+	if len(long) != len(short) {
+		t.Fatalf("disk chain has %d blocks, affinity's has %d", len(long), len(short))
 	}
 	for i := range short {
 		if short[i] != long[i] {
 			t.Fatalf("block %d differs between the two chains", i)
 		}
+	}
+}
+
+// A new SWE-bench task shares its system prompt with every other, so its chain
+// matches the blocks covering it. That is not the conversation continuing, and
+// treating it as one sent each new task to wherever the last one went.
+func TestFindTellsAConversationFromASharedPrefix(t *testing.T) {
+	system := doc(4000)
+	a := newAffinity(1024, time.Hour)
+	a.record(prefixBlocks("m", chat(system, "task one: "+doc(1500))), "minion")
+
+	turn2 := prefixBlocks("m", chat(system, "task one: "+doc(1500)+doc(900)))
+	if target, _, continuing := a.find(turn2); target != "minion" || !continuing {
+		t.Errorf("the same conversation, longer: got %q continuing=%v", target, continuing)
+	}
+	other := prefixBlocks("m", chat(system, "task two: "+doc(1500)))
+	if target, _, continuing := a.find(other); target != "minion" || continuing {
+		t.Errorf("another task with the same system prompt: got %q continuing=%v, want a shared prefix only", target, continuing)
+	}
+}
+
+// The whole placement rule, on the fleet of the 2026-10-05 SWE runs and its
+// measured prefill rates: a 5090, a 4-slot 6000 Ada and a 1-slot Apple Silicon
+// node. Candidates arrive in the mesh's order, fastest first.
+//
+// Each case is something an earlier version of this function got wrong on that
+// day, in a live run or in bench/routesim's replay of one.
+func TestPlacementOnTheBenchmarkFleet(t *testing.T) {
+	fleet := func(x, m, h int64) []mesh.Candidate {
+		return []mesh.Candidate{
+			{Name: "xpredator", Local: true, Inflight: x, Slots: 2, PrefillTokS: 1761},
+			{Name: "minion", Local: true, Inflight: m, Slots: 4, PrefillTokS: 840},
+			{Name: "helion", Local: true, Inflight: h, Slots: 1, PrefillTokS: 264},
+		}
+	}
+	for _, c := range []struct {
+		name      string
+		cands     []mesh.Candidate
+		warm      string
+		wantFirst string
+	}{
+		// Affinity compared rate-weighted scores with a slack meant for
+		// request counts, so a conversation on a slower engine never returned
+		// to it: 53% of requests placed by affinity, cache hit 68/48/26%.
+		{"home on a slower engine, two of four slots busy", fleet(0, 2, 0), "minion", "minion"},
+		{"home on a slower engine, three of four busy", fleet(1, 3, 0), "minion", "minion"},
+		// "Home is full, wait there": the slot it waits for is another
+		// conversation's, and the engine stays one over, cold in every slot.
+		{"home full: the fewest in flight, not home", fleet(2, 1, 1), "xpredator", "minion"},
+		{"home full: not the fastest either, if it is busier", fleet(2, 4, 0), "minion", "helion"},
+		// Everything full is where the conversation with no slot is placed.
+		// On the fastest engine it made the 5090 the one that thrashed.
+		{"everything full and level: the slower engine", fleet(4, 4, 4), "xpredator", "helion"},
+		{"a new conversation on an idle fleet: the fastest", fleet(0, 0, 0), "", "xpredator"},
+		{"a new conversation: the fewest in flight", fleet(1, 0, 1), "", "minion"},
+		// This one looks wrong and is kept on purpose: it queues behind the
+		// one-slot node (1 in flight) past a GPU with two slots open (2). "An
+		// open slot first" wanted minion here, was run live on 2026-10-05, and
+		// took 104 minutes against 75: the open slot was another
+		// conversation's, and taking it set off a chain of evictions.
+		{"home full: the fewest in flight, even past an open slot", fleet(2, 2, 1), "xpredator", "helion"},
+		{"home full, no slot open anywhere: the fewest in flight", fleet(3, 4, 2), "minion", "helion"},
+		// A cap of one waiting request per engine wanted xpredator here, and
+		// was stopped 27 minutes into its live run on 2026-10-06, behind on
+		// tasks and on re-reading: the request it turned away took a 5090
+		// slot from a conversation about to come back.
+		{"home full: behind a request already waiting, if that is the fewest", fleet(2, 4, 2), "minion", "helion"},
+		// Sticky placement alone left a lone conversation on whichever node
+		// it began: 749 calls on the Apple Silicon node beside an idle 5090.
+		{"home is several times slower than a free engine", fleet(0, 0, 0), "helion", "xpredator"},
+		{"but the two GPUs do not trade conversations", fleet(0, 1, 0), "minion", "minion"},
+		{"and a faster engine with no free slot is not worth leaving for", fleet(2, 4, 0), "helion", "helion"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := applyAffinity(c.cands, c.warm, "")
+			if got[0].Name != c.wantFirst {
+				t.Errorf("first choice %s, want %s (order %s)", got[0].Name, c.wantFirst, order(got))
+			}
+		})
+	}
+}
+
+// Only traffic measures an engine. A lone conversation is the only traffic,
+// so it tries an unmeasured engine with a free slot once, and after that the
+// rates decide.
+func TestALoneConversationTriesAnUnmeasuredEngine(t *testing.T) {
+	cs := []mesh.Candidate{
+		{Name: "helion", Local: true, Slots: 1, PrefillTokS: 264},
+		{Name: "minion", Local: true, Slots: 4},
+		{Name: "xpredator", Local: true, Slots: 2},
+	}
+	if got := applyAffinity(cs, "helion", "")[0].Name; got != "minion" {
+		t.Errorf("first choice %s, want an unmeasured engine", got)
+	}
+	// An engine that can never report a rate (mlx-lm) is not one to try for
+	// the sake of measuring it.
+	cs[1].RateUnmeasurable, cs[2].RateUnmeasurable = true, true
+	if got := applyAffinity(cs, "helion", "")[0].Name; got != "helion" {
+		t.Errorf("first choice %s, want home: the others can never be measured", got)
+	}
+	// Home itself unmeasured: nothing to compare against, so it stays.
+	cs[0].PrefillTokS = 0
+	cs[1].RateUnmeasurable, cs[2].RateUnmeasurable = false, false
+	if got := applyAffinity(cs, "helion", "")[0].Name; got != "helion" {
+		t.Errorf("first choice %s, want home", got)
 	}
 }

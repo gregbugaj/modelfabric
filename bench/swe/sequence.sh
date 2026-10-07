@@ -1,9 +1,10 @@
 #!/bin/bash
-# Runs the benchmark once per routing mode, reloading both engines before each
-# run. Modes: "router" (ModelFabric's own router: prefix affinity with a load veto,
-# and what a node does when nothing else is configured), or an llm-d profile
-# (mfsh llmd profiles).
-# Usage: sequence.sh PREFIX MODE...   e.g. sequence.sh 0927 router optimized-baseline load-aware tuned
+# Runs the benchmark once per routing mode, reloading every engine before each
+# run. Modes: "litellm" (a stock LiteLLM proxy choosing an engine at random:
+# the off-the-shelf baseline, see litellm.sh), "router" (ModelFabric's own
+# router: prefix affinity with a load veto, and what a node does when nothing
+# else is configured), or an llm-d profile (mfsh llmd profiles).
+# Usage: sequence.sh PREFIX MODE...   e.g. sequence.sh 1006 litellm router tuned
 #
 # ModelFabric routes, or llm-d schedules the one model it owns. Runs before
 # 2026-09-25 used an arm named "direct" on an older chain and are not
@@ -42,7 +43,7 @@ PREFIX=${1:?usage: sequence.sh PREFIX MODE...}; shift
 # before each reload, so it always belongs to the *previous* pass; empty on
 # the first, when the engines carry whatever ran before this sequence.
 PREV_MODE=""
-trap 'echo "=== $(date +%T) stopped"; "$MFSH" llmd disable >/dev/null 2>&1; exit 130' INT TERM
+trap 'echo "=== $(date +%T) stopped"; "$MFSH" llmd disable >/dev/null 2>&1; "$BENCH_DIR/litellm.sh" stop >/dev/null 2>&1; exit 130' INT TERM
 for mode in "$@"; do
   echo "=== $(date +%T) $mode"
   "$MFSH" llmd disable >/dev/null 2>&1
@@ -66,7 +67,15 @@ for mode in "$@"; do
   # setup, because ModelFabric's router is what a node does when llm-d is not
   # scheduling. An unknown mode name is an llm-d profile, and `llmd enable`
   # rejects it — which is the check, rather than a list repeated here.
-  if [ "$mode" != router ]; then
+  # The litellm arm bypasses ModelFabric's routing entirely: the agent talks to
+  # a LiteLLM proxy that dials the engines itself. Started after the reload,
+  # because it is configured with the engines the reload produced.
+  AGENT_ENV=()
+  if [ "$mode" = litellm ]; then
+    lout=$("$BENCH_DIR/litellm.sh" start "$WORK/runs/$PREFIX-$mode") \
+      || { echo "=== litellm did not start; stopping" >&2; exit 1; }
+    AGENT_ENV=("SWE_AGENT_BASE=$(sed -n 's/^BASE=//p' <<<"$lout")" "SWE_AGENT_KEY=$(sed -n 's/^KEY=//p' <<<"$lout")")
+  elif [ "$mode" != router ]; then
     # The calibration file is read by whichever node runs llm-d, which with an
     # entrypoint is not this one. Writing it locally looked like it worked and
     # did nothing: the two nodes held different values (655 here, 678 there)
@@ -96,11 +105,13 @@ for mode in "$@"; do
   fi
   # A failed run must not be reported as a finished mode: the sequence would
   # carry on and the comparison would include a partial or empty run.
-  if ! "$RUNNER" "$PREFIX-$mode" > "$WORK/runs/$PREFIX-$mode.log" 2>&1; then
+  if ! env "${AGENT_ENV[@]}" "$RUNNER" "$PREFIX-$mode" > "$WORK/runs/$PREFIX-$mode.log" 2>&1; then
     echo "=== $(date +%T) $mode FAILED (see $WORK/runs/$PREFIX-$mode.log); stopping" >&2
     "$MFSH" llmd disable >/dev/null 2>&1 || true
+    [ "$mode" = litellm ] && "$BENCH_DIR/litellm.sh" stop "$WORK/runs/$PREFIX-$mode" >/dev/null 2>&1
     exit 1
   fi
+  [ "$mode" = litellm ] && "$BENCH_DIR/litellm.sh" stop "$WORK/runs/$PREFIX-$mode"
   if [ -n "${MFSH_ADDR:-}" ] && ! "$BENCH_DIR/counters.py" "$MFSH_ADDR" verify "$WORK/runs/$PREFIX-$mode.engines.txt"; then
     echo "=== $(date +%T) $mode is not comparable; stopping" >&2
     "$MFSH" llmd disable >/dev/null 2>&1 || true

@@ -75,6 +75,13 @@ func TestCandidatesAccountForObservedAndRoutedLoad(t *testing.T) {
 			e := m.engines[0]
 			setEngine(e, "qwen")
 			e.SetSlots(2)
+			// The router's count first, then the engine's reading: the reading
+			// is compared with what the router had dispatched when it was
+			// taken. In the other order every case here would be a request
+			// dispatched after the poll, which is the second case alone.
+			if tc.name != "router dispatch follows idle poll" {
+				e.inflight.Store(tc.routed)
+			}
 			if tc.observed >= 0 {
 				e.SetObservedInflight(tc.observed)
 			}

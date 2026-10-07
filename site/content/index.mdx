@@ -69,7 +69,8 @@ and tests that each one can drive your GPU before installing it. See
 
 **Routes.** By load, by locality, by an explicit preference, and by which engine already has your
 conversation's prefix warm in its KV cache. See [Routing](/docs/routing), and
-[the benchmark](/docs/benchmark/swe-routing) for what that last one is worth on real work.
+[the benchmark](/docs/benchmark/router-comparison) for what that last one is worth against llm-d
+and LiteLLM.
 
 **Ships a dashboard.** Compiled into the binary, so there's nothing extra to deploy: mesh
 topology, per-engine KV use, model management across nodes, a Hugging Face browser. See
@@ -121,7 +122,7 @@ aren't averaged into one fleet-wide number.
   <Card title="Add a second machine" href="/docs/getting-started/add-a-node">
     Two nodes, nothing to register, same address as before.
   </Card>
-  <Card title="The benchmark" href="/docs/benchmark/swe-routing">
-    What routing is worth on real SWE-bench tasks, measured.
+  <Card title="The benchmark" href="/docs/benchmark/router-comparison">
+    ModelFabric's router against llm-d and LiteLLM on one coding-agent workload.
   </Card>
 </Cards>

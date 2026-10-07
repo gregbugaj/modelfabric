@@ -1104,3 +1104,96 @@ test("turning an MCP switch on is warned about, and both round-trip through the 
   assert.match(wideningWarnings(changes)[0], /any address it can reach/);
   assert.deepEqual(wideningWarnings({ mcp_allow_ephemeral: false }), []);
 });
+
+import { slotUse, meshCapacity } from "./ui-model.js";
+
+// The dashboard showed "2 / 1" for a one-slot engine with a request queued
+// behind the one running, and through a benchmark nobody could see that work
+// was waiting on the slowest machine while a GPU had slots open.
+test("slotUse separates running from waiting and counts free slots", () => {
+  for (const [name, inflight, slots, want] of [
+    ["one queued behind a one-slot engine", 2, 1, { running: 1, waiting: 1, free: 0 }],
+    ["two of four slots busy", 2, 4, { running: 2, waiting: 0, free: 2 }],
+    ["idle", 0, 4, { running: 0, waiting: 0, free: 4 }],
+    ["exactly full, nothing waiting", 2, 2, { running: 2, waiting: 0, free: 0 }],
+    ["slots unknown: waiting and free are not zero, they are unknown", 3, 0, { running: 3, waiting: null, free: null }],
+  ]) {
+    assert.deepEqual(slotUse(inflight, slots), want, name);
+  }
+});
+
+test("meshCapacity flags work waiting on one engine while another has a slot free", () => {
+  const e = (inflight, slots, healthy = true) => ({ healthy, slots, ...slotUse(inflight, slots) });
+  // The screenshot of 2026-10-05: xpredator 1/2, helion 2/1, minion 0/4.
+  assert.deepEqual(meshCapacity([e(1, 2), e(2, 1), e(0, 4)]),
+    { slots: 7, running: 2, waiting: 1, free: 5, waitingBesideFree: true });
+  assert.equal(meshCapacity([e(3, 2), e(2, 1)]).waitingBesideFree, false, "waiting, but nothing free");
+  assert.equal(meshCapacity([e(1, 2), e(0, 4)]).waitingBesideFree, false, "free, and nothing waiting");
+  // An engine that is down has no slots to offer.
+  assert.equal(meshCapacity([e(0, 4, false), e(2, 1)]).free, 0);
+  assert.deepEqual(meshCapacity(undefined), { slots: 0, running: 0, waiting: 0, free: 0, waitingBesideFree: false });
+});
+
+import { heldRequests, movedIn, waitedText } from "./ui-model.js";
+
+test("heldRequests lists what every router is holding, longest wait first", () => {
+  const nodes = [
+    { name: "entry", held: [{ waited_ms: 4000, home: "minion", why: "its own engine is full" }] },
+    { name: "other", held: [{ waited_ms: 361000, why: "a new conversation" }] },
+    { name: "gpu" },
+  ];
+  assert.deepEqual(heldRequests(nodes), [
+    { at: "other", waitedMs: 361000, home: "", why: "a new conversation" },
+    { at: "entry", waitedMs: 4000, home: "minion", why: "its own engine is full" },
+  ]);
+  assert.deepEqual(heldRequests(undefined), []);
+});
+
+test("movedIn adds up what every router sent each node", () => {
+  const nodes = [
+    { routed: [{ node: "minion", calls: 200, moved: 9 }, { node: "helion", calls: 30, moved: 1 }] },
+    { routed: [{ node: "minion", calls: 51, moved: 0 }] },
+    {},
+  ];
+  assert.deepEqual(movedIn(nodes), { minion: { calls: 251, moved: 9 }, helion: { calls: 30, moved: 1 } });
+  // A node nobody has routed to is absent, not zero: the page shows a dash.
+  assert.equal(movedIn(nodes).xpredator, undefined);
+});
+
+test("waitedText says a wait the way a person would", () => {
+  for (const [ms, want] of [[400, "0s"], [19500, "20s"], [61000, "1m 01s"], [361000, "6m 01s"]]) {
+    assert.equal(waitedText(ms), want);
+  }
+});
+
+import { gib } from "./ui-model.js";
+
+test("an engine row carries its RAM cache, what it dropped, and its machine's memory", () => {
+  const view = buildView({
+    self: {
+      node: "minion", mem_total_mb: 15853, mem_available_mb: 4795,
+      instances: [{ id: "i1", model: "m", state: "ready", slots: 4, cache_ram_mib: 8192, cache_dropped: 12, memory_mb: 7372 }],
+    },
+    peers: [
+      // A peer too old to report any of it: unknown, not zero.
+      { node: "old", alive: true, instances: [{ id: "i2", model: "m", state: "ready", slots: 2 }] },
+      { node: "xpredator", alive: true, mem_total_mb: 128000, mem_available_mb: 87000,
+        instances: [{ id: "i3", model: "m", state: "ready", slots: 2, cache_ram_mib: 32768, memory_mb: 17300 }] },
+    ],
+  });
+  const by = Object.fromEntries(view.meshEngines.map((e) => [e.node, e]));
+  assert.deepEqual(
+    [by.minion.cacheRamMib, by.minion.cacheDropped, by.minion.memoryMb, by.minion.hostMemTotalMb, by.minion.hostMemAvailableMb],
+    [8192, 12, 7372, 15853, 4795]);
+  // A cache that has dropped nothing says 0, which is an answer.
+  assert.deepEqual([by.xpredator.cacheRamMib, by.xpredator.cacheDropped], [32768, 0]);
+  assert.deepEqual(
+    [by.old.cacheRamMib, by.old.cacheDropped, by.old.memoryMb, by.old.hostMemTotalMb],
+    [null, null, null, null]);
+});
+
+test("gib says a size in MiB the way a person would", () => {
+  for (const [mib, want] of [[8192, "8.0 GB"], [6144, "6.0 GB"], [32768, "32 GB"], [7372, "7.2 GB"], [null, "—"], [undefined, "—"]]) {
+    assert.equal(gib(mib), want);
+  }
+});

@@ -104,6 +104,11 @@ export function buildView(mesh) {
       // queued in Envoy, and under llm-d miss the ones being served too, so
       // this is the figure that is always right.
       accepted: self.accepted ?? 0,
+      // Requests this node's router is holding for a slot: waiting, but on
+      // no engine yet, so no engine row can show them.
+      queued: self.queued ?? 0,
+      held: self.held ?? [],
+      routed: self.routed ?? [],
       scheduler: self.scheduler ?? null,
       modelCount: (self.models ?? []).length,
       models: self.models ?? [],
@@ -121,6 +126,9 @@ export function buildView(mesh) {
       alive: Boolean(p.alive),
       inflight: p.inflight ?? 0,
       accepted: p.accepted ?? 0,
+      queued: p.queued ?? 0,
+      held: p.held ?? [],
+      routed: p.routed ?? [],
       scheduler: p.scheduler ?? null,
       modelCount: (p.models ?? []).length,
       models: p.models ?? [],
@@ -136,11 +144,22 @@ export function buildView(mesh) {
   // publish their instances; this node's come from its own state, with the
   // health its router tracks merged in by instance id.
   const health = new Map((self.engines ?? []).map((e) => [e.name, e]));
-  const fromInstances = (node, list, isSelf) => (list ?? []).map((i) => {
+  const fromInstances = (node, list, isSelf, host) => (list ?? []).map((i) => {
     const live = isSelf ? health.get(i.id) : null;
     return {
       node,
       isSelf,
+      // The engine's host-RAM prompt cache: its cap, and how many times it
+      // has dropped a conversation to make room. With one more conversation
+      // than slots an engine swaps them through this cache, so its size
+      // decides the cache hit rate more than the slot count does. null where
+      // the engine did not say: an older peer, or an engine without one.
+      cacheRamMib: i.cache_ram_mib > 0 ? i.cache_ram_mib : null,
+      cacheDropped: typeof i.cache_dropped === "number" ? i.cache_dropped : (i.cache_ram_mib > 0 ? 0 : null),
+      // What the engine process holds in RAM, and what its machine has.
+      memoryMb: i.memory_mb > 0 ? i.memory_mb : null,
+      hostMemTotalMb: host?.mem_total_mb > 0 ? host.mem_total_mb : null,
+      hostMemAvailableMb: host?.mem_available_mb > 0 ? host.mem_available_mb : null,
       id: i.id,
       model: i.model || "",
       runtime: i.runtime || "",
@@ -175,14 +194,15 @@ export function buildView(mesh) {
       // its engines had before the field existed.
       vision: Boolean(i.vision),
       inflight: live ? live.inflight ?? 0 : i.inflight ?? 0,
+      ...slotUse(live ? live.inflight ?? 0 : i.inflight ?? 0, i.slots ?? 0),
       kvUsage: typeof i.kv_usage === "number" ? i.kv_usage : -1,
       healthy: live ? Boolean(live.healthy) : i.state === "ready",
       state: i.state || "",
     };
   });
   const meshEngines = [
-    ...fromInstances(self.node || "(unknown)", self.instances, true),
-    ...peers.flatMap((p) => fromInstances(p.node || p.addr, p.instances, false)),
+    ...fromInstances(self.node || "(unknown)", self.instances, true, self),
+    ...peers.flatMap((p) => fromInstances(p.node || p.addr, p.instances, false, p)),
   ].sort((a, b) => (a.isSelf !== b.isSelf ? (a.isSelf ? -1 : 1) : a.node.localeCompare(b.node) || a.model.localeCompare(b.model)));
 
   const engines = (self.engines ?? []).map((e) => ({
@@ -236,7 +256,40 @@ export function buildView(mesh) {
     })),
     engines,
     meshEngines,
+    capacity: {
+      ...meshCapacity(meshEngines),
+      // Held by a router for a slot, on whichever nodes took the requests.
+      held: online.reduce((sum, n) => sum + (n.queued ?? 0), 0),
+    },
+    heldRequests: heldRequests(online),
+    movedIn: movedIn(online),
   };
+}
+
+// slotUse splits an engine's requests into those running and those waiting
+// for a slot, and says how many slots are free.
+//
+// The table used to show one figure, "2 / 1", for a one-slot engine with a
+// request running and another queued behind it, under a tooltip that read "2
+// of 1 slots busy". Through a whole benchmark nothing on the page said that
+// two agents were waiting on the slowest machine while a GPU had slots open.
+//
+// An engine that does not report its slots has nothing to be full against, so
+// waiting and free are null there: unknown, not zero.
+export function slotUse(inflight, slots) {
+  const n = Math.max(inflight || 0, 0);
+  if (!slots) return { running: n, waiting: null, free: null };
+  return { running: Math.min(n, slots), waiting: Math.max(n - slots, 0), free: Math.max(slots - n, 0) };
+}
+
+// meshCapacity adds those up across the healthy engines. waitingBesideFree is
+// the case worth a second look: something is queued on one engine while
+// another has a slot open.
+export function meshCapacity(engines) {
+  const known = (engines ?? []).filter((e) => e.healthy && e.slots);
+  const sum = (k) => known.reduce((n, e) => n + (e[k] || 0), 0);
+  const c = { slots: sum("slots"), running: sum("running"), waiting: sum("waiting"), free: sum("free") };
+  return { ...c, waitingBesideFree: c.waiting > 0 && c.free > 0 };
 }
 
 // Self first, then live nodes, then alphabetical — the order you actually scan.
@@ -1423,4 +1476,51 @@ export function clusterTables(rep) {
     meta, command: rep.command || "", notes: rep.notes ?? [], partial: Boolean(rep.partial),
     loadPP: rep.config?.load_pp ?? 1024, tg: rep.config?.tg ?? 128,
   };
+}
+
+// heldRequests lists every request a router in the mesh is holding for a
+// slot, longest wait first, with the node holding it.
+//
+// The header count said "2 held at the router" and nothing else. In the runs
+// of 2026-10-06 finding out that one of them had waited six minutes, and for
+// what, meant reading a node's traffic log over SSH.
+export function heldRequests(nodes) {
+  return (nodes ?? [])
+    .flatMap((n) => (n.held ?? []).map((h) => ({
+      at: n.name,
+      waitedMs: h.waited_ms ?? 0,
+      home: h.home || "",
+      why: h.why || "",
+    })))
+    .sort((a, b) => b.waitedMs - a.waitedMs);
+}
+
+// movedIn adds up, per serving node, what every router in the mesh has sent
+// it and how many of those requests were a conversation arriving from another
+// engine. A move is where re-reading comes from: in one run 2.6M of 3.6M
+// tokens read again were read on the call straight after one.
+export function movedIn(nodes) {
+  const out = {};
+  for (const n of nodes ?? []) {
+    for (const r of n.routed ?? []) {
+      const t = (out[r.node] ??= { calls: 0, moved: 0 });
+      t.calls += r.calls ?? 0;
+      t.moved += r.moved ?? 0;
+    }
+  }
+  return out;
+}
+
+// waitedText is a wait in the unit a person would say it in.
+export function waitedText(ms) {
+  const s = Math.round((ms ?? 0) / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+// gib is a size in MiB said in GiB, to one decimal below ten.
+export function gib(mib) {
+  if (mib === null || mib === undefined) return "—";
+  const g = mib / 1024;
+  return `${g < 10 ? g.toFixed(1) : Math.round(g)} GB`;
 }

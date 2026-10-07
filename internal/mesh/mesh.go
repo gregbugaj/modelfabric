@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"runtime"
 	"slices"
@@ -48,6 +49,19 @@ type NodeState struct {
 	// cannot see a request still queued in Envoy, and under llm-d cannot see
 	// one it dispatched either.
 	Accepted int64 `json:"accepted,omitempty"`
+	// Queued is how many requests this node's router is holding for a slot
+	// (router.Queue), zero when it has no queue. They are counted in Accepted
+	// and in no engine's load: no engine has been chosen for them yet.
+	Queued int64 `json:"queued,omitempty"`
+	// Held is those requests one by one, and Routed what this node's router
+	// has sent to each node since it started. Both describe the router on the
+	// node that took the requests, which is not the node that served them.
+	Held   []HeldRequest `json:"held,omitempty"`
+	Routed []RoutedTo    `json:"routed,omitempty"`
+	// MemTotalMB and MemAvailableMB are the machine's RAM and how much of it
+	// is free to use without swapping, zero when the node cannot say.
+	MemTotalMB     int64 `json:"mem_total_mb,omitempty"`
+	MemAvailableMB int64 `json:"mem_available_mb,omitempty"`
 	// Scheduler is llm-d on this node, when it is scheduling a model for the
 	// mesh. Every node advertises its own, because the node that schedules is
 	// not always the node you are looking at: with an entrypoint it is a
@@ -205,11 +219,12 @@ type Engine struct {
 	promptTokens   atomic.Int64
 	cachedTokens   atomic.Int64
 	outputTokens   atomic.Int64
-	// observedInflight is what the engine itself reports as in flight, plus one
-	// so that a real zero is distinguishable from "never measured". ModelFabric's own
+	// others is how many requests the engine was last seen serving beyond the
+	// ones this node's router had dispatched to it at that moment: what llm-d,
+	// or anything else dialling the engine directly, has put there. ModelFabric's own
 	// inflight counter only sees what its router dispatched, and under llm-d
-	// that is nothing.
-	observedInflight atomic.Int64
+	// that is nothing. See Inflight.
+	others atomic.Int64
 	// load is a short history of in-flight samples, for the rolling average.
 	// Guarded by its own mutex: it is written from the poll loop and read by
 	// every state render, and neither should wait on the model list.
@@ -340,7 +355,16 @@ const LoadWindow = 2 * time.Minute
 
 // SetObservedInflight records what the engine says it is serving.
 func (e *Engine) SetObservedInflight(n int) {
-	e.observedInflight.Store(int64(n) + 1)
+	e.setObserved(n, e.inflight.Load())
+}
+
+// setObserved is SetObservedInflight given the router's own count from before
+// the engine was asked. The engine's answer describes a moment between that
+// count and the one read now, and a request that started or ended in the gap
+// is in one of the two: taking the larger keeps it from being counted as
+// someone else's.
+func (e *Engine) setObserved(n int, ownBefore int64) {
+	e.others.Store(max(int64(n)-max(ownBefore, e.inflight.Load()), 0))
 	e.recordLoad(int64(n))
 }
 
@@ -376,17 +400,36 @@ func (e *Engine) LoadAvg() (float64, bool) {
 	return float64(sum) / float64(len(e.load)), true
 }
 
-// Inflight reports how many requests this engine is serving right now.
+// Inflight reports how many requests this engine has right now, running or
+// queued for a slot.
 //
-// The engine's own count wins when ModelFabric has one: it counts every request,
-// including those llm-d sent straight to the engine, where ModelFabric's router
-// counter reads zero however busy the engine is. Without it — an engine that
-// publishes nothing, or one not yet polled — the router's own count stands.
+// It is this node's own count plus whatever else the engine was seen serving.
+// Each is blind to something. The router's counter sees everything this node
+// dispatched, running or queued, the moment it starts and the moment it ends,
+// and nothing that llm-d sent straight to the engine. The engine's count sees
+// those, but it is busy slots, so a request queued behind them is not in it,
+// and it is read on a poll, so it is up to two seconds old.
+//
+// So the engine's count contributes only what it shows beyond the router's
+// own (others), and the router's own is used live. Two earlier forms:
+//
+//   - The engine's count outright. A one-slot node published "1 in flight"
+//     with one request running and four queued, and was chosen as the least
+//     loaded engine in the mesh for a whole run.
+//   - The larger of the two. Right about the queue, but a request that had
+//     finished stayed in the engine's last reading until the next poll, and
+//     then in the entry node's copy of it until its next poll. On a two-slot
+//     engine that one stale request made a conversation's own slot read as
+//     taken: with the router queue on (2026-10-06), 74 of 184 requests going
+//     home were held first, a median of four seconds on the 5090.
 func (e *Engine) Inflight() int64 {
-	if v := e.observedInflight.Load(); v > 0 {
-		return v - 1
-	}
-	return e.inflight.Load()
+	return e.inflight.Load() + e.others.Load()
+}
+
+// kvPool is the engine's KV pool in tokens, zero when unknown.
+func (e *Engine) kvPool() int64 {
+	_, pool, _ := e.Context()
+	return int64(pool)
 }
 
 // LastUsed reports when a request last started or finished on this engine.
@@ -467,6 +510,22 @@ func (e *Engine) has(model string) bool {
 	return false
 }
 
+// HeldRequest is a request a node's router is holding for a slot.
+type HeldRequest struct {
+	WaitedMs int64 `json:"waited_ms"`
+	// Home is the engine holding its conversation, empty for a new one.
+	Home string `json:"home,omitempty"`
+	Why  string `json:"why,omitempty"`
+}
+
+// RoutedTo is what a node's router has sent to one node: requests, and how
+// many of them were a conversation arriving from a different engine.
+type RoutedTo struct {
+	Node  string `json:"node"`
+	Calls int64  `json:"calls"`
+	Moved int64  `json:"moved"`
+}
+
 // Peer is another ModelFabric node reachable over the tailnet.
 type Peer struct {
 	Node    string
@@ -483,13 +542,36 @@ type Peer struct {
 	// accepted and scheduler are what the peer said about itself: what its
 	// front door is holding, and whether it is scheduling for the mesh.
 	accepted  int64
+	queued    int64
+	held      []HeldRequest
+	routed    []RoutedTo
+	memTotal  int64
+	memAvail  int64
 	scheduler *SchedulerState
 	lastSeen  time.Time
 	alive     bool
 
-	// pending counts requests dispatched since the last successful poll, so a
-	// burst between polls is not invisible to the router.
-	pending atomic.Int64
+	// sent counts the requests this node has dispatched to the peer and not
+	// yet had answered: up on dispatch, down when the request ends. It is this
+	// node's own knowledge and is exact, where reported is up to a poll old.
+	//
+	// It replaces a counter that went up on dispatch and was only zeroed by
+	// the next poll. A request that finished between polls stayed counted, and
+	// an agent asks again 0.2s after its answer: its own finished request made
+	// its home read as full. In the 88-minute SWE run of 2026-10-05, 109 of 142
+	// moves left an engine with a slot free, and 2.6M of the 3.6M tokens read
+	// again were read on the call straight after a move.
+	sent atomic.Int64
+	// sentAtPoll is sent as it stood when reported was stored. What reported
+	// holds beyond it came from somewhere else: another entry node, llm-d, a
+	// client talking to the peer directly.
+	sentAtPoll int64
+}
+
+// others is how much of a count the peer reported was not sent by this node.
+// The caller holds p.mu.
+func (p *Peer) others(reported int64) int64 {
+	return max(reported-p.sentAtPoll, 0)
 }
 
 // identity returns the peer's name and base URL under its own lock, which is
@@ -515,7 +597,7 @@ func (p *Peer) has(model string) bool {
 }
 
 // capacity is the peer's engines serving model: requests in flight on them
-// (as last reported, plus what we have sent since), their total slots, and the
+// (what we have there now, plus what it last reported of others'), their total slots, and the
 // fastest measured prefill rate. Zero slots means the peer did not say — an
 // older ModelFabric — and is treated as unknown, never as full.
 func (p *Peer) capacity(model string) (inflight, slots int64, rate float64) {
@@ -529,7 +611,7 @@ func (p *Peer) capacity(model string) (inflight, slots int64, rate float64) {
 		slots += e.Slots
 		rate = max(rate, e.PrefillTokS)
 	}
-	return inflight + p.pending.Load(), slots, rate
+	return p.sent.Load() + p.others(inflight), slots, rate
 }
 
 // constrains reports whether this peer has any engine for the model that
@@ -584,13 +666,30 @@ func (p *Peer) constrains(model string) bool {
 	return !saw
 }
 
-// load is the router's view of how busy a peer is: what it last reported, plus
-// what we have sent it since.
+// pool is the KV pool of the peer's engines serving model, in tokens; zero
+// if any of them did not say, since a total with a gap in it is not one.
+func (p *Peer) pool(model string) int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var total int64
+	for _, e := range p.engines {
+		if !e.Healthy || !slices.Contains(e.Models, model) {
+			continue
+		}
+		if e.KVPoolTokens <= 0 {
+			return 0
+		}
+		total += int64(e.KVPoolTokens)
+	}
+	return total
+}
+
+// load is the router's view of how busy a peer is: the requests this node has
+// there right now, plus what the peer last reported beyond those.
 func (p *Peer) load() int64 {
 	p.mu.RLock()
-	r := p.reported
-	p.mu.RUnlock()
-	return r + p.pending.Load()
+	defer p.mu.RUnlock()
+	return p.sent.Load() + p.others(p.reported)
 }
 
 // PeerView is the peer state rendered for /z/mesh.
@@ -613,6 +712,19 @@ type PeerView struct {
 	// cannot see a request still queued in Envoy, and under llm-d cannot see
 	// one it dispatched either.
 	Accepted int64 `json:"accepted,omitempty"`
+	// Queued is how many requests this node's router is holding for a slot
+	// (router.Queue), zero when it has no queue. They are counted in Accepted
+	// and in no engine's load: no engine has been chosen for them yet.
+	Queued int64 `json:"queued,omitempty"`
+	// Held is those requests one by one, and Routed what this node's router
+	// has sent to each node since it started. Both describe the router on the
+	// node that took the requests, which is not the node that served them.
+	Held   []HeldRequest `json:"held,omitempty"`
+	Routed []RoutedTo    `json:"routed,omitempty"`
+	// MemTotalMB and MemAvailableMB are the machine's RAM and how much of it
+	// is free to use without swapping, zero when the node cannot say.
+	MemTotalMB     int64 `json:"mem_total_mb,omitempty"`
+	MemAvailableMB int64 `json:"mem_available_mb,omitempty"`
 	// Scheduler is llm-d on this peer, when it is scheduling for the mesh.
 	// The node that schedules is not always the node you are asking: with an
 	// entrypoint it has no GPUs at all.
@@ -663,17 +775,32 @@ type InstanceState struct {
 	// then can it be said to refuse images: a model with no projector never
 	// had one to offer, and an image sent to it is the caller's mistake, not a
 	// placement ModelFabric should route around.
-	VisionOff bool      `json:"vision_off,omitempty"`
-	State     string    `json:"state"`
-	PID       int       `json:"pid,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Started   time.Time `json:"started"`
+	VisionOff bool `json:"vision_off,omitempty"`
+	// CacheRAMMiB is the cap on the engine's host-RAM prompt cache: what it
+	// can hold of conversations that are not in a slot. CacheDropped is how
+	// many times it has had to drop one to make room since it started; each
+	// is a conversation that will be read again in full. MemoryMB is what the
+	// engine process holds in RAM now. All three are zero when not known.
+	//
+	// Published because this cache, not the slot count, decided an engine's
+	// cache hit rate once it had one more conversation than slots (56% on a
+	// 4096 MiB cache beside 94% on 8192, 2026-10-06), and the only way to see
+	// it was to read each engine's log over ssh.
+	CacheRAMMiB  int       `json:"cache_ram_mib,omitempty"`
+	CacheDropped int64     `json:"cache_dropped,omitempty"`
+	MemoryMB     int64     `json:"memory_mb,omitempty"`
+	State        string    `json:"state"`
+	PID          int       `json:"pid,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	Started      time.Time `json:"started"`
 }
 
 type Mesh struct {
 	cfg    config.Config
 	node   string
 	client *http.Client
+	// infer sends generations; see New for why it is not client.
+	infer *http.Client
 
 	poll, probe, dead time.Duration
 
@@ -691,6 +818,20 @@ type Mesh struct {
 	// accepted reports what the front door is holding; nil on a node whose
 	// server has not attached one.
 	accepted func() int64
+	// queued reports what the router is holding for a slot; nil without one.
+	queued func() int64
+	// routerView reports the router's held requests and placement counts.
+	routerView func() ([]HeldRequest, []RoutedTo)
+	// engineGone is told the name of a candidate whose engine has stopped or
+	// been replaced: a local engine's name, or a peer's node. See
+	// SetEngineGoneHook.
+	engineGone func(name string)
+	// hostMemory reports this machine's total and available memory in bytes;
+	// the rest is its answer, kept a few seconds.
+	hostMemory                 func() (total, available int64)
+	hostMemMu                  sync.Mutex
+	hostMemAt                  time.Time
+	hostMemTotal, hostMemAvail int64
 	// scheduler reports this node's llm-d, nil when it runs none.
 	scheduler func() *SchedulerState
 
@@ -723,6 +864,11 @@ func (m *Mesh) Preferred() string {
 	return m.preferred
 }
 
+// ProbeHeaderTimeout bounds how long a probe or measurement waits for a peer to
+// start answering. It is read when a Mesh is made. A variable so a test can
+// show, in milliseconds, that this bound does not apply to inference.
+var ProbeHeaderTimeout = 120 * time.Second
+
 func New(cfg config.Config, selfNode string) *Mesh {
 	poll, probe, dead := cfg.Durations()
 	m := &Mesh{
@@ -732,13 +878,34 @@ func New(cfg config.Config, selfNode string) *Mesh {
 		probe: probe,
 		dead:  dead,
 		peers: map[string]*Peer{},
-		// No overall client timeout: generations stream for minutes. Bound the
-		// time to first response header instead.
+		// For probes and measurements, which answer at once or not at all: no
+		// overall timeout, and a bound on the time to the first response header.
 		client: &http.Client{
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: 120 * time.Second,
+				ResponseHeaderTimeout: ProbeHeaderTimeout,
 				MaxIdleConnsPerHost:   64,
 				IdleConnTimeout:       90 * time.Second,
+			},
+		},
+		// For inference, which must not have that bound. A request that does
+		// not stream sends its headers only when the whole answer is written,
+		// so "time to first header" is the length of the generation: on the
+		// Apple Silicon node here a long agent turn is several minutes. This
+		// was one client with a 120s bound, and in the 2026-10-05 SWE run with
+		// 8 workers it failed 13.5% of requests at the entrypoint: each was
+		// tried on three engines, 120s apiece, and thrown away, having made
+		// them prefill 30-60k tokens for nothing. The engines read 8.7M prompt
+		// tokens for 6 finished tasks, where a stock LiteLLM read 3.3M for 20.
+		//
+		// What bounds a dead engine instead is the router's stall watchdog
+		// (request_stall, 15 minutes), which cancels the request and so frees
+		// the slot. A peer that cannot be reached at all still fails in
+		// seconds, on the dial.
+		infer: &http.Client{
+			Transport: &http.Transport{
+				DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				MaxIdleConnsPerHost: 64,
+				IdleConnTimeout:     90 * time.Second,
 			},
 		},
 	}
@@ -756,6 +923,11 @@ func (m *Mesh) rateWeighted() bool {
 
 func (m *Mesh) Node() string         { return m.node }
 func (m *Mesh) Client() *http.Client { return m.client }
+
+// InferenceClient is the client a generation is sent with. It differs from
+// Client in one way that matters: it does not bound the time to the first
+// response header (see New).
+func (m *Mesh) InferenceClient() *http.Client { return m.infer }
 
 // Engines returns a snapshot of the currently registered engines.
 func (m *Mesh) Engines() []*Engine {
@@ -782,20 +954,39 @@ func (m *Mesh) RegisterEngine(e *Engine) {
 // dispatched to it are unaffected; they finish against the old handle.
 func (m *Mesh) UnregisterEngine(name string) {
 	m.engMu.Lock()
-	defer m.engMu.Unlock()
+	found := false
 	for i, e := range m.engines {
 		if e.Name == name {
 			m.engines = append(m.engines[:i], m.engines[i+1:]...)
-			return
+			found = true
+			break
 		}
 	}
+	m.engMu.Unlock()
+	if found && m.engineGone != nil {
+		m.engineGone(name)
+	}
 }
+
+// SetEngineGoneHook attaches what is told when a candidate's engine stops or
+// is replaced: the name a local engine was routed by, or a peer's node when an
+// instance it reported is no longer among those it reports. Whatever that
+// engine had cached went with it, and the router must stop believing
+// otherwise. Set it before the mesh starts polling.
+func (m *Mesh) SetEngineGoneHook(f func(name string)) { m.engineGone = f }
 
 // SetInstanceProvider wires in the supervisor's view of running instances.
 func (m *Mesh) SetInstanceProvider(f func() []InstanceState) { m.instances = f }
 
 // SetAcceptedProvider attaches the front door's in-flight count.
 func (m *Mesh) SetAcceptedProvider(f func() int64) { m.accepted = f }
+
+// SetQueuedProvider attaches the router's count of requests held for a slot.
+func (m *Mesh) SetQueuedProvider(f func() int64) { m.queued = f }
+
+// SetRouterViewProvider attaches the router's held requests and its count of
+// what it has sent to each node.
+func (m *Mesh) SetRouterViewProvider(f func() ([]HeldRequest, []RoutedTo)) { m.routerView = f }
 
 // SetSchedulerProvider attaches this node's llm-d state, advertised to peers.
 func (m *Mesh) SetSchedulerProvider(f func() *SchedulerState) { m.scheduler = f }
@@ -884,12 +1075,13 @@ func (m *Mesh) refreshEngines(ctx context.Context) {
 				// without anyone scraping through the shim. The same read says
 				// how many requests it is serving, which ModelFabric's own counter
 				// cannot know under llm-d: Envoy dials the engine directly.
+				ownBefore := e.inflight.Load()
 				if slots, ok := m.fetchSlots(ctx, e.BaseURL); ok {
 					if usage, ok := engineshim.KVUsage(slots); ok {
 						e.SetKVUsage(usage)
 					}
 					if busy, ok := engineshim.BusySlots(slots); ok {
-						e.SetObservedInflight(busy)
+						e.setObserved(busy, ownBefore)
 					}
 				}
 			}
@@ -1155,19 +1347,38 @@ func (m *Mesh) upsert(addr, node, base string, s *NodeState) {
 	if s.Node != "" {
 		p.Node = s.Node
 	}
+	// An instance the peer reported last time and does not now has stopped:
+	// unloaded, reloaded under a new id, or lost with the node. Its caches
+	// are gone whichever it was.
+	gone := false
+	for _, old := range p.instances {
+		if !slices.ContainsFunc(s.Instances, func(i InstanceState) bool { return i.ID == old.ID }) {
+			gone = true
+			break
+		}
+	}
+	goneNode := p.Node
 	p.platform, p.osVersion = s.Platform, s.OSVersion
 	p.models = s.Models
 	p.instances = s.Instances
 	p.engines = s.Engines
 	p.reported = s.Inflight
+	// Read here, beside the report it is compared with. A request that ends
+	// between the peer taking its count and this line is counted as another's
+	// until the next poll: a window of one round trip, where it used to be the
+	// whole interval.
+	p.sentAtPoll = p.sent.Load()
 	p.accepted = s.Accepted
+	p.queued = s.Queued
+	p.held, p.routed = s.Held, s.Routed
+	p.memTotal, p.memAvail = s.MemTotalMB, s.MemAvailableMB
 	p.scheduler = s.Scheduler
 	p.lastSeen = time.Now()
 	p.alive = true
 	p.mu.Unlock()
-
-	// The report we just stored already accounts for everything sent so far.
-	p.pending.Store(0)
+	if gone && m.engineGone != nil {
+		m.engineGone(goneNode)
+	}
 }
 
 func (m *Mesh) expire() {
@@ -1216,18 +1427,32 @@ func (m *Mesh) State() NodeState {
 	if m.accepted != nil {
 		accepted = m.accepted()
 	}
+	var queued int64
+	if m.queued != nil {
+		queued = m.queued()
+	}
+	var held []HeldRequest
+	var routed []RoutedTo
+	if m.routerView != nil {
+		held, routed = m.routerView()
+	}
+	memTotal, memAvail := m.hostMemoryMB()
 	var sched *SchedulerState
 	if m.scheduler != nil {
 		sched = m.scheduler()
 	}
 	return NodeState{
-		Node:      m.node,
-		Addr:      m.selfAddr,
-		Platform:  Platform(),
-		OSVersion: osproc.OSVersion(),
-		Models:    models,
-		Inflight:  inflight,
-		Accepted:  accepted,
+		Node:       m.node,
+		Addr:       m.selfAddr,
+		Platform:   Platform(),
+		OSVersion:  osproc.OSVersion(),
+		Models:     models,
+		Inflight:   inflight,
+		Accepted:   accepted,
+		Queued:     queued,
+		Held:       held,
+		Routed:     routed,
+		MemTotalMB: memTotal, MemAvailableMB: memAvail,
 		Scheduler: sched,
 		Engines:   engines,
 		Instances: instances,
@@ -1251,11 +1476,15 @@ func (m *Mesh) Peers() []PeerView {
 			Alive:     p.alive,
 			Instances: append([]InstanceState(nil), p.instances...),
 			Models:    append([]string(nil), p.models...),
-			Inflight:  p.reported + p.pending.Load(),
+			Inflight:  p.sent.Load() + p.others(p.reported),
 			// Both were declared and never filled: a peer's front-door count
 			// read 0 however busy it was, and nothing in the mesh could name
 			// the node doing the scheduling.
-			Accepted:  p.accepted,
+			Accepted:   p.accepted,
+			Queued:     p.queued,
+			Held:       p.held,
+			Routed:     p.routed,
+			MemTotalMB: p.memTotal, MemAvailableMB: p.memAvail,
 			Scheduler: p.scheduler,
 			LastSeen:  p.lastSeen,
 		})
@@ -1307,6 +1536,10 @@ type Candidate struct {
 	// for the model); zero when not yet measured. It is what weights this
 	// candidate's score: a slow engine's queue costs more per entry (cost.go).
 	PrefillTokS float64
+	// KVPool is how many tokens the candidate's engines hold across all their
+	// slots, zero when unknown. Slots share it, so a free slot does not mean
+	// there is room for what would go in it.
+	KVPool int64
 	// RateUnmeasurable says this candidate can never report a throughput rate:
 	// its engine serves no metrics at all (mlx-lm). That is different from a
 	// rate not measured yet, and the two are scored differently — see cost.go.
@@ -1343,10 +1576,20 @@ type Candidate struct {
 // slots. Unknown capacity is never full.
 func (c Candidate) Full() bool { return c.Slots > 0 && c.Inflight >= c.Slots }
 
-// Acquire marks the candidate busy. For a local engine that lasts for the
-// duration of the request; for a peer it lasts until the peer's next poll,
-// which reports its own load. The returned
-// function must be called when the request completes.
+// Load is how many requests the candidate is carrying, as a count: a local
+// engine's in-flight requests, or for a peer the requests this node has there
+// now plus what the peer last reported of others'. Score is this weighted by
+// how slow the engine is, so it is not a count and cannot be compared with one.
+func (c Candidate) Load() int64 {
+	if c.Local {
+		return c.Inflight
+	}
+	return c.outstanding
+}
+
+// Acquire marks the candidate busy for the duration of the request, on a local
+// engine and on a peer alike. The returned function must be called when the
+// request completes.
 func (c Candidate) Acquire() func() {
 	switch {
 	case c.engine != nil:
@@ -1359,12 +1602,10 @@ func (c Candidate) Acquire() func() {
 			c.engine.inflight.Add(-1)
 		}
 	case c.peer != nil:
-		// A peer's real in-flight count comes from its own next poll, which
-		// resets this counter (see refreshPeers). pending only bridges the gap
-		// between dispatching a request and hearing back, so there is nothing
-		// to release here — releasing would double-count against the report.
-		c.peer.pending.Add(1)
-		return func() {}
+		// Counted in and out here, like a local engine. The peer's own report
+		// is only consulted for what others have sent it (see Peer.sent).
+		c.peer.sent.Add(1)
+		return func() { c.peer.sent.Add(-1) }
 	}
 	return func() {}
 }
@@ -1390,6 +1631,7 @@ func (m *Mesh) Candidates(model string, localOnly bool) []Candidate {
 			Inflight:         n,
 			Slots:            e.slots.Load(),
 			PrefillTokS:      e.TrustedPrefillRate(),
+			KVPool:           e.kvPool(),
 			RateUnmeasurable: e.NoMetrics,
 			ServedModel:      e.Served,
 
@@ -1419,6 +1661,7 @@ func (m *Mesh) Candidates(model string, localOnly bool) []Candidate {
 				outstanding:      p.load(),
 				Slots:            slots,
 				PrefillTokS:      rate,
+				KVPool:           p.pool(model),
 
 				NoConstrainedDecoding: !p.constrains(model),
 				NoVision:              p.refusesImages(model),
@@ -1427,6 +1670,15 @@ func (m *Mesh) Candidates(model string, localOnly bool) []Candidate {
 		}
 		m.mu.RUnlock()
 	}
+	Rank(out, m.rateWeighted(), m.cfg.LocalBias, m.Preferred())
+	return out
+}
+
+// Rank scores candidates and sorts them cheapest first, in place. It is the
+// whole of how the mesh orders engines for a request, kept in one function so
+// that bench/routesim replays recorded runs through exactly this and not
+// through a copy that would drift from it.
+func Rank(out []Candidate, rateWeighted bool, localBias float64, preferred string) {
 	// Scored here rather than as each candidate is built: the weighting is
 	// relative to the fastest engine *among these*, which is not known until
 	// they have all been collected (see cost.go).
@@ -1437,19 +1689,18 @@ func (m *Mesh) Candidates(model string, localOnly bool) []Candidate {
 		if out[i].Local {
 			outstanding = out[i].Inflight
 		}
-		if m.rateWeighted() {
-			out[i].Score = cost(outstanding, assumedRate(out[i], slowest), ref, m.cfg.LocalBias, out[i].Local)
+		if rateWeighted {
+			out[i].Score = cost(outstanding, assumedRate(out[i], slowest), ref, localBias, out[i].Local)
 			continue
 		}
 		// The previous comparison, kept switchable: queue depth alone, with
 		// rate only as a tie-break below.
 		out[i].Score = float64(outstanding)
 		if out[i].Local {
-			out[i].Score -= m.cfg.LocalBias
+			out[i].Score -= localBias
 		}
 	}
 
-	preferred := m.Preferred()
 	sort.Slice(out, func(i, j int) bool {
 		// A preferred node wins outright. This is a strict precedence rather
 		// than a score bonus, so the choice cannot be eroded by load — but it
@@ -1475,7 +1726,6 @@ func (m *Mesh) Candidates(model string, localOnly bool) []Candidate {
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out
 }
 
 // rateUnmeasurable reports whether every engine this peer has for the model is
@@ -1505,3 +1755,25 @@ func (p *Peer) rateUnmeasurable(model string) bool {
 	}
 	return found
 }
+
+// hostMemoryMB is the machine's RAM and what is free of it, in MiB, asked for
+// at most every few seconds: every peer asks for this node's state every
+// poll, and on macOS the answer costs short-lived processes. Zero for both
+// when nothing was attached to say, or it could not.
+func (m *Mesh) hostMemoryMB() (total, available int64) {
+	if m.hostMemory == nil {
+		return 0, 0
+	}
+	m.hostMemMu.Lock()
+	defer m.hostMemMu.Unlock()
+	if time.Since(m.hostMemAt) > 5*time.Second {
+		m.hostMemAt = time.Now()
+		t, a := m.hostMemory()
+		m.hostMemTotal, m.hostMemAvail = max(t>>20, 0), max(a>>20, 0)
+	}
+	return m.hostMemTotal, m.hostMemAvail
+}
+
+// SetHostMemoryProvider attaches the reading of this machine's total and
+// available memory, in bytes.
+func (m *Mesh) SetHostMemoryProvider(f func() (total, available int64)) { m.hostMemory = f }

@@ -149,7 +149,7 @@
           <span class="hint">union across the mesh — request any of these at <code>/v1/chat/completions</code></span>
         </div>
         <table>
-          <thead><tr><th>Model</th><th>Replicas</th><th>Served by</th></tr></thead>
+          <thead><tr><th title="The name to put in a request&#39;s &quot;model&quot; field.">Model</th><th title="How many nodes have this model loaded. Requests for it are shared between them.">Replicas</th><th title="The nodes that have it loaded right now.">Served by</th></tr></thead>
           <tbody id="models-body"></tbody>
         </table>
         <div class="empty" id="models-empty" hidden></div>
@@ -158,12 +158,13 @@
       <!-- Engines are their own object: the processes behind the models above,
            not another reading of them. Their own surface says so. -->
       <div class="panel">
-        <div class="panel-head">Engines <span class="hint">every engine process in the mesh</span></div>
+        <div class="panel-head">Engines <span class="capacity" id="engines-capacity"></span><span class="hint">every engine process in the mesh</span></div>
         <table>
-          <thead><tr><th>Node</th><th>Model</th><th>Status</th><th>In flight</th><th>Load 2m</th><th>Prefill</th><th>Decode</th><th>Drafts</th><th>KV cache</th><th>Address</th><th>Runtime</th></tr></thead>
+          <thead><tr><th title="The machine this engine runs on.">Node</th><th title="The model this engine has loaded. The eye marks one loaded to read images.">Model</th><th title="Whether the engine is answering.">Status</th><th title="Requests being served now, out of the slots the engine has. A slot serves one request at a time and keeps that conversation&#39;s cache.">Running</th><th title="Requests queued inside this engine for a slot. They cannot be moved to another engine once they are here.">Waiting</th><th title="Slots with no request running. A free slot usually still holds the cache of a conversation that is between requests.">Free slots</th><th title="Average number of requests in flight over the last two minutes. Shows which engine has been carrying the work, where Running shows only this instant.">Load 2m</th><th title="How fast this engine reads a prompt, in tokens per second, averaged since it started. A leading ~ means too little has been measured to route by.">Prefill</th><th title="How fast this engine writes an answer, in tokens per second, averaged since it started. It drops while another slot on the same GPU is reading a long prompt.">Decode</th><th title="With speculative decoding on: the share of drafted tokens the model kept. Higher means faster writing.">Drafts</th><th title="How full the engine&#39;s context memory is, across all its slots.">KV cache</th><th title="The engine&#39;s cache in host RAM for conversations that are not in a slot, and how many it has dropped for lack of room since it started. A dropped conversation is read again in full when it returns. If the count keeps rising and the machine has memory free, raise the cache with -cache-ram when loading the model.">RAM cache</th><th title="RAM the engine process is holding now. Hover a value for how much the machine has free.">Memory</th><th title="Where the engine listens. An address on the tailnet can be reached by other nodes directly.">Address</th><th title="The engine build that is running.">Runtime</th></tr></thead>
           <tbody id="engines-body"></tbody>
         </table>
         <div class="empty" id="engines-empty" hidden></div>
+        <div class="held-list" id="engines-held" hidden></div>
       </div>
 
       <!-- Rates say how fast an engine is; this says how much of the fleet's
@@ -173,7 +174,7 @@
       <div class="panel">
         <div class="panel-head">Work done <span class="hint">tokens each engine has processed since it started</span></div>
         <table>
-          <thead><tr><th>Node</th><th>Prefilled</th><th>Share</th><th>From cache</th><th>Cache hit</th><th>Generated</th></tr></thead>
+          <thead><tr><th title="The machine these totals are for, since its engine started.">Node</th><th title="Prompt tokens this engine had to read. This is the work routing tries to avoid.">Prefilled</th><th title="This engine&#39;s part of all the prompt tokens read across the mesh.">Share</th><th title="Prompt tokens it did not have to read, because the conversation was already in a slot.">From cache</th><th title="From cache as a share of all prompt tokens. Higher is better: it rises when a conversation keeps returning to the same engine.">Cache hit</th><th title="Tokens this engine has written in answers.">Generated</th><th title="Requests sent here whose conversation was last on a different engine, out of all requests sent here. Each one reads its whole prompt again, so this is where re-reading comes from. Counted by the nodes that routed the requests, since they started.">Moved in</th></tr></thead>
           <tbody id="work-body"></tbody>
         </table>
         <div class="empty" id="work-empty" hidden></div>

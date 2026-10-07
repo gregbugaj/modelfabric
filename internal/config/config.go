@@ -197,6 +197,27 @@ type Config struct {
 	// that last served it, so its KV cache is reused. Nil means on.
 	PrefixAffinity *bool `json:"prefix_affinity,omitempty"`
 
+	// Placement selects how the router chooses among engines serving a model,
+	// when prefix affinity is on. Empty is the default: stay with the
+	// engine holding the prompt, balance by tokens waiting to be read, and
+	// keep a conversation off an engine that already has one living in every
+	// slot (the room rule). "no-room-rule" is the default without that last
+	// part, for measuring what it is worth. "home-slot" is the earlier rule:
+	// the engine holding the prompt while it has a free slot, otherwise the
+	// fewest requests in flight.
+	Placement string `json:"placement,omitempty"`
+
+	// QueueWait turns on the router's queue and is the longest a request is
+	// held in it: when no engine has a slot the request should take, it waits
+	// on this node for one, where otherwise it is sent at once to wait inside
+	// an engine. Empty or "0" is off. After this long the request is placed
+	// as if there were no queue, so nothing is refused for having waited.
+	QueueWait string `json:"queue_wait,omitempty"`
+	// QueueGrace is how long a slot must have stayed free before a waiting
+	// request that is not its conversation may take it. Empty means 2s, which
+	// 92 to 96% of an agent's follow-up calls arrive within.
+	QueueGrace string `json:"queue_grace,omitempty"`
+
 	// CacheDiskMiB turns on the disk tier of the prompt cache and caps it:
 	// a conversation's KV state is saved when its slot is taken or its engine
 	// unloaded, and restored when the conversation returns. Zero, the default,
@@ -546,4 +567,11 @@ func (c Config) ResolveEngineBind(selfAddr string) (bind string, warning string)
 		return selfAddr, "engine_bind " + c.EngineBind + " is not this node's tailnet address any more; binding engines to " + selfAddr + ", Tailscale's current one. Set engine_bind to \"tailnet\" to say so"
 	}
 	return selfAddr, ""
+}
+
+// Queue reports the router queue's settings: how long a slot must have stayed
+// free, and the longest wait. on is false when the queue is not configured.
+func (c Config) Queue() (grace, maxWait time.Duration, on bool) {
+	maxWait = dur(c.QueueWait, 0)
+	return dur(c.QueueGrace, 2*time.Second), maxWait, maxWait > 0
 }

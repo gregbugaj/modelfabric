@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
 // A request that goes silent is abandoned, and the slot it held is released.
@@ -94,5 +97,44 @@ func TestStallWindow(t *testing.T) {
 	r.Stall = time.Minute
 	if got := r.stall(); got != time.Minute {
 		t.Errorf("explicit window not honoured: %v", got)
+	}
+}
+
+// A request that does not stream sends its headers only when the whole answer
+// is written, so the wait for headers is the length of the generation. The
+// router used the mesh's probe client for inference, which gives up after 120s
+// without headers: in the 2026-10-05 SWE run, 13.5% of requests at the
+// entrypoint died that way, each after three engines had prefilled its prompt
+// for two minutes and been abandoned.
+//
+// The probe bound is shrunk here so "longer than the bound" is 200ms.
+func TestSlowHeadersAreNotAStall(t *testing.T) {
+	old := mesh.ProbeHeaderTimeout
+	mesh.ProbeHeaderTimeout = 50 * time.Millisecond
+	defer func() { mesh.ProbeHeaderTimeout = old }()
+
+	var calls atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		time.Sleep(200 * time.Millisecond) // "generating", with nothing sent yet
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer slow.Close()
+	// A second engine, so a wrongful timeout shows up as the retry it caused.
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		time.Sleep(200 * time.Millisecond)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer other.Close()
+
+	rec := post(routerWith(t, slow, other))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ok") {
+		t.Fatalf("a slow answer was treated as a dead engine: %d %q", rec.Code, rec.Body.String())
+	}
+	// One engine did the work once. Before the fix both were made to start it
+	// and both were abandoned.
+	if n := calls.Load(); n != 1 {
+		t.Errorf("the request reached %d engines, want 1", n)
 	}
 }

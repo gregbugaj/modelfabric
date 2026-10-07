@@ -23,7 +23,15 @@ active router requests. This includes work sent directly by llm-d while keeping 
 router requests visible between polls. The counts overlap, so they are not added together.
 Observed load can lag until the next poll.
 
-A peer's load is whatever it last reported, plus everything you've sent it since.
+A peer's load is the requests this node has on it right now, plus whatever the peer last reported
+beyond those: work that reached it from another node, from llm-d, or from a client talking to it
+directly. Your own requests are counted in when they are sent and out when they finish, so that
+part is exact. Only the other part can be up to a poll old.
+
+Before this, a request you sent stayed counted until the next poll even after it had finished. An
+agent asks again a fraction of a second after its last answer, so it found its own engine "full"
+of the request it had just completed and was sent somewhere with a cold cache. In our 8-agent
+benchmark that caused 109 of 142 moves between engines.
 
 Nodes poll each other every couple of seconds. If three requests arrive in the gap and each one
 only sees the stale number, all three go to the same idle-looking peer, and you've built a queue on
@@ -74,8 +82,10 @@ offline, doesn't have the model, or fails the request, another node serves it. S
 ### Prefix affinity, if the prompt matches a warm engine
 
 Sending a conversation back to the engine that already has its prefix cached saves re-reading
-tens of thousands of tokens. Load can still override it: a warm engine that's much busier gets
-passed over. See [Replicas and prefix affinity](/docs/routing/replicas).
+tens of thousands of tokens. It holds even when every slot on that engine is busy: the
+request waits there for the next slot, which costs less than reading the conversation again
+somewhere else. A prompt no engine holds goes to the one with the least work waiting. See
+[Replicas and prefix affinity](/docs/routing/replicas#how-a-request-is-placed).
 
 ### The room filter
 

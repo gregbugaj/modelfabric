@@ -169,6 +169,9 @@ type Instance struct {
 }
 
 type Supervisor struct {
+	// memory is what has been read of each instance's RAM cache drops and
+	// process size, kept between the many calls that ask for instance state.
+	memory  memoryWatch
 	cfg     Config
 	rts     *runtime.Registry
 	lch     *process.Launcher
@@ -931,6 +934,9 @@ func (s *Supervisor) instanceStates() []mesh.InstanceState {
 			PID:         i.PID,
 			Started:     i.StartedAt,
 		})
+		st := &out[len(out)-1]
+		st.CacheRAMMiB = i.Config.CacheRAMMiB
+		st.CacheDropped, st.MemoryMB = s.memory.read(i.ID, i.LogPath, i.PID)
 	}
 	return out
 }

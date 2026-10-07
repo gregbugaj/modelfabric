@@ -261,8 +261,30 @@ func serve(args []string) error {
 	// And an output ceiling for requests that name none, so "no limit" cannot
 	// mean "the whole context window" on a machine other people share.
 	rt.MaxOutputTokens = cfg.MaxOutputTokens
+	m.SetHostMemoryProvider(runtime.HostMemory)
+	// What the router has sent where, and what it is holding: published with
+	// the node's state so any node's dashboard can show it.
+	m.SetRouterViewProvider(func() ([]mesh.HeldRequest, []mesh.RoutedTo) { return rt.Holding(), rt.Routed() })
+	m.SetEngineGoneHook(rt.EngineGone)
 	if cfg.PrefixAffinity == nil || *cfg.PrefixAffinity {
 		rt.EnablePrefixAffinity()
+		switch cfg.Placement {
+		case "":
+		case "home-slot":
+			rt.UseHomeSlotPlacement()
+		case "no-room-rule":
+			rt.UseNoRoomRulePlacement()
+		default:
+			log.Warn("unknown placement in config, using the default", "placement", cfg.Placement, "known", "home-slot, no-room-rule")
+		}
+		// Inside, because the queue asks affinity whose slot a slot is.
+		if grace, maxWait, on := cfg.Queue(); on {
+			rt.EnableQueue(grace, maxWait)
+			// Published with the node's state, so any node's dashboard can
+			// say how many requests are waiting here and not on an engine.
+			m.SetQueuedProvider(func() int64 { return int64(rt.Queued()) })
+			log.Info("router queue on", "grace", grace, "max_wait", maxWait)
+		}
 	}
 
 	// "tailnet" is Tailscale's address for this node, known only now.

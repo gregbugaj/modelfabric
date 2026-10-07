@@ -13,7 +13,9 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,7 +58,16 @@ var ErrNoCandidate = errors.New("no node in the mesh serves this model")
 type Router struct {
 	m   *mesh.Mesh
 	log *slog.Logger
-	aff *affinity // nil when prefix affinity is off
+	aff *Placement // nil when prefix affinity is off
+	// queue, when set, holds a request here while no engine has a slot it
+	// should take. nil sends every request the moment it arrives.
+	queue *Queue
+	// routed counts, per node, the requests this router sent there and how
+	// many of those were a conversation arriving from another engine. A move
+	// is where re-reading comes from, and nothing else on the dashboard shows
+	// one: in the runs of 2026-10-05 it was worked out from trajectory files.
+	routedMu sync.Mutex
+	routed   map[string]*routedTo
 
 	// Bodies reports the live body-capture settings. Consulted per request so
 	// the dashboard's switch takes effect immediately rather than on restart.
@@ -177,7 +188,10 @@ type Event struct {
 	Millis   int64     `json:"ms"`
 	BytesOut int64     `json:"bytes_out"`
 	Affine   bool      `json:"affine,omitempty"` // placed by prefix affinity
-	Error    string    `json:"error,omitempty"`
+	// QueuedMillis is how long this router held the request before sending
+	// it, zero when it went at once. It is part of Millis, not added to it.
+	QueuedMillis int64  `json:"queued_ms,omitempty"`
+	Error        string `json:"error,omitempty"`
 	// Trace ties this event to the other records of the same client request —
 	// the row at the front door and the row at the node that served it. Empty
 	// only for an event recorded before the id was minted.
@@ -382,11 +396,97 @@ func New(m *mesh.Mesh, log *slog.Logger) *Router {
 // EnablePrefixAffinity turns on cache-aware placement. The table is bounded
 // and entries expire, because engines evict their caches too.
 func (r *Router) EnablePrefixAffinity() {
-	r.aff = newAffinity(1<<18, 10*time.Minute)
+	r.aff = NewPlacement(nil)
 }
 
-// Forward routes one request. It reads the model from the JSON body, picks a
-// destination, and streams the response back verbatim.
+// EngineGone tells placement that the named candidate's engine has stopped or
+// been replaced, so nothing is cached there any more (see Placement.Forget).
+func (r *Router) EngineGone(name string) {
+	if r.aff != nil {
+		r.aff.Forget(name)
+	}
+}
+
+// UseNoRoomRulePlacement disables the room rule, for measuring what it is
+// worth. The rest of placement is unchanged. Call after EnablePrefixAffinity.
+func (r *Router) UseNoRoomRulePlacement() {
+	if r.aff != nil {
+		r.aff.NoRoomRule = true
+	}
+}
+
+// UseHomeSlotPlacement selects the legacy slot-based affinity policy, including
+// migration to much faster engines. Call after EnablePrefixAffinity.
+func (r *Router) UseHomeSlotPlacement() {
+	if r.aff != nil {
+		r.aff.HomeSlot = true
+	}
+}
+
+// EnableQueue holds requests at this router when no engine has a slot for
+// them, for up to maxWait, and offers a slot to a waiting request only once it
+// has stayed free for grace. See Queue. It needs prefix affinity, which is how
+// the router knows whose slot a slot is.
+func (r *Router) EnableQueue(grace, maxWait time.Duration) {
+	r.queue = NewQueue(grace, maxWait)
+}
+
+type routedTo struct{ calls, moved int64 }
+
+// countRoute records one request sent to node; moved says its conversation
+// was last on a different engine.
+func (r *Router) countRoute(node string, moved bool) {
+	r.routedMu.Lock()
+	defer r.routedMu.Unlock()
+	if r.routed == nil {
+		r.routed = map[string]*routedTo{}
+	}
+	t := r.routed[node]
+	if t == nil {
+		t = &routedTo{}
+		r.routed[node] = t
+	}
+	t.calls++
+	if moved {
+		t.moved++
+	}
+}
+
+// Routed reports, per node, the requests this router has sent there since it
+// started and how many arrived from another engine.
+func (r *Router) Routed() []mesh.RoutedTo {
+	r.routedMu.Lock()
+	defer r.routedMu.Unlock()
+	out := make([]mesh.RoutedTo, 0, len(r.routed))
+	for node, t := range r.routed {
+		out = append(out, mesh.RoutedTo{Node: node, Calls: t.calls, Moved: t.moved})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Node < out[j].Node })
+	return out
+}
+
+// Holding lists the requests this router is holding for a slot.
+func (r *Router) Holding() []mesh.HeldRequest {
+	if r.queue == nil {
+		return nil
+	}
+	hs := r.queue.Holding()
+	out := make([]mesh.HeldRequest, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, mesh.HeldRequest{WaitedMs: h.Waited.Milliseconds(), Home: h.Home, Why: h.Why})
+	}
+	return out
+}
+
+// Queued reports how many requests this router is holding for a slot.
+func (r *Router) Queued() int {
+	if r.queue == nil {
+		return 0
+	}
+	return r.queue.Waiting()
+}
+
+// Forward routes a JSON inference request and streams the upstream response.
 func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) {
 	// Minted before anything can fail, so even a rejected request is traceable
 	// and the client is told the id whatever the outcome.
@@ -461,7 +561,8 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 	// An engine that ignores response_format answers a schema request with
 	// free prose and a 200. Which machine is idle must not decide whether the
 	// answer parses, so those engines are taken out of the running here.
-	if constrainedOutput(probe.ResponseFormat.Type, probe.Grammar, probe.JSONSchema) {
+	constrained := constrainedOutput(probe.ResponseFormat.Type, probe.Grammar, probe.JSONSchema)
+	if constrained {
 		kept, dropped := splitConstrained(candidates)
 		if len(kept) == 0 {
 			where := strings.Join(dropped, ", ")
@@ -493,7 +594,8 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 	// "failed to process mtmd chunk" for the whole request. Which machine is
 	// idle must not decide whether an image can be read, so the same rule as
 	// constrained output applies: take those engines out of the running.
-	if carriesImage(probe.Messages) {
+	image := carriesImage(probe.Messages)
+	if image {
 		kept, dropped := splitVision(candidates)
 		if len(kept) == 0 {
 			where := strings.Join(dropped, ", ")
@@ -510,7 +612,6 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 		candidates = kept
 	}
 
-	var blocks [][32]byte
 	// Before affinity hashing, so the key describes the body that is actually
 	// sent, and before dispatch so a retry cannot send a different request than
 	// the first attempt did.
@@ -522,42 +623,82 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 	// the shim is the one hop every routing method shares (see
 	// engineshim.Placer), and placed here it never saw what llm-d scheduled.
 	affineTo := ""
+	var choice Choice
 	if r.aff != nil {
-		blocks = prefixBlocks(probe.Model, body)
-		if len(blocks) > 0 {
-			if target, _ := r.aff.lookup(blocks); target != "" {
-				candidates = applyAffinity(candidates, target, r.m.Preferred())
-				affineTo = target
-			}
-		}
+		choice = r.aff.Order(candidates, probe.Model, body, r.m.Preferred())
+		candidates, affineTo = choice.Candidates, choice.Target
 	}
 	start := time.Now()
+	var onUsage func(usage)
+	// Only where the request entered the mesh. A request a peer forwarded has
+	// been through that peer's queue already, and was sent here for a slot.
+	var queuedFor time.Duration
+	var grant *Grant
+	if r.queue != nil && r.aff != nil && !forwarded && generates(path) {
+		// What the engine says this request used goes back to the queue: it
+		// is the conversation's size, and the queue places by it.
+		var used usage
+		defer func() { r.queue.Done(grant, used.prompt, used.completion) }()
+		onUsage = func(u usage) { used = u }
+		candidates, queuedFor, grant = r.queue.Admit(req.Context(), Ask{Blocks: choice.blocks, Bytes: len(body)}, func() ([]mesh.Candidate, string) {
+			// Read again each time, the first included: the queue holds its
+			// lock while it does, and needs the mesh as it is now. Through
+			// the same filters the first look went through. If the model has gone from
+			// every node in the meantime, the last order stands and the
+			// dispatch reports it.
+			cs := r.m.Candidates(probe.Model, forwarded)
+			if constrained {
+				cs, _ = splitConstrained(cs)
+			}
+			if image {
+				cs, _ = splitVision(cs)
+			}
+			if len(cs) == 0 {
+				return choice.Candidates, choice.Target
+			}
+			choice = r.aff.Order(cs, probe.Model, body, r.m.Preferred())
+			return choice.Candidates, choice.Target
+		})
+		affineTo = choice.Target
+	}
 
 	// Walk candidates in order so a node that died between polls costs one
 	// retry rather than the request. Once bytes are on the wire we stop:
 	// a half-streamed response cannot be retried safely.
 	var lastErr error
 	for i, c := range candidates {
-		// Record the placement before the engine answers, not after. A long
-		// prefill takes seconds, and every request sharing this prefix that
-		// arrives meanwhile should follow it to the engine now filling that
-		// cache — recording on completion placed all of them blind. Measured
-		// across two 27B nodes, this was the gap to llm-d's scheduler, which
-		// records at pick time. A failed attempt is overwritten by the next.
-		if len(blocks) > 0 {
-			r.aff.record(blocks, c.Name)
+		// Expose the pending prefix before dispatch so concurrent requests can
+		// follow it. Failed attempts remove only their own speculative hints.
+		var attempt *Attempt
+		if r.aff != nil {
+			attempt = r.aff.Placed(choice, c.Name)
+		}
+		if i == 0 && !forwarded && generates(path) {
+			r.countRoute(c.Node, affineTo != "" && affineTo != c.Name)
 		}
 		release := c.Acquire()
-		out, err := r.dispatch(w, req, c, body, path)
+		if i == 0 {
+			r.queue.Sent(grant)
+		}
+		out, err := r.dispatch(w, req, c, body, path, attempt.Prefilled)
 		release()
+		if err == nil && out.status < 400 {
+			attempt.Finished(out.usage.prompt, out.usage.completion)
+		} else {
+			attempt.Failed()
+		}
 		if err == nil {
+			if onUsage != nil {
+				onUsage(out.usage)
+			}
 			node, engine := c.Node, c.Name
 			if out.node != "" {
 				node, engine = out.node, out.engine
 			}
 			e := Event{Time: start, Path: path, Model: probe.Model, Node: node, Engine: engine,
 				Local: c.Local, Status: out.status, Millis: time.Since(start).Milliseconds(),
-				BytesOut: out.bytes, Affine: affineTo == c.Name, Trace: trace}
+				BytesOut: out.bytes, Affine: affineTo == c.Name, Trace: trace,
+				QueuedMillis: queuedFor.Milliseconds()}
 			// The request body is already in memory (Forward read it to find
 			// the model), so capturing it costs nothing extra.
 			if bl := r.bodyLog(); bl.Enabled {
@@ -593,6 +734,9 @@ type result struct {
 	// body holds the response as streamed, up to the capture cap, and only
 	// when body logging is on. Nil otherwise.
 	body []byte
+	// usage is what the engine said the request used, zero when the response
+	// did not say.
+	usage usage
 	// node and engine are who actually served it. For a local engine that is
 	// the candidate; for a peer it is what that peer reported, since only it
 	// knows which of its engines took the request.
@@ -600,8 +744,8 @@ type result struct {
 }
 
 // dispatch sends the request to one candidate.
-func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, c mesh.Candidate, body []byte, path string) (result, error) {
-	return r.dispatchRaw(w, req, c, servedBody(c, body), path, "application/json")
+func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, c mesh.Candidate, body []byte, path string, prefilled func()) (result, error) {
+	return r.dispatchRaw(w, req, c, servedBody(c, body), path, "application/json", prefilled)
 }
 
 // servedBody rewrites the request's "model" to the id the chosen engine
@@ -632,7 +776,7 @@ func servedBody(c mesh.Candidate, body []byte) []byte {
 	return out
 }
 
-func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Candidate, body []byte, path, contentType string) (res result, err error) {
+func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Candidate, body []byte, path, contentType string, prefilled func()) (res result, err error) {
 	start := time.Now()
 	// The upstream call hangs off a context this function can cancel, so a
 	// request that goes silent is abandoned rather than held. Cancelling closes
@@ -672,7 +816,11 @@ func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Ca
 		}
 	}
 
-	resp, err := r.m.Client().Do(out)
+	// The inference client, not the mesh's probe client: that one gives up if
+	// headers have not arrived in 120s, and a request that does not stream
+	// sends none until the answer is complete. The watchdog above is what
+	// bounds a silent engine.
+	resp, err := r.m.InferenceClient().Do(out)
 	if err != nil {
 		return res, err
 	}
@@ -719,9 +867,19 @@ func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Ca
 
 	rc := http.NewResponseController(w)
 	buf := make([]byte, 32<<10)
+	// The end of the response, kept for its usage block (see readUsage).
+	var tail []byte
+	var stream prefillStream
+	isStream := strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") && resp.StatusCode < 400
+	defer func() { res.usage = readUsage(tail) }()
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			tail = keepTail(tail, buf[:n])
+			if isStream && prefilled != nil && stream.Add(buf[:n]) {
+				prefilled()
+				prefilled = nil
+			}
 			progress()
 			// A write deadline, because the blocked party in the incident this
 			// guards against was the write: the client had stopped reading, so
@@ -841,7 +999,7 @@ func (r *Router) ForwardMultipart(w http.ResponseWriter, req *http.Request, path
 	var lastErr error
 	for _, c := range candidates {
 		release := c.Acquire()
-		out, err := r.dispatchRaw(w, req, c, body, path, req.Header.Get("Content-Type"))
+		out, err := r.dispatchRaw(w, req, c, body, path, req.Header.Get("Content-Type"), nil)
 		release()
 		if err == nil {
 			node, engine := c.Node, c.Name

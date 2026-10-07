@@ -108,6 +108,25 @@ fi
 
 staged=0 skipped=0 restarted=0 failed=0
 
+# with_timeout runs a command and kills it after $1 seconds. Tailscale SSH in
+# check mode prints a login link and then waits, and ConnectTimeout does not
+# cover that: the connection is up, so ssh waited on every node in turn and a
+# three-node deploy sat silent for minutes before failing. `timeout` is not on
+# a stock Mac, so this is plain sh. The watcher's output goes to /dev/null, or
+# a $(...) around it would wait for the sleep to finish.
+with_timeout() {
+  secs=$1
+  shift
+  "$@" &
+  cmd=$!
+  (sleep "$secs" && kill "$cmd") >/dev/null 2>&1 &
+  watch=$!
+  wait "$cmd"
+  rc=$?
+  kill "$watch" 2>/dev/null
+  return $rc
+}
+
 # restart_node restarts one node and checks it came back on the staged build.
 # The node's own loopback API is asked over ssh, so this works whatever the
 # node's tailnet listener allows.
@@ -228,7 +247,7 @@ for node in $nodes; do
 
   # uname over ssh rather than the node's HTTP API: it answers even when mfsh
   # is down, which is exactly when you may be redeploying.
-  if ! uname_out=$(ssh $SSH_OPTS "$target" 'uname -sm' 2>"$errf" </dev/null); then
+  if ! uname_out=$(with_timeout ${SSH_PROBE_SECS:-30} ssh $SSH_OPTS "$target" 'uname -sm' 2>"$errf" </dev/null); then
     echo "  $where: SKIPPED — ssh failed: $(ssh_why "$target")"
     skipped=$((skipped + 1))
     continue

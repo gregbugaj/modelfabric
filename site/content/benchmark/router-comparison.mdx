@@ -1,0 +1,197 @@
+---
+title: Router benchmark
+description: "ModelFabric's router, llm-d and LiteLLM on one recorded coding-agent workload, three runs each: ModelFabric finishes 4% faster than llm-d and 20% faster than LiteLLM."
+---
+
+# ModelFabric finishes 4% faster than llm-d and 20% faster than LiteLLM
+
+ModelFabric's own router, [llm-d](https://github.com/llm-d/llm-d) and
+[LiteLLM](https://github.com/BerriAI/litellm) routed the same recorded coding-agent workload across
+the same three machines. Each router ran three times, starting from empty caches.
+
+ModelFabric finished the workload in 18.1 minutes on average, llm-d in 18.8 and LiteLLM in 22.5.
+Every ModelFabric run was faster than every llm-d run, and every llm-d run was faster than every
+LiteLLM run.
+
+The difference is in what the engines had to compute. ModelFabric left 1.37M prompt tokens
+uncached, llm-d 1.43M and LiteLLM 2.00M. LiteLLM moved conversations between engines three to four
+times as often as the other two, and each move means a prompt is computed again.
+
+This benchmark measures routing: completion time, cache reuse and how often a conversation is
+moved. It does not measure a coding agent's accuracy or a SWE-bench solve rate.
+
+The load was replayed and measured with [NVIDIA AIPerf](https://github.com/ai-dynamo/aiperf)
+0.13.0, NVIDIA's open-source benchmarking tool for inference servers. It is a test tool installed
+beside the benchmark and not a dependency of ModelFabric.
+
+<RouterKpis cards={[
+  { label: "Time to finish the workload", measure: "wall_min" },
+  { label: "Uncached prompt tokens", measure: "read" },
+  { label: "Conversations moved to another engine", measure: "moves" },
+  { label: "Conversations dropped from cache", measure: "dropped" },
+]} />
+
+Each figure is the mean of that router's three runs, with the lowest and highest beside it. Uncached
+prompt tokens are the prompt tokens an engine had to compute because no cache held them. Every run
+is listed [below](#every-run).
+
+<RunSpec items={[
+  ["Model", "Qwen3.8-27B Q4_K_M, MTP on, vision on"],
+  ["xpredator", "RTX 5090, 2 slots, 48 GB RAM cache"],
+  ["minion", "RTX 6000 Ada, 4 slots, 6 GB RAM cache"],
+  ["helion", "Apple Silicon, 1 slot, 16 GB RAM cache"],
+  ["Entry", "entrypoint-01, no GPU"],
+  ["Workload", "20 SWE-bench tasks, 638 requests, 14.5M prompt tokens"],
+  ["Load generator", "NVIDIA AIPerf 0.13.0"],
+  ["Load", "8 conversations at once, on 7 slots"],
+]} />
+
+| Router | Scheduling policy |
+|---|---|
+| ModelFabric router | [cache-aware placement](/docs/routing/replicas#how-a-request-is-placed) built into the router: a conversation stays with the engine holding its prompt, load is balanced by tokens still to compute, and the [room rule](/docs/routing/replicas#the-room-rule) keeps engines from over-filling |
+| [llm-d](https://github.com/llm-d/llm-d) `tuned` | llm-d's own scheduler, [running under ModelFabric](/docs/routing/llm-d) with its profile for agent work |
+| [LiteLLM](https://github.com/BerriAI/litellm) least busy *(baseline)* | a stock LiteLLM proxy in a container, sending each request to the engine with the fewest in flight |
+
+## The workload
+
+A coding agent builds each prompt from the model's last answer, so two live runs of the same task
+are not the same workload. Across four live runs of these 20 tasks, one task took 33, 77, 83 and
+100 requests. A router could not be told apart from the luck of its run.
+
+So we recorded one live run and replayed the same requests for every router: the same prompts, in
+the same order within each conversation, with the recorded pauses between them. Every answer is
+held to 48 tokens, which keeps a run to about 20 minutes and puts the weight on what a router can
+change, which is how much of each prompt is left uncached.
+
+What this cannot tell you is whether a task was solved. For that, see the
+[live comparison](/docs/benchmark/swe-routing).
+
+## Time and tokens, every run
+
+<RunSpread measure="wall_min" label="Minutes to finish the workload" />
+
+<RunSpread measure="read" label="Uncached prompt tokens" />
+
+ModelFabric's three runs are the three fastest, at 17.8 to 18.4 minutes against llm-d's 18.5 to
+19.1, and its mean is 0.7 minutes lower. On uncached tokens the two overlap: ModelFabric's runs
+range from 1.32M to 1.41M and llm-d's from 1.39M to 1.45M, with ModelFabric 4% lower on average.
+LiteLLM is clear of both in every run, by about four minutes and 0.6 million tokens.
+
+## Why LiteLLM computes more: it moves conversations
+
+<MovesVsRead />
+
+A move is a request sent to a different engine than the conversation's last one. The new engine
+holds little or none of that conversation, usually only a system prompt it shares with others, so
+most of the prompt is computed again.
+
+LiteLLM picks the engine with the fewest requests in flight. That is a sound rule for stateless
+requests and an expensive one here: it moved a conversation 61 to 68 times a run, and the requests
+that followed a move account for about half of its uncached tokens. The cache-aware routers moved a
+conversation 14 to 24 times.
+
+## How slow a request gets
+
+<RouterLatency />
+
+At the median llm-d and LiteLLM are ahead: about 5 seconds against ModelFabric's 6.6. A median
+request finds its conversation still in a slot, so little of its prompt is uncached.
+
+From about p90 the order changes. Those are the requests whose conversation had to be computed
+again, and LiteLLM has the most of them. The slowest request of all was 3.8 minutes under ModelFabric,
+6.1 under LiteLLM and 6.9 under llm-d.
+
+## Per engine
+
+<EnginesByRouter nodes={[
+  { name: "xpredator", spec: "RTX 5090 · 2 slots · 48 GB RAM cache" },
+  { name: "minion", spec: "RTX 6000 Ada · 4 slots · 6 GB RAM cache" },
+  { name: "helion", spec: "Apple Silicon · 1 slot · 16 GB RAM cache" },
+]} />
+
+Share of prompt tokens served from cache, and conversations dropped from the RAM cache per run.
+
+minion is the weak engine under every router. It serves about a fifth of the requests and
+computes about half of all the uncached tokens, because a 6 GB cache holds roughly one large conversation and
+it has four slots' worth coming and going. No router fixes that. The setting is described
+under [Give the RAM cache room](/docs/routing/replicas#give-the-ram-cache-room).
+
+## Every run
+
+<RunTable />
+
+"Dropped" is conversations dropped from an engine's RAM cache to make room. One LiteLLM request
+failed in its first run; nothing else failed.
+
+## Read these numbers with care
+
+**These runs are the baseline for the router fixes.** They predate corrections to long-prompt
+matching, streaming prefill accounting, overlapping conversation reservations and rejected-attempt
+cache hints. They do not measure the corrected router; that comparison needs a new run.
+
+**ModelFabric's lead over llm-d is small.** It is 0.7 minutes on average, from three runs each, and
+the closest pair of runs is 0.1 minutes apart. The lead over LiteLLM is about four minutes and holds
+in every run.
+
+**Answers are 48 tokens.** That makes this a test of prompt processing and placement. Generation,
+where the engines differ less, is under-weighted. With full-length answers a run takes about an
+hour, and the three routers have not been compared that way yet.
+
+**Prompts are capped at 60,000 tokens.** The longest turns of the recording are left out, so the
+largest conversations are smaller than a live agent's.
+
+**The runs were not interleaved.** The llm-d and LiteLLM runs were taken first, and ModelFabric's
+three runs back to back afterwards, on the current router build. Every run started on a freshly
+reloaded fleet with empty caches. The next rounds rotate the order of the routers.
+
+**Moves and drops are counted from each engine's own log.** Every one of the 638 requests was
+matched to the engine that served it, in every run.
+
+## What runs next
+
+| Run | What it answers |
+|---|---|
+| More rounds, with the order of the routers rotated | whether ModelFabric's lead over llm-d holds, and whether running order matters |
+| More host RAM in minion | how many of the remaining uncached tokens are that one cache |
+| Full-length answers | whether the result holds when generation carries its real weight |
+| Six conversations on seven slots | how the routers compare when every conversation can keep a slot |
+
+## Reproduce this run
+
+```bash
+bench/swe/setup.sh
+python3 -m venv $SWE_WORK/aiperf-venv && $SWE_WORK/aiperf-venv/bin/pip install aiperf
+
+# A recorded live run becomes the workload.
+bench/swe/aiperf-trace.py $SWE_WORK/runs/<recorded-run> $SWE_WORK/trace-quick.jsonl \
+  --max-prompt 60000 --max-output 48 --exact-output
+
+RUNNER=$PWD/bench/swe/aiperf-run.sh \
+SWE_TRACE=$SWE_WORK/trace-quick.jsonl \
+SWE_WORKERS=8 \
+SWE_ENTRYPOINT=entrypoint-01 \
+SWE_AGENT_BASE=http://100.64.0.1:1234/v1 \
+SWE_CONTROL_ADDR=http://100.64.0.1:1234 \
+  bench/swe/sequence.sh <name> router tuned litellm
+```
+
+`SWE_WORK` defaults to `~/.local/share/modelfabric/bench/swe`. `sequence.sh` reloads the model on
+every node before each router, so each starts with empty caches. The `litellm` arm starts a stock
+LiteLLM container on the entrypoint that dials the engines directly, and removes it afterwards.
+Slots and RAM cache sizes per node are in `bench/swe/env.sh`.
+
+---
+
+Source: AIPerf exports and engine logs under `$SWE_WORK/runs/` for the ModelFabric runs `1007e`,
+`1007f` and `1007g`, the llm-d runs `1006q17`, `1007a` and `1007c`, and the LiteLLM runs `1006q16`,
+`1007a` and `1007c`. The workload was recorded from a
+live agent run of the first 20 SWE-bench Verified tasks.
+
+<Cards>
+  <Card title="Replicas and prefix affinity" href="/docs/routing/replicas">
+    How a request is placed, and how to size the RAM cache.
+  </Card>
+  <Card title="SWE routing results" href="/docs/benchmark/swe-routing">
+    The live-agent comparison, with resolve rates and tail latency.
+  </Card>
+</Cards>

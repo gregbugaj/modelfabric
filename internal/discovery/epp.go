@@ -530,7 +530,13 @@ static_resources:
                         - match: {prefix: "/"}
                           route:
                             cluster: original_destination_cluster
-                            timeout: 600s
+                            # timeout is the whole request, not silence. At
+                            # 600s it cut any turn longer than ten minutes: 2
+                            # of 729 calls in the 2026-10-05 SWE run exceeded
+                            # that (the longest was 821s), on a path whose
+                            # agent waits 1800s. idle_timeout is what catches
+                            # an engine that has stopped sending.
+                            timeout: 1800s
                             idle_timeout: 600s
                           # The address Envoy dialled, back to ModelFabric's
                           # front door, which maps it to a node and an engine.

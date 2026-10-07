@@ -5,6 +5,22 @@ description: Four ways to measure a mesh, what question each one answers, and wh
 
 # Benchmarks and tuning
 
+## Results
+
+On one recorded coding-agent workload, ModelFabric's router finished 4% faster than llm-d and 20%
+faster than LiteLLM, across three machines and three runs each.
+
+<Cards>
+  <Card title="Router benchmark" href="/docs/benchmark/router-comparison">
+    ModelFabric, llm-d and LiteLLM on the same workload, measured with NVIDIA AIPerf.
+  </Card>
+  <Card title="SWE routing results" href="/docs/benchmark/swe-routing">
+    Live coding agents on SWE-bench Verified, with resolve rates and tail latency.
+  </Card>
+</Cards>
+
+## Measuring your own mesh
+
 | The question | The tool | Where | Takes |
 |---|---|---|---|
 | How fast is this model on this machine? | [Node benchmark](/docs/benchmark/node) | Benchmark page, or `mfsh bench` | minutes |
@@ -35,3 +51,6 @@ Set `SWE_ENTRYPOINT`, `SWE_AGENT_BASE` and `SWE_CONTROL_ADDR` first. `bench/swe/
 `bench/aider/README.md` in the repository have the details.
 
 The first SWE-bench run is written up as [SWE routing results](/docs/benchmark/swe-routing).
+
+[Router benchmark](/docs/benchmark/router-comparison) puts ModelFabric's router, llm-d and a
+stock LiteLLM proxy on the same recorded agent workload.

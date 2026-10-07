@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { MeshHero } from "../components/landing/mesh-hero";
 import { Gallery } from "../components/landing/gallery";
+import { FleetBench } from "../components/landing/fleet-bench";
 import icons from "../data/brand-icons.json";
 
 /*
@@ -13,14 +14,16 @@ import icons from "../data/brand-icons.json";
  * whole idea — but as evidence under the claim rather than in place of it.
  */
 
-// From the 2026-09-19 SWE-bench routing pilot. These measure what prefix-aware
-// routing did on a two-GPU mesh, not ModelFabric against some alternative; the
-// caption says so, because a number without its question is decoration.
+// From the router comparison of 2026-10-07 (docs/benchmark/router-comparison,
+// numbers in data/routing.json): one recorded coding-agent workload replayed
+// through ModelFabric's router, llm-d and LiteLLM, three runs each. The caption
+// says what was compared, because a number without its question is decoration.
+// Update these with that page when its data is regenerated.
 const PROOF = [
-  { big: "3.7×", small: "less time waiting on the model" },
-  { big: "97.8%", small: "of prompt tokens served from cache" },
-  { big: "6.0×", small: "lower p95 call latency" },
-  { big: "10 → 0", small: "model calls that took longer than five minutes" },
+  { big: "20%", small: "faster than LiteLLM on the same agent workload" },
+  { big: "4%", small: "faster than llm-d, from one binary with no proxy to run" },
+  { big: "32%", small: "fewer prompt tokens computed again than LiteLLM" },
+  { big: "4×", small: "fewer conversations moved off the engine that holds them" },
 ];
 
 const TASKS = [
@@ -126,7 +129,7 @@ export default function Home() {
               Get started
             </Link>
             <Link
-              href="/docs/benchmark"
+              href="/docs/benchmark/router-comparison"
               className="rounded border border-[hsl(var(--mfsh-rule))] px-4 py-2 text-sm font-semibold text-[hsl(var(--mfsh-ink))] no-underline hover:border-[hsl(var(--mfsh-loopback))]"
             >
               See the benchmark
@@ -183,10 +186,10 @@ export default function Home() {
             ))}
           </div>
           <p className="mt-6 text-sm text-[hsl(var(--mfsh-muted))]">
-            Measured with a coding agent on two GPUs, over 20 SWE-bench Verified
-            tasks, with and without prefix-aware routing.{" "}
+            One recorded coding-agent workload, replayed with NVIDIA AIPerf
+            through three routers on the same three machines, three runs each.{" "}
             <Link
-              href="/docs/benchmark"
+              href="/docs/benchmark/router-comparison"
               className="text-[hsl(var(--mfsh-loopback))]"
             >
               See the benchmark →
@@ -194,6 +197,10 @@ export default function Home() {
           </p>
         </div>
       </section>
+
+      {/* ---------------------------------------------- per-machine speed */}
+      {/* Rendered only once bench/fleet/build.py has written real reports. */}
+      <FleetBench />
 
       {/* ------------------------------------------------- the real thing */}
       {/* The hero's diagram is a drawing of the idea. These are the dashboard

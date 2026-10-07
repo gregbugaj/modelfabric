@@ -1,8 +1,8 @@
 // Package prefixchain identifies a request's prompt by a chain of block
 // hashes: each block's hash includes the one before it, so one hash names the
 // whole prompt up to that point and a longer prompt's chain starts with a
-// shorter one's. ModelFabric's router uses the head of it for prefix affinity;
-// the disk prompt cache uses all of it, from the engine shim. One package, so
+// shorter one's. ModelFabric's router and the engine shim's disk prompt cache
+// use the same chain. One package, so
 // a conversation hashes the same whichever way it arrived — and a leaf, since
 // the shim cannot import the router (mesh imports the shim).
 package prefixchain
@@ -18,10 +18,8 @@ import (
 // Block is how many bytes of prompt each link covers.
 const Block = 256
 
-// ColdMaxPrefix is how much of a prompt the disk cache's chain covers. Far
-// more than affinity needs: affinity only has to tell conversations apart,
-// while the disk cache has to tell how much of one a saved slot holds, and a
-// long agent conversation is hundreds of kilobytes.
+// ColdMaxPrefix bounds the disk cache's chain. Routing hashes the full prompt
+// because an unexamined suffix cannot be counted as cached.
 const ColdMaxPrefix = 4 << 20
 
 // Chain is the block-hash chain over the first maxPrefix bytes of a request's

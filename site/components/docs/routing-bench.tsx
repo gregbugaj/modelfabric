@@ -1,0 +1,390 @@
+import data from '../../data/routing.json';
+
+/*
+ * The router comparison page's figures.
+ *
+ * data/routing.json is written by bench/swe/report/replay.py from the runs
+ * themselves, so nothing drawn here is retyped by hand, and a further run of
+ * an arm appears as one more dot and one more table row once that file is
+ * regenerated.
+ *
+ * Unlike the SWE page's two arms, an arm here has several runs, and the
+ * finding is partly that two arms cannot be told apart. So the figures show
+ * every run and not only a mean: a mean of two hides exactly that.
+ */
+
+type Run = (typeof data.runs)[number];
+
+// Ours, the scheduler it was ported from, and the stock baseline.
+const COLORS: Record<string, string> = {
+  router: 'hsl(160 60% 34%)',
+  tuned: 'hsl(243 55% 56%)',
+  litellm: 'hsl(28 92% 45%)',
+};
+const color = (arm: string) => COLORS[arm] ?? 'hsl(var(--mfsh-muted))';
+// The short name is what fits beside a number in a card: "ModelFabric", not
+// "ModelFabric router", which wrapped under the figure it labels.
+const ARMS = data.arms.map((a) => ({ ...a, short: a.name.split(' ')[0] }));
+const runsOf = (arm: string) => data.runs.filter((r) => r.arm === arm);
+const mean = (xs: number[]) => xs.reduce((s, x) => s + x, 0) / Math.max(xs.length, 1);
+
+type Measure = 'wall_min' | 'read' | 'moves' | 'read_after_move' | 'dropped' | 'cache_pct';
+const FORMAT: Record<Measure, (v: number) => string> = {
+  wall_min: (v) => `${v.toFixed(1)} min`,
+  read: (v) => `${(v / 1e6).toFixed(2)}M`,
+  moves: (v) => String(Math.round(v)),
+  read_after_move: (v) => `${(v / 1e6).toFixed(2)}M`,
+  dropped: (v) => String(Math.round(v)),
+  cache_pct: (v) => `${v.toFixed(1)}%`,
+};
+
+// The lowest and highest of an arm's runs, without the unit the mean beside it
+// already carries. A mean of three says little without them.
+function range(arm: string, measure: Measure) {
+  const vs = runsOf(arm).map((r) => r[measure] as number);
+  const bare = (v: number) => FORMAT[measure](v).replace(/ min$/, '');
+  return vs.length > 1 ? `${bare(Math.min(...vs))} to ${bare(Math.max(...vs))}` : '';
+}
+
+// ------------------------------------------------------------------ KPI cards
+
+// The mean of each arm's runs, with the baseline last and a chip saying how
+// far ours is from it.
+export function RouterKpis({
+  cards,
+  baseline = 'litellm',
+}: {
+  cards: { label: string; measure: Measure; unit?: string }[];
+  baseline?: string;
+}) {
+  return (
+    <div className="my-6 grid gap-px overflow-hidden rounded border border-[hsl(var(--mfsh-rule))]
+                    bg-[hsl(var(--mfsh-rule))] sm:grid-cols-2">
+      {cards.map((c) => {
+        const of = (arm: string) => mean(runsOf(arm).map((r) => r[c.measure] as number));
+        const ours = of(ARMS[0].key);
+        const base = of(baseline);
+        const less = base > 0 ? Math.round((1 - ours / base) * 100) : 0;
+        return (
+          <div key={c.label} className="bg-[hsl(var(--mfsh-surface))] p-4">
+            <div className="text-[0.78rem] font-medium text-[hsl(var(--mfsh-muted))]">{c.label}</div>
+            <dl className="mt-3 space-y-1.5">
+              {ARMS.map((a, i) => (
+                <div key={a.key} className="flex items-baseline justify-between gap-2">
+                  <dt className="flex min-w-0 items-baseline gap-1.5 text-[0.74rem] leading-4 text-[hsl(var(--mfsh-muted))]">
+                    <span className="mt-[1px] inline-block h-2 w-2 shrink-0 rounded-[2px]" style={{ background: color(a.key) }} />
+                    <span className="break-words">{a.short}</span>
+                  </dt>
+                  <dd
+                    className={`shrink-0 whitespace-nowrap font-mono tabular-nums ${i === 0 ? 'text-[0.95rem] font-semibold' : 'text-[0.95rem]'}`}
+                    style={{ color: i === 0 ? color(a.key) : 'hsl(var(--mfsh-ink))' }}
+                  >
+                    {FORMAT[c.measure](of(a.key))}
+                    <span className="ml-2 inline-block w-[6.5rem] text-right text-[0.7rem] font-normal text-[hsl(var(--mfsh-muted))]">
+                      {range(a.key, c.measure)}
+                    </span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <div
+              className="mt-3 inline-block rounded px-1.5 py-0.5 font-mono text-[0.72rem]"
+              style={{ background: 'hsl(160 60% 38% / 0.14)', color: 'hsl(160 60% 30%)' }}
+            >
+              {less}% less than {ARMS.find((a) => a.key === baseline)?.short}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------- every run, dots
+
+// One row per arm, one dot per run. Two arms whose dots interleave are tied,
+// whatever their means say, and this is the figure that shows it.
+export function RunSpread({ measure, label }: { measure: Measure; label: string }) {
+  const W = 760;
+  const rowH = 40;
+  const M = { t: 10, r: 28, b: 34, l: 150 };
+  const H = M.t + M.b + rowH * ARMS.length;
+  const all = data.runs.map((r) => r[measure] as number);
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const pad = (hi - lo) * 0.12 || 1;
+  const x0 = lo - pad;
+  const x1 = hi + pad;
+  const x = (v: number) => M.l + ((v - x0) / (x1 - x0)) * (W - M.l - M.r);
+  const ticks = Array.from({ length: 5 }, (_, i) => x0 + ((x1 - x0) * (i + 0.5)) / 5);
+  return (
+    <figure className="my-6">
+      <div className="overflow-x-auto rounded border border-[hsl(var(--mfsh-rule))] bg-[hsl(var(--mfsh-surface))] p-3">
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`${label}, one dot per run, one row per router`}>
+          {ticks.map((v) => (
+            <g key={v}>
+              <line x1={x(v)} x2={x(v)} y1={M.t} y2={H - M.b} stroke="hsl(var(--mfsh-rule))" strokeWidth="1" />
+              <text x={x(v)} y={H - M.b + 16} textAnchor="middle" fontSize="11" fill="hsl(var(--mfsh-muted))">
+                {FORMAT[measure](v)}
+              </text>
+            </g>
+          ))}
+          {ARMS.map((a, i) => {
+            const cy = M.t + rowH * i + rowH / 2;
+            const rs = runsOf(a.key);
+            const vs = rs.map((r) => r[measure] as number);
+            return (
+              <g key={a.key}>
+                <text x={M.l - 12} y={cy + 4} textAnchor="end" fontSize="12" fontWeight="600" fill={color(a.key)}>
+                  {a.name}
+                </text>
+                <line x1={x(Math.min(...vs))} x2={x(Math.max(...vs))} y1={cy} y2={cy}
+                      stroke={color(a.key)} strokeWidth="2" opacity="0.35" />
+                {rs.map((r) => (
+                  <circle key={r.run} cx={x(r[measure] as number)} cy={cy} r="5.5" fill={color(a.key)}
+                          stroke="hsl(var(--mfsh-surface))" strokeWidth="1.5">
+                    <title>{`${a.name}, run ${r.n}: ${FORMAT[measure](r[measure] as number)}`}</title>
+                  </circle>
+                ))}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <figcaption className="mt-2 text-sm text-[hsl(var(--mfsh-muted))]">
+        {label}. One dot per run; lower is better.
+      </figcaption>
+    </figure>
+  );
+}
+
+// ------------------------------------------------------- moves against reading
+
+// Every run as one point: how often it moved a conversation, and how much it
+// read. The arms are not the story here, the line they all sit near is.
+export function MovesVsRead() {
+  const W = 760;
+  const H = 300;
+  const M = { t: 16, r: 24, b: 44, l: 64 };
+  const runs: Run[] = [...data.runs];
+  const xmax = Math.max(...runs.map((r) => r.moves)) * 1.1;
+  const ys = runs.map((r) => r.read / 1e6);
+  const y0 = Math.floor(Math.min(...ys) * 5 - 1) / 5;
+  const y1 = Math.ceil(Math.max(...ys) * 5 + 1) / 5;
+  const x = (v: number) => M.l + (v / xmax) * (W - M.l - M.r);
+  const y = (v: number) => M.t + (1 - (v - y0) / (y1 - y0)) * (H - M.t - M.b);
+  const yticks = Array.from({ length: Math.round((y1 - y0) * 5) + 1 }, (_, i) => y0 + i / 5);
+  const xticks = [0, 20, 40, 60, 80].filter((v) => v <= xmax);
+  return (
+    <figure className="my-6">
+      <div className="overflow-x-auto rounded border border-[hsl(var(--mfsh-rule))] bg-[hsl(var(--mfsh-surface))] p-3">
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
+             aria-label="Uncached prompt tokens against conversations moved, one point per run">
+          {yticks.map((v) => (
+            <g key={v}>
+              <line x1={M.l} x2={W - M.r} y1={y(v)} y2={y(v)} stroke="hsl(var(--mfsh-rule))" strokeWidth="1" />
+              <text x={M.l - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="hsl(var(--mfsh-muted))">
+                {v.toFixed(1)}M
+              </text>
+            </g>
+          ))}
+          {xticks.map((v) => (
+            <text key={v} x={x(v)} y={H - M.b + 18} textAnchor="middle" fontSize="11" fill="hsl(var(--mfsh-muted))">
+              {v}
+            </text>
+          ))}
+          <text x={M.l + (W - M.l - M.r) / 2} y={H - 6} textAnchor="middle" fontSize="11" fill="hsl(var(--mfsh-muted))">
+            times a conversation was sent to a different engine than its last request
+          </text>
+          <text x={14} y={M.t + (H - M.t - M.b) / 2} textAnchor="middle" fontSize="11" fill="hsl(var(--mfsh-muted))"
+                transform={`rotate(-90 14 ${M.t + (H - M.t - M.b) / 2})`}>
+            uncached prompt tokens
+          </text>
+          {runs.map((r) => (
+            <circle key={r.run} cx={x(r.moves)} cy={y(r.read / 1e6)} r="6.5" fill={color(r.arm)}
+                    stroke="hsl(var(--mfsh-surface))" strokeWidth="1.5">
+              <title>{`${ARMS.find((x) => x.key === r.arm)?.name}, run ${r.n}: ${r.moves} moves, ${(r.read / 1e6).toFixed(2)}M uncached`}</title>
+            </circle>
+          ))}
+        </svg>
+      </div>
+      <figcaption className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-[hsl(var(--mfsh-muted))]">
+        {ARMS.map((a) => (
+          <span key={a.key} className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: color(a.key) }} />
+            {a.name}
+          </span>
+        ))}
+        <span>One point per run.</span>
+      </figcaption>
+    </figure>
+  );
+}
+
+// ------------------------------------------------------------- latency curves
+
+const dur = (v: number) => (v < 90 ? `${Math.round(v)} s` : `${(v / 60).toFixed(1)} min`);
+
+// Latency read at a percentile, as on the SWE page (see LatencyCdf in
+// bench.tsx for why it is drawn this way), with a curve per router.
+export function RouterLatency() {
+  const W = 760;
+  const H = 320;
+  const M = { t: 16, r: 132, b: 46, l: 54 };
+  const iw = W - M.l - M.r;
+  const ih = H - M.t - M.b;
+  const pct = data.pct as Record<string, number[][]>;
+  const arms = ARMS.map((a) => ({ ...a, pts: pct[a.key] ?? [] })).filter((s) => s.pts.length > 1);
+  if (!arms.length) return null;
+  const tx = (pc: number) => -Math.log10(1 - pc / 100);
+  const t0 = tx(50);
+  const t1 = Math.min(...arms.map((s) => tx(s.pts[s.pts.length - 1][0])));
+  const x = (pc: number) => M.l + ((tx(pc) - t0) / (t1 - t0)) * iw;
+  const ymax = Math.max(...arms.map((s) => Math.max(...s.pts.map((p) => p[1])))) * 1.15;
+  const y = (v: number) => M.t + ih - (Math.log10(Math.max(v, 1)) / Math.log10(ymax)) * ih;
+  const path = (pts: number[][]) =>
+    pts.filter((p) => tx(p[0]) <= t1 + 1e-9)
+      .map((p, i) => `${i ? 'L' : 'M'}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+  const yticks = [1, 3, 10, 30, 60, 300, 600].filter((v) => v <= ymax);
+  const xticks = [50, 75, 90, 95, 99, 99.9].filter((p) => tx(p) >= t0 && tx(p) <= t1);
+  const ends = arms
+    .map((s) => ({ key: s.key, name: s.short, v: s.pts[s.pts.length - 1][1] }))
+    .map((e) => ({ ...e, yy: y(e.v) }))
+    .sort((p, q) => p.yy - q.yy);
+  ends.forEach((e, i) => {
+    if (i && e.yy - ends[i - 1].yy < 15) e.yy = ends[i - 1].yy + 15;
+  });
+  return (
+    <figure className="my-6">
+      <div className="overflow-x-auto rounded border border-[hsl(var(--mfsh-rule))] bg-[hsl(var(--mfsh-surface))] p-3">
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
+             aria-label="Request latency read at each percentile, one curve per router">
+          {yticks.map((v) => (
+            <g key={v}>
+              <line x1={M.l} x2={W - M.r} y1={y(v)} y2={y(v)} stroke="hsl(var(--mfsh-rule))" strokeWidth="1" />
+              <text x={M.l - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="hsl(var(--mfsh-muted))">
+                {v < 60 ? `${v} s` : `${v / 60} min`}
+              </text>
+            </g>
+          ))}
+          {xticks.map((p) => (
+            <g key={p}>
+              <line x1={x(p)} x2={x(p)} y1={M.t} y2={H - M.b} stroke="hsl(var(--mfsh-rule))" strokeWidth="1" />
+              <text x={x(p)} y={H - M.b + 18} textAnchor="middle" fontSize="11" fill="hsl(var(--mfsh-muted))">p{p}</text>
+            </g>
+          ))}
+          <text x={M.l + iw / 2} y={H - 6} textAnchor="middle" fontSize="11" fill="hsl(var(--mfsh-muted))">
+            percentile of requests (each step right is 10× rarer)
+          </text>
+          {[...arms].reverse().map((s) => (
+            <path key={s.key} d={path(s.pts)} fill="none" stroke={color(s.key)} strokeWidth="2" />
+          ))}
+          {ends.map((e) => (
+            <g key={e.key}>
+              <circle cx={W - M.r} cy={y(e.v)} r="4" fill={color(e.key)} />
+              <text x={W - M.r + 8} y={e.yy + 4} fontSize="11" fill={color(e.key)} fontWeight="600">
+                {e.name} {dur(e.v)}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
+      <figcaption className="mt-2 text-sm text-[hsl(var(--mfsh-muted))]">
+        Each router&apos;s runs pooled: {ARMS.map((a) => `${(data.calls as Record<string, number>)[a.key]} requests under ${a.name}`).join(', ')}.
+      </figcaption>
+    </figure>
+  );
+}
+
+// -------------------------------------------------------------- engine cards
+
+// One card per engine, a row per router: the share of prompt tokens it served
+// from cache, averaged over that router's runs, and how many conversations it
+// dropped from its RAM cache per run.
+export function EnginesByRouter({ nodes }: { nodes: { name: string; spec: string }[] }) {
+  return (
+    <div className="my-5 grid gap-px overflow-hidden rounded border border-[hsl(var(--mfsh-rule))]
+                    bg-[hsl(var(--mfsh-rule))] sm:grid-cols-3">
+      {nodes.map((n) => (
+        <div key={n.name} className="bg-[hsl(var(--mfsh-surface))] p-4">
+          <div className="font-semibold text-[hsl(var(--mfsh-ink))]">{n.name}</div>
+          <div className="text-[0.78rem] text-[hsl(var(--mfsh-muted))]">{n.spec}</div>
+          <dl className="mt-3 space-y-1.5 text-[0.85rem]">
+            <div className="flex justify-end gap-3 text-[0.7rem] text-[hsl(var(--mfsh-muted))]">
+              <span className="w-12 text-right">cache</span>
+              <span className="w-12 text-right">dropped</span>
+            </div>
+            {ARMS.map((a) => {
+              const per = runsOf(a.key).map((r) => (r.nodes as Record<string, { hit: number; dropped: number }>)[n.name]).filter(Boolean);
+              const hit = mean(per.map((p) => p.hit));
+              const dropped = mean(per.map((p) => p.dropped));
+              return (
+                <div key={a.key} className="flex items-baseline justify-between gap-3">
+                  <dt className="flex items-baseline gap-1.5 text-[hsl(var(--mfsh-muted))]">
+                    <span className="inline-block h-2 w-2 shrink-0 rounded-[2px]" style={{ background: color(a.key) }} />
+                    {a.short}
+                  </dt>
+                  <dd className="flex gap-3 whitespace-nowrap font-mono tabular-nums">
+                    <span className="w-12 text-right"
+                          style={hit < 80 ? { color: 'hsl(28 92% 40%)', fontWeight: 600 } : { color: 'hsl(var(--mfsh-ink))' }}>
+                      {hit.toFixed(1)}%
+                    </span>
+                    <span className="w-12 text-right text-[hsl(var(--mfsh-ink))]">{Math.round(dropped)}</span>
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ every run
+
+export function RunTable() {
+  const cell = 'whitespace-nowrap px-2 text-right font-mono tabular-nums';
+  return (
+    <div className="my-6 overflow-x-auto">
+      <table className="w-full text-[0.82rem]">
+        <thead>
+          <tr className="text-[0.75rem] text-[hsl(var(--mfsh-muted))]">
+            <th className="text-left font-medium">Router</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">run</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">finished in</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">uncached tokens</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">from cache</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">moves</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">uncached after a move</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">dropped</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">p50, s</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">p90, s</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">p99, s</th>
+            <th className="whitespace-nowrap px-2 text-right font-medium">slowest, s</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ARMS.flatMap((a) =>
+            runsOf(a.key).map((r) => (
+              <tr key={r.run}>
+                <td className="whitespace-nowrap font-medium" style={{ color: color(a.key) }}>{a.name}</td>
+                <td className={cell}>{r.n}</td>
+                <td className={cell}>{r.wall_min.toFixed(1)} min</td>
+                <td className={cell}>{r.read.toLocaleString('en-US')}</td>
+                <td className={cell}>{r.cache_pct.toFixed(1)}%</td>
+                <td className={cell}>{r.moves}</td>
+                <td className={cell}>{r.read_after_move.toLocaleString('en-US')}</td>
+                <td className={cell}>{r.dropped}</td>
+                <td className={cell}>{r.p50}</td>
+                <td className={cell}>{Math.round(r.p90)}</td>
+                <td className={cell}>{Math.round(r.p99)}</td>
+                <td className={cell}>{Math.round(r.max)}</td>
+              </tr>
+            )),
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}

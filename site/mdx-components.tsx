@@ -8,6 +8,9 @@ import { Shot } from './components/docs/shot';
 import {
   RunSpec, Kpis, LatencyCdf, EngineState, AllMeasurements, PerTask, BenchNote,
 } from './components/docs/bench';
+import {
+  RouterKpis, RunSpread, MovesVsRead, RouterLatency, EnginesByRouter, RunTable,
+} from './components/docs/routing-bench';
 
 const docsComponents = getDocsMDXComponents();
 
@@ -39,6 +42,12 @@ export function useMDXComponents(components?: Record<string, React.ComponentType
     AllMeasurements,
     PerTask,
     BenchNote,
+    RouterKpis,
+    RunSpread,
+    MovesVsRead,
+    RouterLatency,
+    EnginesByRouter,
+    RunTable,
     ...components,
   };
 }

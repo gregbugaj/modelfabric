@@ -28,7 +28,17 @@ MODEL=${SWE_MODEL:-qwen/qwen3.8-27b}
 # fleet keeps its speculation and can read an image while a run is on. An
 # explicit -spec mtp is honoured over the automatic rule; without it, loading
 # with vision would silently halve decode again.
-LOAD_ARGS=${SWE_LOAD_ARGS:-"-vision on -spec mtp -context 65536 -parallel 2"}
+#
+# -cache-ram: what an engine can hold of conversations that are not in a slot.
+# It decides more than the slot count does. Once an engine has one more
+# conversation than slots, a waiting request takes whichever slot frees first,
+# and the engine swaps the two conversations through this cache: about half a
+# second while both fit, a full re-read of the one that was dropped when they
+# do not. Read off the engine logs on 2026-10-06: the 5090 at llama.cpp's
+# default of 8192 MiB mostly kept up, the 6000 Ada at 4096 overflowed 25 times
+# in a 13-minute stretch and sat at 56% from cache beside the 5090's 94%. This
+# machine has 125GB of host RAM, so its cache is 32768 MiB, about 390k tokens.
+LOAD_ARGS=${SWE_LOAD_ARGS:-"-vision on -spec mtp -context 65536 -parallel 2 -cache-ram 32768"}
 
 # Per-node overrides, because the machines are not alike and a uniform slot
 # count is the thing `mfsh tune` exists to disprove. Measured on this fleet,
@@ -58,8 +68,31 @@ LOAD_ARGS=${SWE_LOAD_ARGS:-"-vision on -spec mtp -context 65536 -parallel 2"}
 # helion a second slot that made it slower, which is how a 24 tok/s Mac came to
 # absorb 49% of the fleet's prefill. Re-run `mfsh tune` on new hardware rather
 # than copying these numbers.
-SWE_LOAD_ARGS_MINION=${SWE_LOAD_ARGS_MINION:-"-vision on -spec mtp -context 65536 -parallel 4"}
-SWE_LOAD_ARGS_HELION=${SWE_LOAD_ARGS_HELION:-"-vision on -spec mtp -context 65536 -parallel 1"}
+# minion: a context of 88000 asks for a KV pool of 352k tokens (the engine caps
+# it at the model's 262,144). Its host-RAM prompt cache is 6144 MiB of the
+# machine's 16GB, and that is the ceiling, found by going past it:
+#
+#   1981 MiB (the default, an eighth of RAM): could not hold one 25k-token
+#            conversation.
+#   4096:    56% of prompt tokens from cache beside the 5090's 94%, the cache
+#            overflowing 25 times in 13 minutes.
+#   6144:    73% from cache; 7.5 to 8.0GB of the machine available in three
+#            readings during a run.
+#   8192:    stopped seven minutes into a run on 2026-10-06 with 1.1GB of the
+#            machine left and the engine past 8.5GB resident. A guard unloaded
+#            the model before the kernel had to choose.
+#
+# internal/runtime/mlock.go records the same thing from September: the prompt
+# cache and the context checkpoints together took this machine past its RAM
+# and the engine was killed, twice. Do not raise this without more memory in
+# the machine.
+SWE_LOAD_ARGS_MINION=${SWE_LOAD_ARGS_MINION:-"-vision on -spec mtp -context 88000 -parallel 4 -cache-ram 6144"}
+# helion: 48GB shared between the model, its KV and everything else on the
+# Mac. Left to the default it got 6144 MiB, less than one conversation near
+# its 65536-token context, with one slot for any second conversation to swap
+# through. Measured with the model loaded at that default: the engine at
+# 24.6GB and 47% of memory free, so 16384 MiB leaves about 8GB for macOS.
+SWE_LOAD_ARGS_HELION=${SWE_LOAD_ARGS_HELION:-"-vision on -spec mtp -context 65536 -parallel 1 -cache-ram 16384"}
 loadArgsFor() {
   local var="SWE_LOAD_ARGS_$(printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_')"
   printf '%s' "${!var:-$LOAD_ARGS}"
@@ -80,6 +113,19 @@ DATASET=${SWE_DATASET:-SWE-bench/SWE-bench_Verified}
 # it while llm-d runs and saves it, so the next enable would otherwise pick up
 # whatever the previous run measured. Set it to pin a run; empty keeps the
 # saved/measured value.
+# Sampling for the agent's requests. Empty leaves the engine's own defaults,
+# under which the same task is a different conversation every run: across four
+# runs on 2026-10-05 and 06, task 13398 took 33, 77, 83 and 100 calls, and a
+# whole run took 749 to 831. A router comparison made on single runs like that
+# cannot tell a better placement from an easier draw.
+#
+# SWE_TEMPERATURE=0 SWE_SEED=1 makes each engine answer the same prompt the
+# same way. It does not make two runs identical: the engines are different
+# GPUs running different builds, and the same prompt can come out differently
+# on each, so a task routed to another engine can still take another path.
+# What it removes is the sampling noise on top of that.
+TEMPERATURE=${SWE_TEMPERATURE:-}
+SEED=${SWE_SEED:-}
 PEAK_PREFILL=${SWE_PEAK_PREFILL:-}
 LLMD_DIR=${SWE_LLMD_DIR:-$HOME/.modelfabric/llmd}
 # The node the agent talks to, and the node whose routing the run drives.

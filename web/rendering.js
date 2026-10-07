@@ -3,7 +3,7 @@ import { $ } from "./core.js";
 import { platformTag } from "./discover.js";
 import { formatTokens, kvMeter, shareBar } from "./mesh.js";
 import { capBadges, kv } from "./my-models.js";
-import { buildFront, buildView, platformBadge, relativeTime } from "./ui-model.js";
+import { buildFront, buildView, gib, platformBadge, relativeTime, waitedText } from "./ui-model.js";
 import { nodesServing } from "./workload-presets.js";
 
 /* ---------- rendering ---------- */
@@ -258,9 +258,43 @@ export function render(view, local) {
         shareCell,
         el("td", "num", formatTokens(e.cachedTokens)),
         hitCell,
-        el("td", "num", formatTokens(e.outputTokens)));
+        el("td", "num", formatTokens(e.outputTokens)),
+        movedCell(view.movedIn?.[e.node]));
       return tr;
     });
+
+  // One line for the whole mesh, so "is anything waiting, and is anything
+  // free" is answered without adding up a column.
+  const cap = $("engines-capacity");
+  if (cap) {
+    const c = view.capacity;
+    cap.replaceChildren();
+    if (c && c.slots) {
+      cap.append(
+        el("span", null, `${c.running} running`),
+        el("span", c.waiting ? "waiting" : null, `${c.waiting} waiting on engines`),
+        ...(c.held ? [el("span", "waiting", `${c.held} held at the router`)] : []),
+        el("span", null, `${c.free} of ${plural(c.slots, "slot")} free`));
+      cap.title = c.waitingBesideFree
+        ? "Requests are queued on one engine while another has a slot free. A request already queued inside an engine cannot be moved."
+        : "";
+    }
+  }
+
+  // Each held request on its own line: how long, where, and what for.
+  const heldBox = $("engines-held");
+  if (heldBox) {
+    const held = view.heldRequests ?? [];
+    heldBox.hidden = held.length === 0;
+    heldBox.replaceChildren(...held.map((h) => {
+      const row = el("div", "held-row");
+      row.append(
+        el("span", "held-wait", waitedText(h.waitedMs)),
+        el("span", null, `held at ${h.at}`),
+        el("span", "held-why", h.home ? `conversation on ${h.home}: ${h.why}` : h.why));
+      return row;
+    }));
+  }
 
   fillTable("engines-body", "engines-empty", view.meshEngines,
     () => [
@@ -276,8 +310,13 @@ export function render(view, local) {
       if (!e.healthy && e.state) status.append(el("div", "err-text", e.state));
       const kv = el("td");
       kv.append(kvMeter(e.kvUsage));
-      const inflight = el("td", "num", e.slots ? `${e.inflight} / ${e.slots}` : String(e.inflight));
-      inflight.title = e.slots ? `${e.inflight} of ${e.slots} slots busy` : "";
+      const running = el("td", "num", e.slots ? `${e.running} / ${e.slots}` : String(e.running));
+      running.title = e.slots ? `${e.running} of ${plural(e.slots, "slot")} busy` : "This engine does not report how many slots it has.";
+      const waiting = el("td", "num" + (e.waiting ? " waiting" : ""), e.waiting === null ? "—" : String(e.waiting));
+      waiting.title = e.waiting === null
+        ? "Unknown: this engine does not report how many slots it has."
+        : e.waiting ? `${plural(e.waiting, "request")} queued for a slot on this engine.` : "";
+      const free = el("td", "num", e.free === null ? "—" : String(e.free));
       // The average beside the instant: on a mixed fleet an even share of
       // requests is not an even share of work, and a single sample cannot
       // show which engine has been carrying a run.
@@ -322,7 +361,24 @@ export function render(view, local) {
           : `Serving images with ${e.slots} slots. One is the default: llama.cpp can fail an image request with "failed to process mtmd chunk" when slots are shared.`;
         model.append(v);
       }
-      tr.append(node, model, status, inflight, load, prefill, decode, drafts, kv,
+      // The host-RAM cache and what it has cost: a count that keeps rising
+      // means conversations are being read again for want of room.
+      const ram = el("td", "num");
+      if (e.cacheRamMib === null) {
+        ram.textContent = "—";
+        ram.title = "This engine did not report a host-RAM prompt cache.";
+      } else {
+        ram.append(el("span", null, gib(e.cacheRamMib)));
+        if (e.cacheDropped) ram.append(el("span", "dropped", ` · ${e.cacheDropped} dropped`));
+        ram.title = e.cacheDropped
+          ? `${e.cacheDropped} conversation${e.cacheDropped === 1 ? "" : "s"} dropped from a ${gib(e.cacheRamMib)} cache since this engine started. Each is read again in full when it returns.`
+          : `Nothing dropped from a ${gib(e.cacheRamMib)} cache since this engine started.`;
+      }
+      const mem = el("td", "num", gib(e.memoryMb));
+      mem.title = e.hostMemTotalMb === null
+        ? "This node did not report its memory."
+        : `${gib(e.hostMemAvailableMb)} free of ${gib(e.hostMemTotalMb)} on ${e.node}.`;
+      tr.append(node, model, status, running, waiting, free, load, prefill, decode, drafts, kv, ram, mem,
         el("td", "mono small muted", e.address || "—"), el("td", "small muted", e.runtime || "—"));
       return tr;
     });
@@ -338,3 +394,16 @@ export function setMeshView(v) { meshView = v; }
 // make an imported binding read-only, and frontView is written by the poll
 // loop and read here.
 export function setFrontView(v) { frontView = v; }
+
+// movedCell is "moved in / sent here" for one node, or a dash when no router
+// in the mesh has reported sending it anything: not known is not zero.
+function movedCell(t) {
+  if (!t || !t.calls) {
+    const td = el("td", "num", "—");
+    td.title = "No node has reported routing requests here yet.";
+    return td;
+  }
+  const td = el("td", "num", `${t.moved} / ${t.calls}`);
+  td.title = `${t.moved} of ${t.calls} requests sent here arrived from another engine (${((100 * t.moved) / t.calls).toFixed(1)}%).`;
+  return td;
+}

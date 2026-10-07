@@ -18,14 +18,153 @@ On the 27B, a cache hit takes time-to-first-token from **1.4 seconds to 0.24**.
 { "prefix_affinity": false }
 ```
 
-## Load still gets a veto
+## How a request is placed
 
-A warm replica that's much busier than the others gets passed over anyway.
+Each request is placed the moment it arrives, in four steps:
 
-Affinity is an optimisation, not a pin. It saves re-reading a long prefix, and that saving is gone
-once the request has to queue behind three others on the same engine. For the same reason the
-[room filter](/docs/routing/llm-d#room-filter) sits in front of everything: prefix affinity must
-never put a request in a queue while another engine is idle.
+1. **Skip engines that already have a request queued.** If every engine has one, keep them all.
+2. **Stay with the engine holding the prompt.** If an engine has at least 80% of this prompt
+   cached, the request goes there, even when every slot on it is busy. The exception is when that
+   engine has so much still to read that the first token would come more than 18 seconds later
+   than on the best of the others.
+3. **Otherwise, score the engines.** The engine with the fewest tokens still to read scores
+   highest, counting what this request would add: the whole prompt on an engine that has none of
+   it, only the new part on one that has the rest. A prompt cached nowhere goes to the engine
+   least recently given one, so cold conversations spread out.
+4. **Send it to the highest score.**
+
+**A conversation stays home when home is full.** It waits in that engine's own queue and takes
+the next slot on the same machine, where the engine can restore its cache from memory. Sending
+it to an idle engine instead looks helpful and isn't: nothing is cached there, so it reads its
+whole history again.
+
+**Load is counted in tokens, not requests.** One request with 90,000 tokens to read is not the
+same load as one with 900. Prefix matching covers the full prompt, so new text beyond 64 KiB
+still contributes to the estimated work and different long suffixes can be distinguished.
+For a streaming response, the first generated output releases the prompt-reading load; the
+request continues to occupy its slot until it ends. Headers, keepalives and role-only chunks
+do not count as generated output. For a non-streaming response, the router cannot observe
+prefill completion separately and releases that load when the response ends.
+
+**Failed attempts do not create cache hits.** A request being sent provides a temporary hint
+so another request sharing its prefix can follow it. If the attempt fails before generation,
+that hint is removed. Earlier successful cache entries and other requests still filling the
+same prefix remain. Each dispatch owns its reservation, so overlapping continuations release
+their own counts even if the conversation has grown in the meantime.
+
+**A reloaded engine starts from nothing.** The router remembers where it sent a prompt for ten
+minutes. When an engine is unloaded, reloaded or restarted, on this node or a peer, the router
+drops what it remembered for that engine at once, because the engine's cache went with it.
+
+**Each engine is judged at its own speed.** The delay in step 2 and the load in step 3 both use
+the engine's own measured prefill rate, because a mesh mixes machines: ours read at 250, 600 and
+1,600 tokens a second. The same 30,000 tokens are 19 seconds of work on one and two minutes on
+another.
+
+### The room rule
+
+Step 1 only sees requests that are queued right now. An agent between two calls has nothing
+queued, but its conversation still occupies a slot. So one more rule sits between steps 1 and 2:
+an engine with a conversation living in every slot is full. A conversation counts as living on an engine while it
+has a request there, and for 30 seconds after.
+
+A new conversation is kept off a full engine while another engine has room, and a conversation
+whose own engine has more living on it than slots goes to one with room.
+
+Without the rule, conversations settle one too many on each engine and stay there. On our fleet
+that left the slowest machine idle while both GPUs queued, and the
+[benchmark](/docs/benchmark/router-comparison) took 25 minutes against 18. To run without it:
+
+```json filename="config.json"
+{ "placement": "no-room-rule" }
+```
+
+The earlier rule is still available:
+
+```json filename="config.json"
+{ "placement": "home-slot" }
+```
+
+That one sends a request back to its engine only while the engine has a free slot, and otherwise
+to the engine with the fewest requests in flight.
+
+## Waiting on the router, not in an engine
+
+This is optional and off by default, and it measured slower than the placement above: holding a
+request keeps an agent idle. It is here for cases where you would rather a request wait than
+share an engine.
+
+By default a request is sent the moment it arrives. When every slot is busy, it waits inside
+whichever engine was picked, and that choice can't be undone: the request stays behind that
+engine's current work even if a slot opens on another machine a second later.
+
+You can have the node that receives the request hold it instead:
+
+```json filename="config.json"
+{ "queue_wait": "60s" }
+```
+
+With this set, each request does the first of these that applies:
+
+- Its own engine has a free slot: it goes there at once. Nothing waits to go home.
+- Some engine has a slot that has **stayed free for two seconds** (`queue_grace`), and this
+  request has waited longest: it takes that slot.
+- It has waited `queue_wait`: it is placed as if there were no queue. A request is never refused
+  for having waited.
+
+The two seconds matter. A slot that has just finished a request still belongs to a conversation,
+and an agent asks again a fraction of a second later. Give that slot away and its owner reads its
+whole prompt again somewhere else. A slot is offered to a waiting request only after its owner has
+had the chance to come back and didn't.
+
+The queue also places by size, not only by slots. An engine's slots share one block of context
+memory, so a free slot doesn't mean there is room for what would go in it. Three conversations of
+85,000, 92,000 and 97,000 tokens need more than a 262,144-token pool holds, and an engine in that
+position throws out one conversation's cache each time another takes a turn. The queue remembers
+how large each conversation is, from the token count the engine reports with each answer, and
+treats an engine as having room only if its pool holds the conversation beside the ones already
+living there. A conversation that has outgrown its home moves to an engine with room, or waits
+for one. A conversation the queue hasn't seen before is sized from the length of its request,
+which is a rough guess that lasts until its first answer.
+
+With the queue on, a conversation also leaves a home it is sharing when a faster engine has a
+slot nobody owns and fewer requests running. "Faster" here is one and a half times the prefill
+rate. Without this, the last few long conversations of a batch stay together on one GPU while a
+faster one beside it stands idle.
+
+The Serving page lists each held request with how long it has waited and why, and its Work done
+table has a "Moved in" column: how many of the requests sent to an engine were a conversation
+arriving from another one. Each of those reads its whole prompt again.
+
+The queue belongs to the node that received the request and lives in memory. If you send traffic
+through two nodes, each has its own queue and neither knows what the other is holding.
+
+This is off by default and we're still measuring it.
+
+## Give the RAM cache room
+
+Slots are not the whole story. An engine also keeps conversations that are *not* in a slot, in a
+cache in host RAM, and its size often matters more than the slot count.
+
+As soon as an engine has one more conversation than slots, a waiting request takes whichever
+slot frees first, and the engine swaps the two conversations through that cache. While both fit,
+a swap costs about half a second. When the cache is full, the oldest conversation is dropped, and
+it reads its whole prompt again when it comes back.
+
+On our fleet, with eight agents on seven slots, a GPU with a 4 GB cache served 56% of its prompt
+tokens from cache. The GPU beside it, with 8 GB, served 94%. Same model, same router.
+
+```bash
+mfsh load <model> -cache-ram 32768
+```
+
+The value is in MiB. The default is 8 GB, or an eighth of the machine's RAM if that is less. A
+27B model needs about 84 KiB per token, so 8 GB holds roughly 97,000 tokens of conversations.
+
+The Serving page shows each engine's cache size and how many conversations it has dropped since
+it started. If that count keeps climbing and the machine has memory free, raise the cache. Leave
+headroom: on a machine with little RAM this cache, on top of the engine's own memory, is what
+gets it killed.
 
 ## Size `parallel` for the concentration, not the average
 

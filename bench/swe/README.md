@@ -414,10 +414,45 @@ Two things it requires:
   `127.0.0.1:1235`). Moving it to the tailnet address takes
   `https://api.example.com/v1` down.
 
+## Routing experiments
+
+These historical observations were recorded in the router's implementation
+comments and consolidated here during comment cleanup. They describe earlier
+policies and simulator revisions, not measurements of the current router.
+Live runs and simulated estimates are distinguished below; the workloads and
+configurations are not interchangeable.
+
+| Experiment | Recorded observation | Reason retained in the implementation |
+|---|---|---|
+| Home-slot policy, 2026-10-05 | Live: 88 minutes and 3.6M uncached tokens versus least-busy at 84 minutes and 3.3M. Peer load still included completed requests. After modelling that fault, simulation estimated about 45 minutes and 1.25M for corrected accounting versus 65–71 minutes and about 2.1M for least-busy. An earlier simulator had incorrectly predicted 34 minutes for the observed 88-minute run. | A stale load count can make a returning conversation appear to fill its own home. Simulator timings need validation against recorded runs. |
+| Prefer free slots over request counts, 2026-10-05 | Live: 104 minutes versus 75, 4.29M uncached tokens versus 2.62M, and 111 moves versus 44. | A free slot may hold a conversation between turns; evicting it can cause cascading moves. |
+| Cap queued requests in the legacy sorter, 2026-10-06 | Stopped after 27 minutes at 4 tasks and 1.08M uncached tokens; request counts alone had reached 7 tasks and 0.9M at 29 minutes. The faster GPU's cache hit rate fell from 95% to 85%. | Moving a queue can displace warm conversations without reducing the waiting work. |
+| One conversation on a slow initial home | Replay: all 749 calls stayed on the Apple Silicon engine while the faster GPU was idle. | Permit migration across a large measured speed gap and probe unmeasured engines. |
+| Single holder per prefix, 2026-10-06 | Replaying llm-d's placements sent 13 of 20 new tasks to the one-slot engine, versus 2 in the recording. | Track all holders so a shared system prompt does not pull unrelated tasks toward its most recent holder. |
+| Conversation room rule, 2026-10-06 | With eight conversations on seven slots, three conversations shared a two-slot GPU. It incurred twelve cold reads of 45K–70K tokens, totalling 627K tokens in eight minutes, while another GPU had an unused resident slot. | Count resident conversations as well as requests currently running. |
+| Rate-weighted token load, 2026-10-06 | Replay: nine conversations started on the four-slot GPU; 31 calls with lost cache read 775K tokens again. Cache reuse was 56% there versus 94% on the faster GPU. | Equal token counts imply different prefill times on different engines. |
+| Reloaded engines with stale affinity, 2026-10-06 | A run started 49 seconds after its predecessor, with engines reloaded between them. It made 53 moves versus 13 from empty placement memory and read 150K more tokens. | Invalidate remembered placements when an engine reloads. |
+| Room rule disabled, 2026-10-07 | Recorded replay workload: 25.2 minutes and 22 moves versus 19.6 minutes and 13 moves with the rule. | Disabling residency filtering is an experimental comparison mode. |
+
 ## Other scripts
 
 - `check-engines.py`: `mfsh endpoints | check-engines.py` lists each engine's
   real context and runtime.
+- `aiperf-trace.py`: turns a recorded run into a trace for
+  [NVIDIA AIPerf](https://github.com/ai-dynamo/aiperf) to replay, so routers
+  are compared on identical work: every conversation's turns go out in order
+  with the recorded prompts, answer lengths and pauses, whatever the model
+  answers now. AIPerf is a test tool installed beside the benchmark, not a
+  dependency of ModelFabric. A replay cannot say whether a task was solved.
+- `aiperf-calls.py`: says which node served each request of an AIPerf replay,
+  from each node's engine log saved under the run as `engine-logs/NODE.log`.
+  A response names only the engine's build, and two nodes can run the same one.
+- `report/replay.py`: writes `site/data/routing.json`, the numbers behind the
+  docs' router comparison page, from runs `aiperf-calls.py` has been run on.
+  To add a run to that page, save each node's engine log for it as
+  `<run>/engine-logs/<node>.log`, run `aiperf-calls.py <run>`, then run
+  `report/replay.py` again with one more `--run ARM=<run>` (its `--help` has
+  the arguments). The page's cards, charts and tables are drawn from that file.
 - `replay-sequential.py`: replays one trajectory turn by turn against one
   engine, which is how checkpoint memory was measured (load with `-arg -v` to
   log checkpoint sizes).
