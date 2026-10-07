@@ -26,7 +26,7 @@ type fakeHub struct {
 	files     map[string][]byte // name -> content served
 	published map[string]string // name -> sha256 the API claims
 	sha       string
-	revisions atomic.Value // last requested revision
+	revisions atomic.Value
 	rangeHits atomic.Int32
 }
 
@@ -50,7 +50,6 @@ func newFakeHub(t *testing.T, files map[string][]byte) (*fakeHub, *httptest.Serv
 			_ = json.NewEncoder(w).Encode(map[string]any{"sha": f.sha, "siblings": sibs})
 			return
 		}
-		// /<user>/<repo>/resolve/<rev>/<file>
 		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 5)
 		if len(parts) < 5 || parts[2] != "resolve" {
 			http.NotFound(w, r)
@@ -165,7 +164,6 @@ func TestDownloadRejectsChecksumMismatch(t *testing.T) {
 	if !errors.Is(err, ErrChecksum) {
 		t.Fatalf("err = %v; want ErrChecksum", err)
 	}
-	// Neither the final file nor a resumable partial may survive.
 	for _, n := range []string{"M-Q4_K_M.gguf", "M-Q4_K_M.gguf.part"} {
 		if _, err := os.Stat(filepath.Join(root, "u", "r", n)); err == nil {
 			t.Fatalf("%s left behind after a checksum failure", n)
@@ -181,7 +179,6 @@ func TestDownloadResumesPartialFile(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "u", "r")
 	_ = os.MkdirAll(dir, 0o755)
-	// An interrupted earlier run left the first 4000 bytes.
 	_ = os.WriteFile(filepath.Join(dir, "M-Q4_K_M.gguf.part"), content[:4000], 0o644)
 
 	if _, err := c.Download(context.Background(), p, root, nil); err != nil {
@@ -255,7 +252,6 @@ func TestHubGGUFRepoMapsExactNameOnly(t *testing.T) {
 			t.Errorf("non-GGUF repo offered: %s", n)
 		}
 	}
-	// Plain Hugging Face repositories are left alone, without a search.
 	before := len(queries)
 	for _, id := range []string{"bartowski/Qwen_Qwen3-8B-GGUF", "lmstudio-community/anything"} {
 		if repo, near, err := c.HubGGUFRepo(ctx, id); repo != "" || near != nil || err != nil {
@@ -306,7 +302,7 @@ func TestPlanFilesKeepTheirRepositoryPath(t *testing.T) {
 
 // Several files at one quantization are either the shards of one model or
 // something ambiguous. Checking only that each name looks shard-shaped
-// accepted two models' shards mixed together, and an incomplete set — both of
+// accepted two models' shards mixed together, and an incomplete set; both of
 // which download something that cannot load.
 func TestShardSetsMustBeOneCompleteModel(t *testing.T) {
 	ok := []File{
@@ -348,8 +344,6 @@ func TestProjectorFollowsTheSelectedWeights(t *testing.T) {
 	if got == nil || got.Name != "mmproj-Gemma-3-27B-F16.gguf" {
 		t.Fatalf("chose %v, want the Gemma projector", got)
 	}
-	// One projector is still used whatever the weights are called, which is
-	// the ordinary single-model repository.
 	single := []File{{Name: "Qwen3.8-27B-Q4_K_M.gguf"}, {Name: "mmproj-Qwen3.8-27B-BF16.gguf"}}
 	if got := chooseProjector(single, single[:1]); got == nil || got.Name != "mmproj-Qwen3.8-27B-BF16.gguf" {
 		t.Fatalf("a lone projector was not used: %v", got)

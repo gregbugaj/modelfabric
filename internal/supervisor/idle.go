@@ -9,18 +9,12 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/ops"
 )
 
-// JIT loading, idle TTL and auto-evict — LM Studio's on-demand policies.
-//
-// JIT is off unless enabled. TTL applies only to instances given one, and
-// eviction touches only models JIT loaded. A manually loaded model remains
-// resident until it is unloaded. No reconciler reloads an idle-evicted model;
-// another request must ask for it.
+// JIT is disabled by default. TTL applies only to instances configured with
+// one; automatic eviction affects only JIT-loaded models. Idle-evicted models
+// reload only when another request needs them.
 
-// ErrJITDisabled means the request named a model no node is serving and JIT
-// loading is off.
 var ErrJITDisabled = errors.New("JIT loading is disabled")
 
-// ErrNotInCatalog means JIT was asked for a model this node does not have.
 var ErrNotInCatalog = errors.New("model is not in this node's catalog")
 
 const reapInterval = 10 * time.Second
@@ -41,14 +35,11 @@ func (i *Instance) inflight() int64 {
 	return i.engine.Inflight()
 }
 
-// expired reports whether the instance has a TTL, nothing in flight, and no
-// use for at least that long.
 func (i *Instance) expired(now time.Time) bool {
 	return i.TTLSeconds > 0 && i.inflight() == 0 &&
 		now.Sub(i.lastUsed()) >= time.Duration(i.TTLSeconds)*time.Second
 }
 
-// JITEnabled reports whether requests may load models on demand.
 func (s *Supervisor) JITEnabled() bool { return s.cfg.JIT && !s.cfg.Entrypoint }
 
 // EnsureLoaded JIT-loads a model for a request and waits until it is ready.
@@ -134,8 +125,6 @@ func (s *Supervisor) reapIdleLoop() {
 	}
 }
 
-// reapIdle unloads every instance whose TTL has run out with nothing in
-// flight. It returns the instances it unloaded.
 func (s *Supervisor) reapIdle(now time.Time) []string {
 	var expired []string
 	s.mu.RLock()

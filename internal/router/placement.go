@@ -14,9 +14,7 @@ import (
 // Forward and bench/routesim share it so replays exercise the serving policy.
 type Placement struct {
 	aff *affinity
-	// HomeSlot selects the earlier rule, "home while it has a free slot,
-	// otherwise the fewest in flight" (applyAffinity), in place of the
-	// default, which is llm-d's (schedule).
+	// HomeSlot selects the legacy applyAffinity policy instead of schedule.
 	HomeSlot bool
 	// NoRoomRule disables conversation residency filtering. Per-engine rate
 	// weighting and deterministic tie-breaking still apply.
@@ -47,9 +45,6 @@ type conversation struct {
 	confirmedSequence uint64
 }
 
-// residentFor is how long after its last request a conversation still counts
-// as living on its engine. An agent asks again within a second or two; one
-// that has been quiet this long has finished or is far from its next call.
 const residentFor = 30 * time.Second
 
 // NewPlacement returns a Placement that tells time by clock; nil means the
@@ -146,7 +141,6 @@ func (p *Placement) Order(cands []mesh.Candidate, model string, body []byte, pre
 	if len(c.Candidates) > 0 && c.shares[c.Candidates[0].Name] >= stickyShare {
 		c.Target = c.Candidates[0].Name
 	} else {
-		// Or the engine that would have kept it, had it gone there.
 		for name, sh := range c.shares {
 			if sh >= stickyShare && (c.Target == "" || sh > c.shares[c.Target]) {
 				c.Target = name
@@ -253,7 +247,6 @@ func (p *Placement) Reading() map[string]int64 {
 	return out
 }
 
-// Explain formats the token estimate and cache shares for replay diagnostics.
 func (c Choice) Explain() string {
 	return fmt.Sprintf("tokens %d cold %v shares %v", c.tokens, c.cold, c.shares)
 }

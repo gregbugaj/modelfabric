@@ -8,12 +8,8 @@ import (
 	"testing"
 )
 
-// Every request enters through the front door, whoever routes it after — so
-// this is the one in-flight figure ModelFabric always knows. Engine counts cannot
-// see a request still queued in Envoy, and under llm-d they
-// cannot see one being served either, because Envoy dials the engine directly
-// and ModelFabric is never told. The dashboard showed 0 in flight through a whole
-// 8000-word request because of exactly that.
+// Listener counts must include requests queued or served through Envoy;
+// engine counters omit those requests.
 func TestFrontDoorCountsInflight(t *testing.T) {
 	srv := &Server{}
 	var during int64
@@ -50,7 +46,6 @@ func TestFrontDoorIgnoresNonInference(t *testing.T) {
 	}
 }
 
-// And it comes back down, or the node reads as permanently busy.
 func TestFrontDoorReleases(t *testing.T) {
 	srv := &Server{}
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})

@@ -25,10 +25,8 @@ func limitOf(t *testing.T, body []byte) (int, bool) {
 	return n, true
 }
 
-// The case this exists for: a client that says nothing about length. The
-// benchmark's client sends exactly this, and the engine's only ceiling was the
-// context window -- 130,000 tokens over ninety minutes, for an answer already
-// abandoned.
+// Requests without an output limit need a ceiling; otherwise generation
+// can consume the full context window after the caller stops waiting.
 func TestRequestWithNoLimitGetsOne(t *testing.T) {
 	got, ok := limitOf(t, capOutput([]byte(`{"model":"m","messages":[]}`), 4096))
 	if !ok {
@@ -39,9 +37,8 @@ func TestRequestWithNoLimitGetsOne(t *testing.T) {
 	}
 }
 
-// "max_tokens": null is how a client generated from an OpenAI schema says
-// "unset". Reading it as a stated limit would leave uncapped exactly the
-// requests this exists for -- and it is what the benchmark's client sends.
+// Treat max_tokens:null as unset so schema-generated clients receive the
+// default output ceiling.
 func TestExplicitNullCountsAsAbsent(t *testing.T) {
 	got, ok := limitOf(t, capOutput([]byte(`{"model":"m","max_tokens":null}`), 999))
 	if !ok || got != 999 {
@@ -107,8 +104,6 @@ func TestOnlyGeneratingPathsAreCapped(t *testing.T) {
 	}
 }
 
-// End to end: what the engine receives carries the ceiling, because the point is
-// the engine stopping, not ModelFabric knowing a number.
 func TestTheEngineReceivesTheCeiling(t *testing.T) {
 	seen := make(chan []byte, 1)
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

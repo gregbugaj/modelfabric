@@ -28,29 +28,18 @@ type Requested struct {
 	Speculative *bool
 }
 
-// Applied is the effective configuration actually handed to the engine.
-//
-// Per 05B, "only applied settings appear in effective configuration" — so this
-// carries what was really used, never what was merely asked for.
 type Applied struct {
 	Runtime       string `json:"runtime"`
 	ContextLength int    `json:"context_length"`
 	GPULayers     int    `json:"gpu_layers"`
 	Parallel      int    `json:"parallel"`
-	// SlotsClamped says why a vision model got fewer slots than the runtime's
-	// default: a quietly lowered slot count reads as a bug when the config is
-	// echoed back.
-	SlotsClamped string `json:"slots_clamped,omitempty"`
-	// VisionSkipped says this instance declined a projector the model has, so
-	// it cannot read images although its name says it could. A model with no
-	// projector leaves it empty: nothing was skipped, and routing must not
-	// treat an ordinary text model as one that lost a capability.
+	SlotsClamped  string `json:"slots_clamped,omitempty"`
+	// VisionSkipped records a declined projector so routing excludes image
+	// requests. Empty for models without a projector.
 	VisionSkipped  string `json:"vision_skipped,omitempty"`
 	FlashAttention bool   `json:"flash_attention"`
 	Vision         bool   `json:"vision"`
-	// Embedding says the engine serves /v1/embeddings and nothing that
-	// generates text.
-	Embedding bool `json:"embedding,omitempty"`
+	Embedding      bool   `json:"embedding,omitempty"`
 	// Speculative reports whether speculative decoding is on; SpecType says
 	// how: draft-mtp (the model's own head) or draft-simple (a draft model).
 	Speculative bool `json:"speculative"`
@@ -116,7 +105,6 @@ func (a Applied) Fingerprint() string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// applyKV is the -c value for a configuration, in 64 bits and clamped.
 func (llamaCPP) applyKV(a Applied) int {
 	tokens := int64(a.ContextLength) * int64(max(a.Parallel, 1))
 	if tokens > maxKVCacheTokens {
@@ -125,33 +113,24 @@ func (llamaCPP) applyKV(a Applied) int {
 	return int(tokens)
 }
 
-// maxKVCacheTokens caps -c. Far beyond any real engine, but small enough that
-// the multiplication behind it cannot wrap.
+// maxKVCacheTokens caps -c below the multiplication overflow limit.
 const maxKVCacheTokens = 1 << 40
 
-// engineAdapter turns a model plus applied settings into an argument vector for
-// one engine family. Adding an engine means adding an adapter, not touching the
-// supervisor.
 type engineAdapter interface {
 	// Argv builds the command line. It never sees an inference request: every
 	// value comes from the catalog or trusted configuration.
 	Argv(d *Definition, m catalog.Model, a Applied, bind string, port int) []string
-	// Apply resolves requested settings against the runtime's defaults.
 	Apply(d *Definition, m catalog.Model, req Requested) Applied
 	// ServedModel is the id this engine answers to for a model: what its own
 	// /v1/models reports, and what a forwarded request's "model" field must
 	// say. It is the catalog key wherever the engine can be told to use it.
 	ServedModel(m catalog.Model) string
-	// Ready reports whether the engine at endpoint is serving that model.
 	Ready(ctx context.Context, endpoint, served string) error
-	// Traits are the ways this engine differs from what ModelFabric can ask of
-	// llama.cpp.
 	Traits() Traits
 }
 
-// Traits say what ModelFabric must not ask of an engine. The zero value describes
-// llama.cpp — the engine everything here was built around — so a new adapter
-// only states where it differs.
+// Traits describe engine capabilities. The zero value describes llama.cpp;
+// adapters state only where they differ.
 type Traits struct {
 	// FixedModels means the engine's /v1/models does not report ModelFabric's model
 	// ids, so the list it was launched with stands and that endpoint says only
@@ -160,21 +139,14 @@ type Traits struct {
 	// NoMetrics means the engine serves no Prometheus /metrics, so its prefill
 	// rate cannot be measured from counters.
 	NoMetrics bool
-	// KVUsageMetric is the gauge reporting KV-cache utilization for this
-	// engine, empty when there is none to read. KVUsageFromSlots says ModelFabric
-	// must synthesize it from llama.cpp's /slots rather than read it: the
-	// engine holds the number but exports no gauge, so anything scraping the
-	// engine directly (llm-d) needs ModelFabric's shim in front. An engine that
-	// exports its own — vLLM's vllm:gpu_cache_usage_perc — names it here and
-	// needs no shim.
+	// KVUsageMetric names the engine's KV utilization gauge, or is empty.
+	// KVUsageFromSlots requires a shim to synthesize the gauge from /slots
+	// for scrapers such as llm-d. Engines exporting a gauge need no shim.
 	KVUsageMetric    string
 	KVUsageFromSlots bool
-	// NoConstrainedDecoding means the engine ignores a request's
-	// response_format (json_object / json_schema) and any grammar with it,
-	// rather than refusing them. mlx-lm's server parses neither field, so a
-	// request that asks for schema-constrained output gets free prose back and
-	// a 200 to go with it. ModelFabric routes such a request elsewhere rather than
-	// letting the answer depend on which machine happened to be idle.
+	// NoConstrainedDecoding means the engine ignores response_format and grammar.
+	// mlx-lm accepts these requests but returns unconstrained output, so routing
+	// must select another engine.
 	NoConstrainedDecoding bool
 }
 
@@ -196,10 +168,7 @@ var engines = map[string]engineAdapter{
 type llamaCPP struct{}
 
 func (llamaCPP) Apply(d *Definition, m catalog.Model, req Requested) Applied {
-	// Whether this instance serves images. A model with a projector does
-	// unless the load said otherwise, and "otherwise" changes three things at
-	// once: no --mmproj, speculation back under its own rules, and the slot
-	// count no longer clamped for image work.
+	// Skipping the projector also skips vision-specific slot defaults.
 	vision := m.Projector != "" && (req.Settings.Vision == nil || *req.Settings.Vision)
 	visionSkipped := ""
 	if m.Projector != "" && !vision {
@@ -331,25 +300,10 @@ func (llamaCPP) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 		mode = "off"
 	}
 	autoSpec := mode == "auto"
-	// A vision model used to lose speculation here, because llama.cpp b11040
-	// failed the whole request with "failed to process mtmd chunk" when it
-	// drafted a prompt carrying an image. That defect is gone from the builds
-	// this fleet runs: re-tested 2026-09-24 at the benchmark's own context and
-	// slots with the projector loaded, two concurrent image requests of 986KB
-	// and 827KB succeeded with drafting live throughout, on CUDA and on Metal.
-	//
-	// So "auto" no longer overrules the model: it uses the MTP head when the
-	// model has one, vision or not. Whether drafting pays is a question about
-	// the work rather than the projector — 66 tok/s against 134 on a 5090 where
-	// the output was predictable, and slightly negative where it was not — and
-	// `-spec off` is how a node says so, as it is for an older build that still
-	// has the defect.
-	// Vision models also default to a single slot. An image costs far more KV
-	// than the text around it, and -c is per-slot × parallel, so four slots ask
-	// the GPU for four times the cache to serve work that is bottlenecked on
-	// the vision encoder anyway — on a 27B that is the difference between
-	// fitting and not. Per-request context is unchanged; only the number of
-	// concurrent requests drops. An explicit -parallel is still honoured.
+	// Auto speculation uses an available MTP head for both text and vision.
+	// Set spec_mode off for builds with the image-drafting mtmd chunk defect.
+	// Vision defaults to one slot to reduce KV allocation (-c = context × slots);
+	// the vision encoder processes images serially. Explicit parallel overrides it.
 	if vision && s.Parallel == nil && a.Parallel > 1 {
 		a.SlotsClamped = fmt.Sprintf("vision: %d slots would cost %d× the KV cache for work the image encoder serialises anyway", a.Parallel, a.Parallel)
 		a.Parallel = 1
@@ -375,7 +329,6 @@ func (llamaCPP) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 		a.DraftMax = 0
 	}
 
-	// Inference defaults: per-model settings and presets over model.yaml.
 	sp := catalog.Sampling{}
 	if a.Sampling != nil {
 		sp = *a.Sampling
@@ -417,24 +370,16 @@ func (llamaCPP) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 		embeddingLoad(&a, m, s)
 	}
 
-	// Last, after every override: -c must cover the context actually asked
-	// for, in every slot actually asked for. Computed in 64 bits and clamped:
-	// validation enforces minimums, not maximums, so an absurd context or
-	// parallel count could wrap this negative and be passed to -c.
+	// Compute total KV capacity after overrides. Use 64 bits and clamp because
+	// context and parallel validation sets minimums but no maximums.
 	a.KVCacheTokens = llamaCPP{}.applyKV(a)
 	return a
 }
 
-// embeddingLoad turns a load into one that serves /v1/embeddings. Without
-// --embeddings llama-server answers that endpoint 501, so an embedding model
-// loaded, listed and could not be used.
-//
-// An input is embedded in one pass, so it has to fit the physical batch: the
-// engine refuses anything longer with "input is too large to process". Both
-// batch sizes are therefore the context, itself held to what the model was
-// trained for (512 tokens for the BERT family) unless the load asked for
-// another. Everything about generating text is dropped: there is no chat
-// template, no sampler and nothing to draft or cache between requests.
+// embeddingLoad enables /v1/embeddings; llama-server returns 501 without it.
+// Inputs must fit the physical batch, so both batch sizes match the context.
+// Context defaults to the model's training limit unless explicitly overridden.
+// Generation-only settings are removed.
 func embeddingLoad(a *Applied, m catalog.Model, s Settings) {
 	a.Embedding = true
 	if s.ContextLength == nil && m.MaxContextLength > 0 {
@@ -459,7 +404,7 @@ func embeddingLoad(a *Applied, m catalog.Model, s Settings) {
 // ServedModel is the catalog key: --alias makes the engine report it.
 func (llamaCPP) ServedModel(m catalog.Model) string { return m.Key }
 
-// Traits: llama.cpp is the baseline — it reports our ids and serves metrics.
+// Traits: llama.cpp is the baseline - it reports our ids and serves metrics.
 // Its one gap is KV usage, which it holds but does not export (measured on
 // b11026 and b11040); ModelFabric computes that from /slots.
 func (llamaCPP) Traits() Traits {
@@ -506,22 +451,16 @@ func (llamaCPP) Argv(d *Definition, m catalog.Model, a Applied, bind string, por
 		// --alias makes the engine report our catalog key at /v1/models, which
 		// is exactly what the readiness probe checks.
 		"--alias", m.Key,
-		// -c is the engine's total KV capacity, not a per-request limit. With
-		// --kv-unified the slots share one pool of that size; without it the
-		// pool is divided evenly between them. Either way, letting every one of
-		// the parallel requests reach ContextLength needs ContextLength × Parallel.
-		// Sized as plain ContextLength, requests fail with "context size has been
-		// exceeded" as soon as they concentrate on one engine — which is exactly
-		// what cache-aware routing does by design.
+		// -c is total KV capacity, shared with --kv-unified or divided between
+		// slots. ContextLength × Parallel lets each slot reach the per-request limit.
 		"-c", strconv.Itoa(a.KVCacheTokens),
 		"-ngl", strconv.Itoa(a.GPULayers),
 		"--parallel", strconv.Itoa(a.Parallel),
 		"--metrics",
-		// The engine's own web UI is dead weight here: ModelFabric is the front end.
+		// ModelFabric supplies the web UI.
 		"--no-webui",
-		// Use the model's embedded chat template. Without it the engine falls
-		// back to a generic format, which is wrong in ways that do not error —
-		// reasoning blocks and tool calls silently stop parsing.
+		// Use the embedded chat template; the generic fallback breaks reasoning
+		// and tool-call parsing without reporting an error.
 		"--jinja",
 	}
 	if a.Embedding {
@@ -619,11 +558,8 @@ func (llamaCPP) Argv(d *Definition, m catalog.Model, a Applied, bind string, por
 		flag("--frequency-penalty", s.FrequencyPenalty)
 	}
 	if len(a.TemplateKwargs) > 0 {
-		// Applied says these were applied, so dropping them here because they
-		// would not encode changed how the model behaves while every report
-		// claimed otherwise. Settings.Validate rejects unencodable kwargs, so
-		// reaching this is a bug; it is passed as the empty object rather than
-		// pretended away.
+		// Validate rejects unencodable kwargs. If any reach here, preserve the
+		// flag as an empty object rather than omit a setting reported as applied.
 		b, err := json.Marshal(a.TemplateKwargs)
 		if err != nil {
 			b = []byte("{}")

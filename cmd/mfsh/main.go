@@ -1,7 +1,4 @@
-// Command mfsh runs a ModelFabric mesh node.
-//
-// Every machine runs one. Apps point at its loopback address and see every
-// model in the mesh as though it were local.
+// Command mfsh runs a ModelFabric mesh node with a loopback API for mesh models.
 package main
 
 import (
@@ -40,17 +37,9 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tsid"
 )
 
-// defaultAddr is the node the CLI talks to. MFSH_ADDR points it at another
-// one, alongside MFSH_HOME, MFSH_MODELS and MFSH_CONFIG. Without it, the CLI
-// follows the address a running node recorded, then the config's: a
-// fixed :1234 had `mfsh ls` reporting no node while one ran on -port 3000.
-//
-// It exists because -addr's position matters: after a subcommand's own
-// positional argument Go's flag package stops parsing, so `llmd enable <model>
-// -addr X` reads the flag as two more arguments and fails with a usage error.
-// Threading it into the right slot for every subcommand is fragile; an
-// environment variable applies to all of them and cannot land in the wrong
-// place. A -addr flag still wins where one is given.
+// defaultAddr selects MFSH_ADDR, the running node's recorded address or the config.
+// A fixed default misses nodes started on another port. MFSH_ADDR also avoids
+// flag-position constraints in subcommands; an explicit -addr takes precedence.
 var defaultAddr = func() string {
 	listen, _ := loadListen(defaultConfigPath())
 	return pickAddr(os.Getenv("MFSH_ADDR"), runningListen(), listen)
@@ -182,7 +171,7 @@ func main() {
 	}
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
-			os.Exit(130) // cancelling a prompt is not a failure to report
+			os.Exit(130) // prompt cancelled
 		}
 		fmt.Fprintln(os.Stderr, red("error:"), err)
 		os.Exit(1)
@@ -246,24 +235,15 @@ func serve(args []string) error {
 	m.SetSelfAddr(selfAddr)
 	// A persisted choice beats the config default, since it was set later.
 	preferred := cfg.PreferredNode
-	// stateDir, not defaultStateDir: a node configured with state_dir kept its
-	// instances and journal there while this one file was read from the
-	// default location, so the preference silently did not persist.
 	if p := server.LoadPreferred(filepath.Join(stateDirOf(cfg), "preferred.json")); p != "" {
 		preferred = p
 	}
 	m.SetPreferred(preferred)
 	rt := router.New(m, log)
-	// A request that makes no progress at all is abandoned and its slot
-	// released; see router.Router.Stall for the ninety-minute deadlock that
-	// motivated it.
 	rt.Stall = cfg.Stall()
-	// And an output ceiling for requests that name none, so "no limit" cannot
-	// mean "the whole context window" on a machine other people share.
+	// Cap output for requests without a limit to prevent one request consuming the full context.
 	rt.MaxOutputTokens = cfg.MaxOutputTokens
 	m.SetHostMemoryProvider(runtime.HostMemory)
-	// What the router has sent where, and what it is holding: published with
-	// the node's state so any node's dashboard can show it.
 	m.SetRouterViewProvider(func() ([]mesh.HeldRequest, []mesh.RoutedTo) { return rt.Holding(), rt.Routed() })
 	m.SetEngineGoneHook(rt.EngineGone)
 	if cfg.PrefixAffinity == nil || *cfg.PrefixAffinity {
@@ -277,11 +257,9 @@ func serve(args []string) error {
 		default:
 			log.Warn("unknown placement in config, using the default", "placement", cfg.Placement, "known", "home-slot, no-room-rule")
 		}
-		// Inside, because the queue asks affinity whose slot a slot is.
+		// Initialize after affinity because the queue consults slot ownership.
 		if grace, maxWait, on := cfg.Queue(); on {
 			rt.EnableQueue(grace, maxWait)
-			// Published with the node's state, so any node's dashboard can
-			// say how many requests are waiting here and not on an engine.
 			m.SetQueuedProvider(func() int64 { return int64(rt.Queued()) })
 			log.Info("router queue on", "grace", grace, "max_wait", maxWait)
 		}
@@ -302,9 +280,7 @@ func serve(args []string) error {
 		if dir == "" {
 			dir = filepath.Join(stateDirOf(cfg), "slots")
 		}
-		// Its own client, with no response timeout: the mesh's gives up after
-		// two minutes without headers, and saving a long conversation's slot
-		// can take longer than that. Each call carries its own deadline.
+		// Use a dedicated client: saving a slot can exceed the mesh client's response timeout. Calls set their own deadlines.
 		if cold, cerr := slotcache.Open(dir, int64(cfg.CacheDiskMiB)<<20, &http.Client{}, log); cerr != nil {
 			log.Error("disk prompt cache is off", "err", cerr)
 		} else {
@@ -327,9 +303,6 @@ func serve(args []string) error {
 		ui = uiHandler(log)
 	}
 	srv := server.New(m, rt, sup, log, ui)
-	// The node runs the same checks the CLI does, against its own paths, so a
-	// dashboard can ask a peer what is wrong with it — which is the case no
-	// amount of SSH-free tooling could reach before.
 	srv.Doctor = func() []doctor.Check {
 		return doctor.Run(doctor.Opts{
 			Addr:         httpBase(cfg.Listen),
@@ -350,13 +323,9 @@ func serve(args []string) error {
 		return fmt.Errorf("body log file: %w", err)
 	}
 	if cfg.LogBodies || cfg.LogBodiesFile != "" {
-		// Loud on purpose: whoever restarts this node should not have to read
-		// the config to discover prompts are being kept.
 		log.Warn("request body capture is on",
 			"in_memory", cfg.LogBodies, "file", cfg.LogBodiesFile)
 	}
-	// The node's API key: what require_api_key and the public listener
-	// check.
 	srv.SetAuth(func() (string, error) { return nodekey.Key(fabricHome()) }, cfg.RequireAPIKey)
 	srv.SetTokens(nodekey.Tokens(fabricHome()))
 	srv.SetKeyHome(fabricHome())
@@ -442,10 +411,7 @@ func serve(args []string) error {
 		}()
 	}
 
-	// Peers find each other by probing <tailnet-ip>:mesh_port. A node bound
-	// only to loopback — the default, and the right default for apps — is
-	// invisible to them, so the mesh port gets its own listener on the
-	// tailnet address, serving only what peers need.
+	// Bind a peer-only listener on the tailnet address because the default loopback API is unreachable by peers.
 	var peer *http.Server
 	if meshAddr := peerListenAddr(cfg.Listen, selfAddr, cfg.MeshPort); meshAddr != "" {
 		peer = &http.Server{
@@ -481,9 +447,7 @@ func serve(args []string) error {
 		}()
 	}
 
-	// A listener failure took this straight out of the function, skipping the
-	// teardown below — so llm-d and every engine were left running
-	// by the one path where something had already gone wrong.
+	// Run teardown on listener failure so engines and llm-d do not remain running.
 	var listenErr error
 	select {
 	case listenErr = <-errc:
@@ -509,8 +473,6 @@ func serve(args []string) error {
 	if err := hs.Shutdown(sctx); err != nil && listenErr == nil {
 		return err
 	}
-	// The listener failure is still the reason this node is stopping, so it is
-	// what the caller hears about.
 	return listenErr
 }
 
@@ -529,9 +491,7 @@ func status(args []string, modelsOnly bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// `mfsh models` is a query and should just work; `mfsh status` is a health
-	// question, so answering "OFF" is more useful than starting a node behind
-	// the user's back to prove it is on.
+	// Model queries auto-start the node; status must report whether it is already running.
 	if modelsOnly {
 		if err := ensureNode(*addr); err != nil {
 			return err
@@ -625,7 +585,6 @@ func peerListenAddr(listen, selfAddr string, meshPort int) string {
 	return net.JoinHostPort(selfAddr, strconv.Itoa(meshPort))
 }
 
-// stateDirOf is the node's state directory: the configured one when set.
 func stateDirOf(cfg config.Config) string {
 	if cfg.StateDir != "" {
 		return cfg.StateDir
@@ -633,7 +592,6 @@ func stateDirOf(cfg config.Config) string {
 	return defaultStateDir()
 }
 
-// buildSupervisor wires model management and returns any initialization error.
 func buildSupervisor(ctx context.Context, cfg config.Config, selfAddr string, m *mesh.Mesh, log *slog.Logger) (*supervisor.Supervisor, error) {
 	if cfg.ModelsRoot == "" {
 		cfg.ModelsRoot = defaultModelsRoot()
@@ -649,13 +607,11 @@ func buildSupervisor(ctx context.Context, cfg config.Config, selfAddr string, m 
 	if err != nil {
 		return nil, err
 	}
-	journal.SetLogger(log) // a journal write that fails must be heard
+	journal.SetLogger(log)
 
 	startup, stop := cfg.LoadTimeouts()
 	extraRoots := append([]string(nil), cfg.ExtraModelRoots...)
-	// An LM Studio install already holds downloaded models. Reading them means
-	// ModelFabric works on a machine that has one, without the operator moving files
-	// or editing config. It is read-only: ModelFabric never writes into that tree.
+	// Discover existing LM Studio models read-only; never write to its model tree.
 	if !cfg.DisableLMStudioModels {
 		if dir := runtime.LMStudioModelsDir(runtime.LMStudioRoot()); dir != "" && dir != cfg.ModelsRoot {
 			extraRoots = append(extraRoots, dir)
@@ -711,20 +667,10 @@ func buildSupervisor(ctx context.Context, cfg config.Config, selfAddr string, m 
 	return sup, nil
 }
 
-// buildRuntimes assembles the runtimes this node can launch.
-//
-// Configured definitions come first, then engine packages discovered from an
-// LM Studio installation. Discovery is what makes a fresh machine work without
-// installing a second copy of llama.cpp: the spec's preferred reuse for
-// llama.cpp is "evaluate its exact package for execution by the Marie host
-// using public interfaces", and those packages declare a launch contract.
 func buildRuntimes(cfg config.Config, log *slog.Logger) (*runtime.Registry, error) {
 	defs := discoverRuntimes(cfg, log)
 
-	// A runtime chosen with `mfsh runtime select` outranks the config default,
-	// since it was set later and on purpose — unless it has since been
-	// removed, in which case selection falls back to automatic rather than
-	// leaving the node unable to load anything.
+	// Persisted runtime selection overrides the config; missing packages fall back to automatic selection.
 	def := cfg.DefaultRuntime
 	if sel := server.LoadSelectedRuntime(filepath.Join(stateDirOf(cfg), "runtime.json")); sel != "" {
 		found := false
@@ -749,7 +695,6 @@ func buildRuntimes(cfg config.Config, log *slog.Logger) (*runtime.Registry, erro
 	return reg, nil
 }
 
-// fabricHome is ModelFabric's data directory: models, runtimes, tools, llm-d.
 func fabricHome() string {
 	if d := os.Getenv("MFSH_HOME"); d != "" {
 		return d
@@ -767,7 +712,6 @@ func llmdListen(cfg config.Config) string {
 	return "127.0.0.1:8090"
 }
 
-// runtimesRoot is where ModelFabric installs its own engine builds.
 func runtimesRoot(cfg config.Config) string {
 	if cfg.RuntimesRoot != "" {
 		return cfg.RuntimesRoot
@@ -781,8 +725,6 @@ func runtimesRoot(cfg config.Config) string {
 	return "runtimes"
 }
 
-// discoverRuntimes lists every runtime definition: declared in config, ModelFabric's
-// own installed packages, LM Studio's packages, and the legacy PATH binary.
 func discoverRuntimes(cfg config.Config, log *slog.Logger) []*runtime.Definition {
 	var defs []*runtime.Definition
 	defs = append(defs, cfg.Runtimes...)
@@ -848,8 +790,7 @@ func exportLLMDEndpoints(ctx context.Context, srv *server.Server, path string, l
 	for {
 		endpoints := srv.Endpoints()
 
-		// Loopback endpoints are useless to an EPP running anywhere else. Say
-		// so once rather than silently publishing addresses nothing can dial.
+		// Warn once for loopback endpoints, which a remote EPP cannot reach.
 		if !warned {
 			for _, e := range endpoints {
 				if e.Unreachable() {
@@ -874,9 +815,6 @@ func exportLLMDEndpoints(ctx context.Context, srv *server.Server, path string, l
 	}
 }
 
-// defaultModelsRoot is where models live when the config does not say.
-// Having a default means a fresh install can list and load without editing
-// anything first.
 func defaultModelsRoot() string {
 	if d := os.Getenv("MFSH_MODELS"); d != "" {
 		return d
@@ -897,12 +835,9 @@ func defaultConfigPath() string {
 	return "mfsh.json"
 }
 
-// requireExplicitConfig refuses a config file that was asked for and is not
-// there. Load treats a missing file as "run on defaults", which is right for
-// the default path on a fresh install and wrong for one named on purpose: an
-// entrypoint was started with -config ~/.config/ModelFabric/config.json, a
-// capitalisation its file never had, and ran for hours as a GPU node with no
-// public listener, without a word.
+// requireExplicitConfig rejects missing explicitly selected config files.
+// config.Load permits missing defaults; applying that fallback to an explicit
+// path would silently ignore typos and start with unintended node settings.
 func requireExplicitConfig(fs *flag.FlagSet, path string) error {
 	explicit := os.Getenv("MFSH_CONFIG") != ""
 	fs.Visit(func(f *flag.Flag) {

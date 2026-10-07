@@ -28,7 +28,7 @@ const AffinitySlack = 2
 
 type affinityEntry struct {
 	key    [32]byte // one block of a chain
-	target string   // candidate name
+	target string
 	seen   time.Time
 	// leaf says this block was the end of a request's chain: the whole of
 	// some prompt, not just a part several prompts share. A later request
@@ -46,10 +46,8 @@ type affinityEntry struct {
 	holders []string
 }
 
-// maxHolders bounds how many engines are remembered for one block.
 const maxHolders = 8
 
-// affinity is a bounded LRU from prompt-prefix hash to candidate.
 type affinity struct {
 	mu    sync.Mutex
 	max   int
@@ -100,7 +98,6 @@ func (a *affinity) size(k [32]byte) int64 {
 	return 0
 }
 
-// setSize records the token count of the request block k ended.
 func (a *affinity) setSize(k [32]byte, tokens int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -127,8 +124,6 @@ func (a *affinity) putBlock(k [32]byte, target string, leaf bool) {
 	}
 }
 
-// forget drops name from every block it was recorded as holding, and the
-// blocks nothing else holds.
 func (a *affinity) forget(name string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -150,7 +145,6 @@ func (a *affinity) forget(name string) {
 	}
 }
 
-// holding puts target first in holders, once, keeping at most maxHolders.
 func holding(holders []string, target string) []string {
 	out := make([]string, 0, min(len(holders)+1, maxHolders))
 	out = append(out, target)
@@ -198,8 +192,6 @@ func prefixBlocks(model string, body []byte) [][32]byte {
 	return prefixchain.Chain(model, body, len(body))
 }
 
-// lookup returns the most recent holder of the longest matching prefix and
-// its length in blocks.
 func (a *affinity) lookup(blocks [][32]byte) (string, int) {
 	target, n, _ := a.find(blocks)
 	return target, n
@@ -216,7 +208,6 @@ func (a *affinity) find(blocks [][32]byte) (target string, matched int, continui
 	return "", 0, false
 }
 
-// record remembers that target now holds this whole prefix.
 func (a *affinity) record(blocks [][32]byte, target string) {
 	last := len(blocks) - 1
 	for i, k := range blocks {
@@ -309,7 +300,6 @@ func muchFaster(cands []mesh.Candidate, home mesh.Candidate) (string, bool) {
 	return best, best != ""
 }
 
-// toFront moves the named candidate first, keeping the rest in order.
 func toFront(cands []mesh.Candidate, name string) []mesh.Candidate {
 	for j, c := range cands {
 		if c.Name == name {

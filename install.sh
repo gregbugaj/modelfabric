@@ -3,14 +3,13 @@
 #
 #   curl -fsSL https://modelfabric.sh/install.sh | sh
 #
-# Downloads the prebuilt binary for this machine, verifies it against the
-# release's SHA-256 checksums, and installs it. POSIX sh on purpose: this runs
-# on a fresh box before anything else is there.
+# Download the platform binary and verify its release SHA-256 checksum.
+# Uses POSIX sh without requiring an existing ModelFabric installation.
 #
 # Environment:
-#   MFSH_VERSION      release tag to install (default: the latest release)
-#   MFSH_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
-#   MFSH_BASE_URL     release host, for a mirror or a private build
+#   MFSH_VERSION      release tag (default: latest)
+#   MFSH_INSTALL_DIR  binary destination (default: ~/.local/bin)
+#   MFSH_BASE_URL     release host override
 
 set -eu
 
@@ -56,8 +55,6 @@ esac
 
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"; }
 
-# --- what are we running on? ---------------------------------------------
-
 detect_platform() {
 	os=$(uname -s)
 	arch=$(uname -m)
@@ -74,16 +71,13 @@ detect_platform() {
 		*) die "unsupported architecture: $arch" ;;
 	esac
 
-	# There is no darwin/amd64 build: ModelFabric's Mac support is Apple silicon
-	# (Metal and MLX), so an Intel Mac has nothing to run.
+	# macOS builds require Apple silicon for Metal and MLX; no darwin/amd64 binary is published.
 	if [ "$os" = darwin ] && [ "$arch" = amd64 ]; then
 		die "ModelFabric ships Apple silicon builds only; this is an Intel Mac"
 	fi
 
 	PLATFORM="$os-$arch"
 }
-
-# --- fetching -------------------------------------------------------------
 
 fetch() { # url -> stdout
 	if command -v curl >/dev/null 2>&1; then
@@ -127,8 +121,6 @@ sha256_of() { # file -> hex
 	fi
 }
 
-# --- install --------------------------------------------------------------
-
 main() {
 	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 ||
 		die "curl or wget is required"
@@ -162,8 +154,6 @@ main() {
 
 	[ -s "$tmp/$BIN" ] || die "downloaded file is empty: $url"
 
-	# Verify against the release's checksums file. A release without one is a
-	# reason to say so, not a reason to install something unverified quietly.
 	if fetch "$BASE_URL/$VERSION/checksums.txt" > "$tmp/checksums.txt" 2>/dev/null &&
 		[ -s "$tmp/checksums.txt" ]; then
 		want=$(grep -F " $asset" "$tmp/checksums.txt" | cut -d' ' -f1 | head -1)
@@ -185,8 +175,6 @@ main() {
 
 	mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
 
-	# chmod before the move: a binary that lands without the executable bit
-	# fails later with a confusing "Permission denied".
 	chmod +x "$tmp/$BIN"
 
 	dest="$INSTALL_DIR/$BIN"

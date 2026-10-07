@@ -10,30 +10,12 @@ import (
 	"strings"
 )
 
-// Asking the engine to stream even when the caller did not, so that what it is
-// writing can be watched, and putting the single reply back together for the
-// caller.
-//
-// A caller that sends "stream": false gets the whole answer in one piece, and
-// the tokens never cross the wire separately — the engine generates them, holds
-// them, and sends a blob. There is nothing to observe, which is why the live
-// view was blank for every such caller (aider's benchmark among them, so the
-// panel looked broken during the run it was built for).
-//
-// ModelFabric is already the proxy in front, so it asks upstream for a stream, reads
-// it as it arrives, and hands the caller the one JSON body it expects. This is
-// the data path, not a side channel: get the reassembly wrong and a
-// non-streaming caller gets a wrong answer. So it is deliberately narrow —
-// only OpenAI-shaped chat completions, and anything unexpected is passed
-// through untouched rather than guessed at.
+// Upgrade non-streaming OpenAI chat completions to streams for token capture,
+// then reassemble the caller's single JSON reply. Other protocols and unexpected
+// responses pass through unchanged.
 
-// unstreamable reports whether this request can be upgraded, and returns the
-// rewritten body.
-//
-// Only /v1/chat/completions: /v1/messages is Anthropic-shaped and streams
-// differently, and embeddings and the rest do not stream at all. A body that
-// does not parse is left alone — the engine's own error beats one invented
-// here.
+// unstreamable returns a rewritten body only for valid /v1/chat/completions
+// requests. Other protocols and malformed bodies pass through to the engine.
 func unstreamable(path string, body []byte) ([]byte, bool) {
 	if path != "/v1/chat/completions" || len(body) == 0 {
 		return body, false
@@ -44,15 +26,12 @@ func unstreamable(path string, body []byte) ([]byte, bool) {
 	}
 	if raw, ok := m["stream"]; ok {
 		var streaming bool
-		// A "stream" that is not a bool is something this does not understand.
 		if json.Unmarshal(raw, &streaming) != nil || streaming {
 			return body, false
 		}
 	}
 	m["stream"] = json.RawMessage(`true`)
-	// Without this the final chunk carries no usage, and a caller that had
-	// been getting token counts would silently stop — a regression dressed as
-	// a feature.
+	// Request usage in the final chunk to preserve non-streaming token counts.
 	m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
 	out, err := json.Marshal(m)
 	if err != nil {
@@ -61,7 +40,6 @@ func unstreamable(path string, body []byte) ([]byte, bool) {
 	return out, true
 }
 
-// streamChoice accumulates one choice across the chunks.
 type streamChoice struct {
 	index        int
 	role         string
@@ -78,11 +56,6 @@ type streamTool struct {
 	args           strings.Builder
 }
 
-// assembleStream reads an OpenAI-style event stream, hands each frame's payload
-// to onChunk as it arrives, and returns the non-streaming reply.
-//
-// onChunk is what makes this live: it runs per frame, while the engine is still
-// writing, which is the whole reason for upgrading the request.
 func assembleStream(r io.Reader, onChunk func([]byte)) ([]byte, error) {
 	sc := bufio.NewScanner(r)
 	// Chunks are small, but a single frame carrying a large tool-call argument

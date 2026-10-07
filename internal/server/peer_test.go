@@ -26,12 +26,8 @@ func TestPeerAllowlist(t *testing.T) {
 		// that: allowing it here would send reply text across the tailnet to
 		// whichever peer asked.
 		{"GET", "/z/log/tokens"},
-		// Tuning reloads this node's engine once per slot count, so it is
-		// management, not a probe: any tailnet member could otherwise take a
-		// GPU out of service for half an hour by asking politely. It stays
-		// reachable for the owner's own devices, which is how the dashboard
-		// tunes a fleet, but that goes through the same-owner check rather
-		// than this allowlist.
+		// Tuning reloads engines and requires same-owner management access;
+		// it must not be included in the general peer allowlist.
 		{"POST", "/api/v1/tune"}, {"GET", "/api/v1/tune"}, {"DELETE", "/api/v1/tune"},
 	}
 	for _, c := range allowed {
@@ -46,9 +42,8 @@ func TestPeerAllowlist(t *testing.T) {
 	}
 }
 
-// mesh_admin is a setting an operator uses to close a door. Matching only the
-// exact string "off" meant a typo left it open: "of", "OFF" or a value from a
-// newer version all fell through to same-owner management.
+// Unknown mesh_admin values must fail closed; checking only "off" allowed
+// typos to enable same-owner management.
 func TestMeshAdminFailsClosedOnAnUnknownValue(t *testing.T) {
 	for _, policy := range []string{"of", "OFF", "none", "disabled", "yes"} {
 		s := &Server{meshAdmin: policy}
@@ -60,24 +55,20 @@ func TestMeshAdminFailsClosedOnAnUnknownValue(t *testing.T) {
 			t.Errorf("the refusal for %q should name the value: %q", policy, why)
 		}
 	}
-	// The values ModelFabric defines still behave as documented.
 	if ok, _ := (&Server{meshAdmin: "off"}).sameOwner(httptest.NewRequest("GET", "/x", nil)); ok {
 		t.Error(`"off" allowed management`)
 	}
-	// "same-owner" with no resolver still refuses, but for the stated reason.
 	if ok, why := (&Server{meshAdmin: "same-owner"}).sameOwner(httptest.NewRequest("GET", "/x", nil)); ok || !strings.Contains(why, "mesh_admin") {
 		t.Errorf(`"same-owner" without a resolver: ok=%v why=%q`, ok, why)
 	}
 }
 
-// /metrics is not in the open allowlist: a scraper reaching it over the
-// tailnet goes through the same-owner check, like management. It names every
-// model and how much traffic each took, which is not for every tailnet member.
+// Peer metrics require same-owner access because they expose model names
+// and traffic volumes.
 func TestMetricsIsNotOpenToEveryPeer(t *testing.T) {
 	if peerAllowed("GET", "/metrics") {
 		t.Error("/metrics must not be in the unauthenticated peer allowlist")
 	}
-	// mesh_admin off closes it along with the rest of management.
 	s := &Server{meshAdmin: "off"}
 	if ok, _ := s.sameOwner(httptest.NewRequest("GET", "/metrics", nil)); ok {
 		t.Error("mesh_admin off must refuse /metrics over the mesh")

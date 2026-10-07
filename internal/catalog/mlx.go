@@ -9,13 +9,9 @@ import (
 	"strings"
 )
 
-// MLX models are directories, not files: safetensors shards beside a
-// config.json, exactly as they come from Hugging Face. So where a GGUF model is
-// identified by one file's header, an MLX model is identified by its directory
-// and described by that JSON — and the whole directory is what the engine is
-// pointed at.
+// MLX models are directories containing config.json and safetensors shards.
+// The engine receives the directory path; metadata comes from config.json.
 
-// mlxConfig is the part of an MLX/Hugging Face config.json ModelFabric reads.
 type mlxConfig struct {
 	ModelType            string   `json:"model_type"`
 	Architectures        []string `json:"architectures"`
@@ -37,7 +33,7 @@ type mlxConfig struct {
 }
 
 // isMLXDir reports whether dir is an MLX model: a config.json beside at least
-// one safetensors file. Both are required — a bare config.json is a tokenizer
+// one safetensors file. Both are required; a bare config.json is a tokenizer
 // or processor directory, and loose safetensors without a config cannot be
 // loaded.
 func isMLXDir(dir string) bool {
@@ -56,7 +52,6 @@ func isMLXDir(dir string) bool {
 	return false
 }
 
-// readMLXConfig parses a model directory's config.json.
 func readMLXConfig(dir string) (mlxConfig, error) {
 	var c mlxConfig
 	b, err := os.ReadFile(filepath.Join(dir, "config.json"))
@@ -74,9 +69,7 @@ func readMLXConfig(dir string) (mlxConfig, error) {
 func mlxFiles(dir string) ([]string, int64, error) {
 	var files []string
 	var size int64
-	// This list is what the model is pinned against, so a file skipped here is
-	// a file nothing verifies. Every failure is reported rather than turned
-	// into a shorter list that still looks complete.
+	// Reject enumeration failures rather than pinning an incomplete file list.
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walk %s: %w", path, err)
@@ -99,7 +92,6 @@ func mlxFiles(dir string) ([]string, int64, error) {
 	return files, size, err
 }
 
-// describeMLX builds a model from an MLX directory.
 func describeMLX(absRoot, dir string) (Model, error) {
 	rel, err := filepath.Rel(absRoot, dir)
 	if err != nil {
@@ -111,8 +103,7 @@ func describeMLX(absRoot, dir string) (Model, error) {
 		return Model{}, fmt.Errorf("unreadable MLX directory %s: %w", dir, err)
 	}
 	if len(files) == 0 {
-		// Wrapping a nil error here printed "%!w(<nil>)" in the message the
-		// operator actually sees.
+		// Do not wrap a nil error after a successful read of invalid JSON.
 		return Model{}, fmt.Errorf("MLX directory %s holds no files", dir)
 	}
 
@@ -138,8 +129,6 @@ func describeMLX(absRoot, dir string) (Model, error) {
 		m.Type = "embedding"
 	}
 
-	// config.json is to an MLX model what the header is to a GGUF: what the
-	// engine will actually load, whatever the directory was renamed to.
 	cfg, err := readMLXConfig(dir)
 	if err != nil {
 		return m, nil // listed, but with only what the path says

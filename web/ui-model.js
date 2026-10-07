@@ -2,10 +2,8 @@
 // Kept free of DOM access so it can be tested directly (see ui-model.test.mjs).
 
 /**
- * Shape the /api/v1/models payload into rows for the Local view.
- *
- * `available` is null when the node has no supervisor (route-only), which is
- * different from a node that supervises but has found no models.
+ * Shape /api/v1/models into Local rows. `available: null` means no
+ * supervisor, distinct from a supervisor with no discovered models.
  */
 export function buildLocal(api, operations = []) {
   if (!api || !Array.isArray(api.models)) {
@@ -29,8 +27,7 @@ export function buildLocal(api, operations = []) {
       vision: (m.capabilities ?? []).includes("vision"),
       instances: instances.map((i) => ({ id: i.id, config: i.config ?? {} })),
       loaded: instances.length > 0,
-      // A model with work in flight must not offer another action, or a second
-      // click starts a duplicate load of something very large.
+      // Block duplicate loads while an operation is in flight.
       busy: Boolean(op),
       busyKind: op ? op.kind : "",
       busyMessage: op ? op.message || "" : "",
@@ -44,7 +41,6 @@ export function buildLocal(api, operations = []) {
   };
 }
 
-/** Human-readable byte size. */
 export function formatBytes(n) {
   if (!n || n < 0) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -57,26 +53,16 @@ export function formatBytes(n) {
   return `${i === 0 ? v : v.toFixed(1)}${units[i]}`;
 }
 
-/**
- * @param {object} mesh - the /z/mesh response
- * @returns {object} view model
- */
-// Which address an engine listens on. Bound to loopback it is private to its
-// own machine; bound to the node's tailnet address any machine on the tailnet
-// can reach it.
-//
-// Either way the node serves through its own front door, so the model looks
-// fine from outside — the difference only shows when something dials an engine
-// directly instead, which is the failure that is hard to see.
+// Loopback engines are reachable only on their own machine. Tailnet
+// binding permits direct consumers such as llm-d; routed requests
+// can reach either through the node's front door.
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost", ""]);
 
 function loopbackOnly(instances) {
   return engineScope(instances) === "loopback";
 }
 
-// Where a node's engines can be reached from: "tailnet", "loopback", or ""
-// when it runs none, which is not a fault. Reported for every node rather than
-// only when it is wrong.
+// Engine reachability: "tailnet", "loopback", or "" when no engines are running.
 export function engineScope(instances) {
   const ready = (instances ?? []).filter((i) => i.state === "ready");
   if (ready.length === 0) return "";
@@ -92,20 +78,16 @@ export function buildView(mesh) {
   const nodes = [
     {
       name: self.node || "(unknown)",
-      // Its tailnet address, not "local": this is the address peers reach it
-      // on, and on a page about a tailnet that is the useful fact.
       addr: self.addr || "local",
       platform: self.platform || "",
       osVersion: self.os_version || "",
       isSelf: true,
       alive: true,
       inflight: self.inflight ?? 0,
-      // What this node's front door is holding. Engine counts miss requests
-      // queued in Envoy, and under llm-d miss the ones being served too, so
-      // this is the figure that is always right.
+      // Front-door counts include Envoy queues and llm-d requests
+      // that engine counts omit.
       accepted: self.accepted ?? 0,
-      // Requests this node's router is holding for a slot: waiting, but on
-      // no engine yet, so no engine row can show them.
+      // Requests waiting at the router occupy no engine slot yet.
       queued: self.queued ?? 0,
       held: self.held ?? [],
       routed: self.routed ?? [],
@@ -139,24 +121,17 @@ export function buildView(mesh) {
     })),
   ];
 
-  // Every engine in the mesh, not only this node's: the Serving page answers
-  // "what is running", and in a mesh that question spans the nodes. Peers
-  // publish their instances; this node's come from its own state, with the
-  // health its router tracks merged in by instance id.
+  // Merge local router health by instance ID; peers publish their own instances.
   const health = new Map((self.engines ?? []).map((e) => [e.name, e]));
   const fromInstances = (node, list, isSelf, host) => (list ?? []).map((i) => {
     const live = isSelf ? health.get(i.id) : null;
     return {
       node,
       isSelf,
-      // The engine's host-RAM prompt cache: its cap, and how many times it
-      // has dropped a conversation to make room. With one more conversation
-      // than slots an engine swaps them through this cache, so its size
-      // decides the cache hit rate more than the slot count does. null where
-      // the engine did not say: an older peer, or an engine without one.
+      // Host-RAM cache capacity and eviction counts; null when unreported.
+      // This cache holds conversations swapped out of engine slots.
       cacheRamMib: i.cache_ram_mib > 0 ? i.cache_ram_mib : null,
       cacheDropped: typeof i.cache_dropped === "number" ? i.cache_dropped : (i.cache_ram_mib > 0 ? 0 : null),
-      // What the engine process holds in RAM, and what its machine has.
       memoryMb: i.memory_mb > 0 ? i.memory_mb : null,
       hostMemTotalMb: host?.mem_total_mb > 0 ? host.mem_total_mb : null,
       hostMemAvailableMb: host?.mem_available_mb > 0 ? host.mem_available_mb : null,
@@ -166,32 +141,20 @@ export function buildView(mesh) {
       engine: i.engine || "",
       address: i.address && i.port ? `${i.address}:${i.port}` : "",
       slots: i.slots ?? 0,
-      // Measured prompt tokens per second, zero until the engine has served
-      // enough to measure. On a mixed fleet this is the number that decides
-      // whether an even share of requests is an even share of work: 228 tok/s
-      // on a Mac against 1989 on a 5090 is the same request costing 9x.
+      // Measured prompt tokens per second; zero until enough work is measured.
       prefillTokS: i.prefill_tok_s ?? 0,
-      // Whether the rate is settled enough to route by. Below it the number
-      // is still shown — a rough figure beats a dash next to a busy engine —
-      // but it is marked, because llm-d is not scheduling on it.
+      // Display early estimates, but mark rates not yet reliable for scheduling.
       prefillTrusted: Boolean(i.prefill_trusted),
-      // The writing half of a turn, and how much of the drafting the model
-      // kept. Prefill alone could not show what speculative decoding changes.
       decodeTokS: i.decode_tok_s ?? 0,
       specAccepted: typeof i.spec_accepted === "number" ? i.spec_accepted : -1,
-      // Lifetime totals: what this engine was actually given, which is what a
-      // placement decision produces. A fast engine handed nothing and a slow
-      // one buried both look fine on rates alone.
+      // Lifetime totals expose load imbalance that rates alone cannot show.
       promptTokens: i.prompt_tokens ?? 0,
       cachedTokens: i.cached_tokens ?? 0,
       outputTokens: i.output_tokens ?? 0,
-      // The node's own rolling average, -1 when it has too few samples and
-      // absent from a peer too old to publish it. Preferred over the one the
-      // dashboard computes, which only accumulates while the page is open.
+      // Prefer the node's rolling average over browser samples. -1 means too few
+      // samples; older peers may omit the field.
       loadAvg: typeof i.load_avg === "number" ? i.load_avg : -1,
-      // Whether this engine was launched to take images. Absent from a peer
-      // too old to report it, which reads as "not vision" — the same default
-      // its engines had before the field existed.
+      // Missing vision flags default to false, matching older peers' engines.
       vision: Boolean(i.vision),
       inflight: live ? live.inflight ?? 0 : i.inflight ?? 0,
       ...slotUse(live ? live.inflight ?? 0 : i.inflight ?? 0, i.slots ?? 0),
@@ -214,28 +177,22 @@ export function buildView(mesh) {
     error: e.error ?? "",
   }));
 
-  // Whichever node is scheduling for the mesh. It is not always this one: an
-  // entrypoint with no GPUs can run llm-d while every engine is elsewhere,
-  // and a view that only reads the local node reported "not running" through
-  // a whole benchmark that ran through it.
+  // The scheduler may run on a peer, including an entrypoint without GPUs.
   const schedulerNode = nodes.find((n) => n.alive && n.scheduler) ?? null;
 
   const online = nodes.filter((n) => n.alive);
   // Only live nodes contribute load; a dead peer's last reported figure is
   // stale and would otherwise inflate the total indefinitely.
   const inflight = online.reduce((sum, n) => sum + n.inflight, 0);
-  // Mesh-wide load as the front doors saw it. Engine counts are per engine and
-  // blind under llm-d; a front door counts what it took, so the two differ by
-  // exactly what is queued — which is worth seeing.
+  // Front-door counts include queued requests and llm-d traffic absent
+  // from engine counts.
   const accepted = online.reduce((sum, n) => sum + (n.accepted ?? 0), 0);
 
   return {
     self: self.node || "",
-    // LM Link's preferred device: models held there are used first. Set but
-    // absent from the mesh means offline, and requests fall back.
+    // Prefer models on this node; if it is absent, route to fallbacks.
     preferred,
     preferredOnline: preferred !== "" && nodes.some((n) => n.preferred && n.alive),
-    // Named so the workload rail can say where, and act there.
     scheduler: schedulerNode
       ? { node: schedulerNode.name, isSelf: Boolean(schedulerNode.isSelf), ...schedulerNode.scheduler }
       : null,
@@ -258,7 +215,6 @@ export function buildView(mesh) {
     meshEngines,
     capacity: {
       ...meshCapacity(meshEngines),
-      // Held by a router for a slot, on whichever nodes took the requests.
       held: online.reduce((sum, n) => sum + (n.queued ?? 0), 0),
     },
     heldRequests: heldRequests(online),
@@ -266,25 +222,16 @@ export function buildView(mesh) {
   };
 }
 
-// slotUse splits an engine's requests into those running and those waiting
-// for a slot, and says how many slots are free.
-//
-// The table used to show one figure, "2 / 1", for a one-slot engine with a
-// request running and another queued behind it, under a tooltip that read "2
-// of 1 slots busy". Through a whole benchmark nothing on the page said that
-// two agents were waiting on the slowest machine while a GPU had slots open.
-//
-// An engine that does not report its slots has nothing to be full against, so
-// waiting and free are null there: unknown, not zero.
+// Split in-flight requests into running, waiting, and free slots.
+// Without a reported slot count, waiting and free remain unknown (null).
 export function slotUse(inflight, slots) {
   const n = Math.max(inflight || 0, 0);
   if (!slots) return { running: n, waiting: null, free: null };
   return { running: Math.min(n, slots), waiting: Math.max(n - slots, 0), free: Math.max(slots - n, 0) };
 }
 
-// meshCapacity adds those up across the healthy engines. waitingBesideFree is
-// the case worth a second look: something is queued on one engine while
-// another has a slot open.
+// Aggregate healthy engines; waitingBesideFree flags a queue on one
+// engine while another has available slots.
 export function meshCapacity(engines) {
   const known = (engines ?? []).filter((e) => e.healthy && e.slots);
   const sum = (k) => known.reduce((n, e) => n + (e[k] || 0), 0);
@@ -292,14 +239,12 @@ export function meshCapacity(engines) {
   return { ...c, waitingBesideFree: c.waiting > 0 && c.free > 0 };
 }
 
-// Self first, then live nodes, then alphabetical — the order you actually scan.
 function byNode(a, b) {
   if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
   if (a.alive !== b.alive) return a.alive ? -1 : 1;
   return a.name.localeCompare(b.name);
 }
 
-/** Compact relative time, e.g. "4s ago". Returns "—" for missing/zero times. */
 export function relativeTime(iso, now = Date.now()) {
   if (!iso) return "—";
   const t = Date.parse(iso);
@@ -312,14 +257,9 @@ export function relativeTime(iso, now = Date.now()) {
 }
 
 /**
- * Shape /api/v1/tokens for the token manager: the node key first, as a row
- * that is rotated rather than revoked (a node has exactly one), then the
- * named tokens, newest first.
- *
- * A token is shown only by its last four characters — the secret is not kept,
- * so there is nothing more to show. "never" is only said of a token the node
- * reported no use for; the node records use to the minute, so a token used
- * seconds ago can still read "just now" rather than its exact second.
+ * Token rows show the rotatable node key first, then named tokens newest
+ * first. Only suffixes are available; token secrets are not retained.
+ * Usage timestamps have minute precision; "never" means no recorded use.
  */
 export function buildTokens(api, now = Date.now()) {
   const rows = [];
@@ -340,15 +280,13 @@ export function buildTokens(api, now = Date.now()) {
   return rows;
 }
 
-/** The Server settings the dialog edits, in the order it shows them. */
 export const SERVER_SETTINGS = [
   "listen", "require_api_key", "public_listen", "cors_origins",
   "mcp_allow_ephemeral", "mcp_allow_configured",
   "jit_load", "jit_ttl", "jit_auto_evict", "mesh_admin", "engine_bind", "web_ui",
 ];
 
-// Absent and empty are one setting, and so are absent and false: the config
-// omits both, and the form cannot tell them apart.
+// Config omits empty strings and false; normalize them against absent keys.
 const sameSetting = (a, b) => {
   if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
   if (typeof a === "boolean" || typeof b === "boolean") return Boolean(a) === Boolean(b);
@@ -356,8 +294,7 @@ const sameSetting = (a, b) => {
 };
 
 /**
- * The settings the form changed from what is saved: only these are sent, so
- * a save never rewrites a key the person did not touch.
+ * Send only changed settings so untouched config keys are preserved.
  */
 export function settingsChanges(saved, form, keys = SERVER_SETTINGS) {
   const out = {};
@@ -367,10 +304,6 @@ export function settingsChanges(saved, form, keys = SERVER_SETTINGS) {
   return out;
 }
 
-/**
- * Settings saved but not yet in effect: the node reads them at startup, so
- * until a restart it runs the value in `running`. Live ones never wait.
- */
 export function pendingRestart(view, keys = SERVER_SETTINGS) {
   if (!view) return [];
   const live = new Set(view.live ?? []);
@@ -386,11 +319,6 @@ const hostOf = (addr) => String(addr ?? "").replace(/:\d+$/, "");
 const portOf = (addr) => (String(addr ?? "").match(/:(\d+)$/) ?? [])[1] ?? "";
 const NO_TTL = new Set(["0", "off", "never"]);
 
-/**
- * The form the Server settings flyout shows, from the saved settings. The
- * flyout speaks in switches and ports, as LM Studio's does; the config speaks
- * in addresses and durations. These two functions are the whole translation.
- */
 export function serverToForm(saved) {
   const s = saved ?? {};
   const ttl = String(s.jit_ttl ?? "").trim();
@@ -416,24 +344,21 @@ export function serverToForm(saved) {
 }
 
 /**
- * The settings the form describes. Anything the form does not express — the
- * listen host, a public listener's host — is kept from what is saved, so a
- * port change never moves a listener to another interface.
+ * Preserve saved hosts that the form cannot edit so changing a port
+ * cannot move a listener to another interface.
  */
 export function formToServer(form, saved) {
   const s = saved ?? {};
   const f = form ?? {};
   const listenHost = hostOf(s.listen) || "127.0.0.1";
-  // The public front door is published by Tailscale Funnel or a TLS proxy
-  // on this machine, so it listens on loopback (as the entrypoint docs set
-  // it up) unless a host was chosen by hand in config.json. Tailnet devices
-  // need none of this: they reach the mesh listener already.
+  // Default the public listener to loopback for a local TLS proxy or Funnel.
+  // Preserve a host explicitly set in config.json.
   const frontHost = hostOf(s.public_listen) || "127.0.0.1";
   const origins = String(f.cors_origins ?? "").split(/[\s,]+/).map((o) => o.trim()).filter(Boolean);
   return {
     listen: f.port ? `${listenHost}:${f.port}` : (s.listen ?? ""),
     public_listen: f.front_on ? (f.front_port ? `${frontHost}:${f.front_port}` : (s.public_listen ?? "")) : "",
-    // On keeps whatever on was saved as: "same-owner" and "" mean the same.
+    // Preserve the saved enabled value: "same-owner" and "" are equivalent.
     mesh_admin: f.peer_admin === false ? "off" : (s.mesh_admin === "off" ? "" : (s.mesh_admin ?? "")),
     engine_bind: f.engine_bind ?? s.engine_bind ?? "",
     web_ui: f.web_ui ?? s.web_ui ?? true,
@@ -447,16 +372,13 @@ export function formToServer(form, saved) {
   };
 }
 
-/** The router's settings the Routing page edits, saved like Server settings. */
 export const ROUTER_SETTINGS = [
   "rate_weighted_routing", "prefix_affinity", "local_bias", "max_output_tokens", "cache_disk_mib", "cache_disk_dir",
 ];
 
 /**
- * The Routing page's router form, from the saved settings, and back. The
- * disk cache is a switch and a size in GB on the page and one number of MiB
- * in the config, where 0 is off; a size typed with the switch off is not
- * saved, so turning it on again offers the last size.
+ * The form uses a switch and GB; config uses MiB, with 0 disabling cache.
+ * Ignore size edits while disabled so re-enabling restores the last size.
  */
 export function routerToForm(saved) {
   const s = saved ?? {};
@@ -487,9 +409,7 @@ export function formToRouter(form, saved) {
 }
 
 /**
- * Who routes each model: llm-d for the one it schedules, ModelFabric's
- * router for the rest. From the mesh view and llm-d's state, as the
- * Routing page's table shows them.
+ * llm-d routes the model it schedules; ModelFabric routes the rest.
  */
 export function routedBy(models, llmdModel) {
   return (models ?? []).map((m) => ({
@@ -499,15 +419,10 @@ export function routedBy(models, llmdModel) {
   }));
 }
 
-/** A path with the home directory written as ~, for display. */
 export function displayPath(p) {
   return String(p ?? "").replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
 }
 
-/**
- * What a change would open beyond this machine, each said in a sentence the
- * page shows before saving. Widening a listener is never done quietly.
- */
 export function wideningWarnings(changes) {
   const out = [];
   if ("listen" in changes && !loopbackHost(changes.listen)) {
@@ -533,15 +448,10 @@ export function wideningWarnings(changes) {
 }
 
 /**
- * Shape /api/v1/front for the Overview's front-door panel: the address apps
- * point at, what it asks of them, and whether anything is published beyond
- * loopback.
- *
- * `url` is empty when the endpoint could not be read, which the caller fills
- * with the page's own origin — the dashboard is served by the front door, so
- * that address is right even when nothing answered. The key and the public
- * listener have no such fallback: guessing "no key needed" is a lie on a node
- * that requires one, so they are only ever what the node reported.
+ * Shape /api/v1/front for Overview. An empty `url` lets the caller use
+ * the dashboard origin, which is served by the front door. Authentication
+ * and public-listener state have no fallback and must remain unknown
+ * unless reported by the node.
  */
 export function buildFront(api) {
   const front = api ?? {};
@@ -555,12 +465,6 @@ export function buildFront(api) {
 const BACKEND_LABELS = { cuda: "CUDA", vulkan: "Vulkan", cpu: "CPU", rocm: "ROCm", metal: "Metal" };
 const SOURCE_LABELS = { upstream: "modelfabric", lmstudio: "LM Studio", custom: "config", marie: "Marie" };
 
-/**
- * Shape /api/v1/runtimes (+ the optional /api/v1/runtimes/available answer and
- * the operations journal) into the Runtime view, as LM Studio's runtime page
- * shows it: the hardware, every engine with its fit, which one new loads use,
- * and what can be installed or updated.
- */
 export function buildRuntime(api, available = null, operations = []) {
   if (!api || !Array.isArray(api.runtimes)) {
     return { managed: false, hardware: null, runtimes: [], installing: [], options: [], updates: [] };
@@ -592,7 +496,6 @@ export function buildRuntime(api, available = null, operations = []) {
       canRemove: managed && inUse === 0,
     };
   });
-  // The one in use for new loads first, then newest engine first.
   runtimes.sort((a, b) =>
     (b.isDefault - a.isDefault) || (b.buildNumber - a.buildNumber) || a.name.localeCompare(b.name));
 
@@ -600,8 +503,6 @@ export function buildRuntime(api, available = null, operations = []) {
     .filter((op) => op && op.kind === "runtime-get" && op.state === "running")
     .map((op) => ({ id: op.id, name: op.model, message: op.message || "starting", fraction: op.fraction ?? 0 }));
 
-  // Install choices: the recommendation, then each other backend that has a
-  // build for this machine, each listed once.
   const options = [];
   const seen = new Set();
   for (const key of ["recommended", "cuda", "vulkan", "cpu", "rocm"]) {
@@ -660,15 +561,8 @@ export function buildRuntime(api, available = null, operations = []) {
   };
 }
 
-/**
- * Shape /api/v1/llmd and the profile API into the Routing page: llm-d's state
- * and the scheduling profiles — with llm-d's well-lit paths that llama.cpp
- * cannot run shown, and why.
- */
 export function buildRouting(llmd, profilesApi, operations = [], models = []) {
-  // Null is a node that does not schedule with llm-d at all: the endpoint
-  // answers 501 there, and the page says so instead of offering controls
-  // that cannot act.
+  // Null represents a node whose llm-d endpoint returns 501; disable controls.
   if (!llmd) return { available: false };
   const profiles = (profilesApi?.profiles ?? []);
   const titleOf = (name) => profiles.find((p) => p.name === name)?.title ?? name;
@@ -689,8 +583,7 @@ export function buildRouting(llmd, profilesApi, operations = [], models = []) {
       error: llmd.error || "",
     },
     installing: install ? { message: install.message || "starting", fraction: install.fraction ?? 0 } : null,
-    // Models llm-d could schedule: every one with an engine somewhere in the
-    // mesh, which is what the caller passes.
+    // The caller supplies every model with an engine in the mesh.
     models: [...new Set(models)].sort(),
     profiles: profiles.filter((p) => p.available).map((p) => ({
       name: p.name, title: p.title, summary: p.summary, wellLit: p.well_lit_path || "",
@@ -703,8 +596,8 @@ export function buildRouting(llmd, profilesApi, operations = [], models = []) {
 }
 
 /**
- * Every load and inference setting, grouped as the settings form shows them.
- * `lms` is LM Studio's name for the same setting.
+ * Load and inference fields grouped for the form.
+ * `lms` names the corresponding LM Studio setting.
  */
 export const SETTINGS_SCHEMA = [
   { group: "Context & GPU", fields: [
@@ -713,17 +606,12 @@ export const SETTINGS_SCHEMA = [
     { key: "gpu_layers", label: "GPU layers", type: "int", help: "or use GPU offload ratio" },
     { key: "offload_ratio", label: "GPU offload ratio", type: "float", help: "0–1, LM Studio's GPU offload" },
     { key: "flash_attention", label: "Flash attention", type: "bool" },
-    // Only meaningful on a model that has a projector; off loads it text-only,
-    // which frees that memory and lets speculative decoding run.
+    // Disabling vision frees projector memory and permits speculative decoding.
     { key: "vision", label: "Serve images", type: "bool",
       help: "off loads a multimodal model without its projector: no images, but it can speculate — measured 134 tok/s against 66 on the same request" },
   ] },
-  // Only the allowance lives here. llama.cpp's --reasoning on|off does the
-  // same job as the Inference tab's Thinking, and showing both put two
-  // controls named "Thinking" on two tabs of one model — one per concept, and
-  // the model's own template variable is the one that belongs to the model.
-  // The allowance stays on Load because it is fixed when the engine starts:
-  // changing it needs a reload, which is what this tab means.
+  // Keep the thinking toggle in Inference to avoid duplicating --reasoning.
+  // The allowance belongs in Load because changing it requires a reload.
   { group: "Thinking", fields: [
     { key: "reasoning_budget", label: "Allowance", type: "int",
       help: "tokens the model may spend thinking before it answers: -1 unrestricted, 0 ends it at once. Fixed at launch — changing it reloads the model. Measured on qwen3: 48 held reasoning to ~170 characters where -1 gave 700–1100" },
@@ -770,24 +658,18 @@ export const SETTINGS_SCHEMA = [
     { key: "presence_penalty", label: "Presence penalty", type: "float" },
     { key: "frequency_penalty", label: "Frequency penalty", type: "float" },
     { key: "enable_thinking", label: "Thinking", type: "bool" },
-    // The levels are the model template's, not llama.cpp's, so this is typed
-    // rather than picked: this model takes xhigh, medium and low and raises a
-    // Jinja exception on anything else.
-    // Rendered as pills when the model's template names its levels, and as a
-    // typed field when it does not — the levels are the template's, and
-    // llama.cpp's generic list is wrong for most of them.
+    // Use levels declared by the model template; generic llama.cpp levels
+    // can cause Jinja errors. Fall back to text input when none are declared.
     { key: "reasoning_effort", label: "Thinking effort", type: "text",
       help: "the levels your model's template accepts" },
   ] },
 ];
 
-/** The fields a preset may hold (inference only, as in LM Studio). */
 export const PRESET_FIELDS = SETTINGS_SCHEMA.filter((g) => g.inference).flatMap((g) => g.fields)
   .concat([{ key: "seed", label: "Seed", type: "int" }]);
 
 /**
- * Turn form values (strings; "" = inherit) into a settings object, or report
- * the fields that do not parse. Pure, so it is tested without a DOM.
+ * Parse form strings into settings ("" inherits), reporting invalid fields.
  */
 export function parseSettingsForm(values, fields = SETTINGS_SCHEMA.flatMap((g) => g.fields)) {
   const settings = {};
@@ -800,8 +682,8 @@ export function parseSettingsForm(values, fields = SETTINGS_SCHEMA.flatMap((g) =
       settings[f.key] = Number(raw);
     } else if (f.type === "float") {
       const n = Number(raw);
-      // Number.isNaN alone let Infinity, -Infinity and overflow like 1e309
-      // through, and those do not survive JSON or mean anything to an engine.
+      // Reject Infinity and overflow such as 1e309; Number.isNaN alone
+      // accepts values that cannot be represented in JSON.
       if (!Number.isFinite(n)) { errors[f.key] = "number"; continue; }
       settings[f.key] = n;
     } else if (f.type === "bool") {
@@ -817,7 +699,6 @@ export function parseSettingsForm(values, fields = SETTINGS_SCHEMA.flatMap((g) =
   return { settings, errors };
 }
 
-/** The reverse: saved settings as form strings. */
 export function settingsToForm(settings = {}) {
   const values = {};
   for (const [k, v] of Object.entries(settings)) {
@@ -829,25 +710,19 @@ export function settingsToForm(settings = {}) {
   return values;
 }
 
-/* ---------- My Models (every node) ---------- */
 
 const CAPABILITY_ORDER = ["vision", "tool_use", "reasoning"];
 
 /**
- * Merge each node's /api/v1/models into one catalog, LM Studio's "My Models"
- * across the mesh. `nodes` is [{ node, self, api, operations, error }]; a node
- * whose list could not be read (not the same owner, offline) is reported in
- * `unreachable` rather than silently missing.
+ * Merge node catalogs. `nodes` is [{ node, self, api, operations, error }].
+ * Report unreadable catalogs in `unreachable` rather than omitting the node.
  */
 export function buildCatalog(nodes = []) {
   const rows = [];
   const unreachable = [];
   const perNode = [];
-  // The thinking levels belong to the model file, not to the node holding it,
-  // so one node that knows them answers for every row of that model. The fleet
-  // runs different builds on purpose, and a node too old to report them was
-  // showing a typed box for the same model that offered pills on its
-  // neighbour — the same file, two different controls.
+  // Thinking levels belong to the model file; share known levels across
+  // rows so older peers do not show different controls for the same model.
   const effortsByKey = new Map();
   for (const n of nodes) {
     for (const m of n.api?.models ?? []) {
@@ -892,8 +767,6 @@ export function buildCatalog(nodes = []) {
         minMemory: m.min_memory_bytes ?? 0,
         caps: CAPABILITY_ORDER.filter((c) => caps.includes(c)),
         spec: m.spec ?? null,
-        // The thinking levels this model's template accepts, so the settings
-        // form can offer them instead of asking for a typed level.
         reasoningEfforts: m.reasoning_efforts ?? effortsByKey.get(m.key) ?? [],
         instances: instances.map((i) => ({ id: i.id, config: i.config ?? {}, port: i.port ?? 0, origin: i.origin || "" })),
         loaded: instances.length > 0,
@@ -907,7 +780,6 @@ export function buildCatalog(nodes = []) {
   return { rows, unreachable, perNode };
 }
 
-/** Rows for one node ("" = all) whose text matches the filter. */
 export function filterCatalog(rows, node = "", text = "") {
   const q = text.trim().toLowerCase();
   return rows.filter((r) => (!node || r.node === node) &&
@@ -915,8 +787,7 @@ export function filterCatalog(rows, node = "", text = "") {
 }
 
 /**
- * What an empty inference setting falls back to: the publisher's model.yaml
- * value, shown as the field's placeholder.
+ * Use publisher model.yaml values as placeholders for inherited settings.
  */
 export function inheritedValue(spec, key) {
   const s = spec?.sampling ?? {};
@@ -924,16 +795,13 @@ export function inheritedValue(spec, key) {
   if (key === "enable_thinking" && spec?.template_vars && "enable_thinking" in spec.template_vars) {
     return spec.template_vars.enable_thinking ? "on" : "off";
   }
-  // The publisher's own effort, which is what a request gets when nothing
-  // overrides it — "xhigh" on this 27B, and the reason a one-word answer costs
-  // hundreds of thinking tokens.
+  // Use the publisher's effort when nothing overrides it.
   if (key === "reasoning_effort" && spec?.template_vars && "reasoning_effort" in spec.template_vars) {
     return String(spec.template_vars.reasoning_effort);
   }
   return "";
 }
 
-/* ---------- Discover ---------- */
 
 const escapeHTML = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -949,10 +817,9 @@ function inlineMarkdown(s) {
 }
 
 /**
- * A model card's README as HTML. Model cards are written by strangers, so
- * this is deliberately small and safe: everything is HTML-escaped first, then
- * only headings, paragraphs, lists, code, emphasis, rules and http(s) links
- * are produced. Raw HTML in the card shows as text; images are dropped.
+ * Render untrusted model cards by escaping HTML before applying a limited
+ * Markdown subset: headings, paragraphs, lists, code, emphasis, rules,
+ * and http(s) links. Raw HTML stays text; images are omitted.
  */
 export function renderMarkdown(md = "") {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
@@ -998,7 +865,6 @@ export function renderMarkdown(md = "") {
   return out.join("\n");
 }
 
-/** Compact counts: 872724 -> "873K". */
 export function compactCount(n = 0) {
   if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
   if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
@@ -1007,10 +873,9 @@ export function compactCount(n = 0) {
 }
 
 /**
- * One card per node in Discover's download section: whether it can take this
- * download, and what it already has or is doing. `storage` is each node's
- * /api/v1/storage; `rows` is My Models' catalog; `ops` maps node -> its
- * operations.
+ * Download eligibility and existing state per node. `storage` holds node
+ * /api/v1/storage responses, `rows` is the catalog, and `ops` maps node
+ * to operations.
  */
 export function downloadTargets({ repo, option, nodes = [], self = "", storage = {}, rows = [], ops = {} }) {
   const files = new Set((option?.files ?? []).map((f) => f.split("/").pop()));
@@ -1034,9 +899,6 @@ export function downloadTargets({ repo, option, nodes = [], self = "", storage =
         note: `needs ${formatBytes(option.bytes)}, ${formatBytes(t.freeBytes)} free` });
     } else {
       const other = mine.find((r) => r.file && r.file.toLowerCase().startsWith(repo.split("/").pop().replace(/-gguf$/i, "").toLowerCase()));
-      // Free space is already on the tile's spec line; repeating it here
-      // printed it twice on every node that could take the download. What
-      // belongs here is what the node already holds.
       t.note = other ? `has ${other.quant}; adds ${option?.quant}` : "";
       if (option && t.vramBytes && option.bytes > t.vramBytes) t.warn = `larger than its ${formatBytes(t.vramBytes)} GPU; loads partly on CPU`;
     }
@@ -1044,41 +906,27 @@ export function downloadTargets({ repo, option, nodes = [], self = "", storage =
   });
 }
 
-/* ---------- Mesh: the architecture, drawn from each node's topology ---------- */
-
 /**
- * The request paths from one node's front door, as edges between the boxes the
- * Mesh page draws. `topos` is every readable node's /api/v1/topology.
- *
- * There is no route table to read: ModelFabric's own router decides per request, so
- * the paths are derived from where the engines are. An engine is dialled
- * directly when it listens on its node's tailnet address, and through that
- * node's ModelFabric — its mesh listener, and on from there — when it listens on
- * loopback, because nothing else can reach it. The one model llm-d schedules
- * goes through the llmd listener (Envoy) to the endpoints its EPP was given.
- *
- * The source is the front listener, because the front door *is* ModelFabric's router:
- * a request that reached it has already arrived.
+ * Derive request paths from node topologies because routing is decided
+ * per request. `topos` contains readable /api/v1/topology responses.
+ * The front listener is the router; llm-d uses Envoy and its EPP endpoints.
  */
 export function buildEdges(topos = [], from = "") {
   const edges = [];
   const src = topos.find((t) => t.node === from);
   if (!src) return edges;
   const front = { node: from, kind: "listener", id: "front" };
-  // The preferred node holds the model that gets used first, so the hop to it
-  // is marked; the rest are the fallbacks the router would take after it.
   const preferred = src.preferred || "";
   const engineAt = new Map(); // "addr:port" as seen from `from` -> {node, id}
   for (const t of topos) {
     for (const e of t.engines ?? []) {
-      // A peer's loopback engine has no address this node could dial, and its
-      // "127.0.0.1:18000" would otherwise collide with this node's own.
+      // Peer loopback addresses are unreachable here and may collide
+      // with local engine addresses.
       if (LOOPBACK.has(e.addr ?? "") && t.node !== from) continue;
       engineAt.set(`${e.addr}:${e.port}`, { node: t.node, id: e.id });
     }
   }
-  // llm-d owns its model outright: while it schedules one, every request for
-  // that model goes through Envoy and the router places none of them.
+  // Requests for the llm-d model go through Envoy, bypassing router placement.
   const llmdModel = src.llmd?.model || "";
   if (llmdModel) {
     const box = { node: from, kind: "listener", id: "llmd" };
@@ -1091,16 +939,12 @@ export function buildEdges(topos = [], from = "") {
   for (const t of topos) {
     const mesh = t.listeners?.find((l) => l.name === "mesh");
     const marked = t.node === preferred;
-    // One hop per model, not per engine: several loopback engines on a peer are
-    // all reached through the same ModelFabric.
+    // Multiple engines on a peer share its mesh listener; draw one hop per model.
     const forwarded = new Set();
     for (const e of t.engines ?? []) {
       if (e.model === llmdModel) continue;
-      // Only this node's own engines are dialled straight. Another node's are
-      // always reached through that node's tailnet listener, wherever they
-      // are bound: the router's candidate for a peer is its mesh listener
-      // (mesh.Candidates), never its engine. A tailnet-bound engine was drawn
-      // as "direct to engine", a path the router does not take.
+      // mesh.Candidates uses the peer's mesh listener, regardless of engine
+      // binding. Only local engines are dialled directly.
       if (t.node === from) {
         edges.push({ from: front, to: { node: t.node, kind: "engine", id: e.id }, style: marked ? "preferred" : "direct", model: e.model });
         continue;
@@ -1114,10 +958,8 @@ export function buildEdges(topos = [], from = "") {
       edges.push({ from: box, to: { node: t.node, kind: "engine", id: e.id }, style: "forwarded", model: e.model });
     }
   }
-  // Every node this one can reach, model or not. With nothing loaded the
-  // page drew no line between nodes at all, which read as "not connected"
-  // when the mesh was whole. A peer a request already goes to needs no
-  // second line.
+  // Show reachable peers even without loaded models so an idle mesh
+  // does not appear disconnected. Avoid duplicate request-path links.
   const reached = new Set(edges.filter((e) => e.to.kind === "listener" && e.to.id === "mesh").map((e) => e.to.node));
   for (const t of topos) {
     if (t.node === from || reached.has(t.node)) continue;
@@ -1127,11 +969,6 @@ export function buildEdges(topos = [], from = "") {
   return edges;
 }
 
-/**
- * The Constellation view: one model at the centre, the nodes serving it
- * around it, and the entry points that route to it outside those. Built from
- * the same topologies as the architecture view.
- */
 export function constellation(topos = [], model = "") {
   const models = [...new Set(topos.flatMap((t) => (t.engines ?? []).map((e) => e.model)))].sort();
   if (!model || !models.includes(model)) model = models[0] ?? "";
@@ -1155,20 +992,16 @@ export function constellation(topos = [], model = "") {
     const links = buildEdges(topos, t.node)
       .filter((e) => e.model === model && e.to.kind === "engine" && servingNodes.has(e.to.node))
       .map((e) => ({ to: e.to.node, style: e.style === "direct" && e.from.id === "mesh" ? "forwarded" : e.style }));
-    // A hop through another node's ModelFabric shows as a link to that node.
     for (const e of buildEdges(topos, t.node)) {
       if (e.model === model && e.to.kind === "listener" && e.to.id === "mesh" && servingNodes.has(e.to.node)) {
         links.push({ to: e.to.node, style: e.style });
       }
     }
-    // A node that reaches none of the engines is not an entry point for this
-    // model — it is just a node that cannot serve it.
+    // A node with no path to this model cannot be its entry point.
     if (!links.length) continue;
     const seen = new Set();
     entries.push({
       node: t.node, role: t.role,
-      // What this node's front door does with the model: hands it to llm-d, or
-      // places it itself.
       via: t.llmd?.model === model ? "llmd" : "direct",
       public: (t.listeners ?? []).some((l) => l.name === "public"),
       links: links.filter((l) => !seen.has(l.to + l.style) && seen.add(l.to + l.style)),
@@ -1178,10 +1011,6 @@ export function constellation(topos = [], model = "") {
   return { model, models, serving, entries, others };
 }
 
-/**
- * Every model at once: the models, each node with the models it serves, and
- * the entry points with the nodes they route to (any model).
- */
 export function constellationAll(topos = []) {
   const models = [...new Set(topos.flatMap((t) => (t.engines ?? []).map((e) => e.model)))].sort();
   const nodes = [];
@@ -1223,9 +1052,8 @@ export function constellationAll(topos = []) {
         links.get(k).models.push(m);
       }
     }
-    // Only a node that reaches another node's engines: one whose every path
-    // ends on itself is drawn as a serving node, not as an entry point into
-    // the rest of the mesh.
+    // Nodes whose routes all end locally are serving nodes, not entry points
+    // to other nodes.
     if (!links.size) continue;
     entries.push({ node: t.node, role: t.role, public: (t.listeners ?? []).some((l) => l.name === "public"), links: [...links.values()] });
   }
@@ -1235,9 +1063,7 @@ export function constellationAll(topos = []) {
 }
 
 /**
- * What a node's platform string means for the UI: a glyph key, a short label
- * and what only that platform can run. The fleet is mixed on purpose, and this
- * is the one place that decides how it reads.
+ * Platform glyph, label, and runtime capabilities.
  *
  * @param {string} platform - "linux/amd64", "darwin/arm64", … or "" when a peer
  *   is too old to report one.
@@ -1254,7 +1080,6 @@ export function platformBadge(platform, osVersion = "") {
   }[os.toLowerCase()];
   const version = String(osVersion || "").trim();
   if (!known) {
-    // An unknown platform still shows a version if the node reported one.
     return { key: "unknown", label: "", arch: "", version, title: version || "This node does not report its platform" };
   }
   const arm = arch === "arm64" ? (known.key === "mac" ? " (Apple silicon)" : " (arm64)") : "";
@@ -1268,8 +1093,7 @@ export function platformBadge(platform, osVersion = "") {
 }
 
 /**
- * How an engine's KV-cache utilization should read. Unknown is not zero: an
- * engine nobody could ask is not an idle one, so it gets no bar at all.
+ * Unknown KV utilization gets no bar, since it does not imply an idle engine.
  *
  * @param {number} usage - share of the KV pool in use, or -1 when unknown
  * @returns {{known: boolean, pct: number, label: string, level: string}}
@@ -1278,22 +1102,16 @@ export function kvBadge(usage) {
   const known = typeof usage === "number" && usage >= 0;
   if (!known) return { known: false, pct: 0, label: "", level: "" };
   const pct = Math.min(100, Math.round(usage * 100));
-  // The bands are about headroom, not beauty: past three quarters a llama.cpp
-  // engine starts evicting the prefixes routing worked to reuse.
+  // The high-usage band marks reduced headroom for reusable prefixes.
   const level = pct >= 75 ? "hot" : pct >= 40 ? "warm" : "cool";
   return { known: true, pct, label: `${pct}% KV`, level };
 }
 
 /**
- * Which settings this model overrides on top of the preset it uses.
+ * Model settings override presets; empty fields inherit and are not changes.
  *
- * A model's saved settings are overrides, not a copy of the preset: an empty
- * field inherits the preset's value, so it is not a change. A field that is
- * set and differs is — that is what LM Studio marks unsaved, and it is the
- * only way to tell "uses focused" from "uses focused, except hotter".
- *
- * @param {object} formValues - the form's current values, keyed by field
- * @param {object} presetSettings - the preset's saved settings
+ * @param {object} formValues - current form values, keyed by field
+ * @param {object} presetSettings - saved preset settings
  * @returns {{dirty: boolean, changed: string[]}} changed field keys, sorted
  */
 export function presetDrift(formValues, presetSettings) {
@@ -1306,20 +1124,12 @@ export function presetDrift(formValues, presetSettings) {
 }
 
 /**
- * The same rows seen model-first: one entry per model, with the nodes that
- * hold it.
- *
- * The node-first table answers "what is on this machine"; a mesh also needs
- * the other direction — "where does this model live, and where is it loaded"
- * — which no single-machine tool has to answer.
- *
- * Identity is the model key. Quant and size stay on the node rows, because two
- * nodes can hold different files under one key: a GGUF on one and MLX weights
- * on another.
+ * Group catalog rows by model key. Keep quantization and size per node:
+ * the same key can identify different files, including GGUF and MLX weights.
  *
  * @param {object[]} rows - catalog rows, one per node and model
- * @returns {object[]} groups, sorted by key; nodes within a group put this
- *   node first, then alphabetically
+ * @returns {object[]} groups sorted by key; local node first within each
+ *   group, then alphabetical
  */
 export function groupByModel(rows) {
   const groups = new Map();
@@ -1329,8 +1139,7 @@ export function groupByModel(rows) {
       g = { key: r.key, arch: r.arch, mtp: r.mtp, caps: r.caps ?? [], params: r.params, nodes: [] };
       groups.set(r.key, g);
     }
-    // Keep whichever copy states the most: a node that could not read a
-    // model's metadata should not blank the group's identity.
+    // Missing metadata on one node must not blank the group's identity.
     g.arch = g.arch || r.arch;
     g.params = g.params || r.params;
     g.mtp = g.mtp || r.mtp;
@@ -1348,17 +1157,8 @@ export function groupByModel(rows) {
 }
 
 /**
- * The quantization list for Discover's download step.
- *
- * A repo's quantizations differ in one thing that matters — how many bytes of
- * weights you are about to pull onto a machine — and are otherwise identical:
- * same format, usually the same vision projector. Repeating "GGUF" and an eye
- * on every row spends the loudest ink in the list on the one fact that never
- * varies, so anything constant across the options is lifted out to `common`
- * and stated once; a badge stays on a row only when the rows disagree.
- *
- * `frac` is each file's size against the largest, which is what makes the
- * list readable at a glance: the choice is quality against disk.
+ * Factor metadata shared by all quantizations into `common`; leave
+ * differences on each row. `frac` is file size divided by the largest size.
  */
 export function quantRows(options = [], chosen = "") {
   const opts = options.filter(Boolean);
@@ -1368,8 +1168,6 @@ export function quantRows(options = [], chosen = "") {
   const common = {
     count: opts.length,
     format: formats.size === 1 ? [...formats][0] : "",
-    // Only "every option has one" is worth hoisting: if some do and some do
-    // not, that difference is the reason to show the badge per row.
     projector: opts.every((o) => !!o.projector),
   };
   const rows = opts.map((o) => ({
@@ -1379,7 +1177,6 @@ export function quantRows(options = [], chosen = "") {
     frac: Math.min((o.bytes || 0) / max, 1),
     recommended: !!o.recommended,
     fileCount: o.files?.length ?? 1,
-    // Shown per row only when it distinguishes this row from another.
     projector: common.projector ? "" : o.projector || "",
     active: o.quant === chosen,
   }));
@@ -1387,10 +1184,8 @@ export function quantRows(options = [], chosen = "") {
 }
 
 /**
- * A benchmark report as the Benchmark page shows it: three tables in the
- * standard layout, and what a reader needs to repeat the run. Numbers are
- * formatted here, once, so the page and the tests agree on what "34.0 tok/s"
- * looks like. A failed row keeps its place and says why.
+ * Format benchmark tables and reproduction details. Failed rows retain
+ * their place and error.
  */
 export function benchTables(rep) {
   if (!rep) return null;
@@ -1429,18 +1224,14 @@ export function benchTables(rep) {
   };
 }
 
-// spreadText is where a load level's requests went, busiest node first:
-// "minion 6 · helion 2". "unknown" is a request whose node the front door did
-// not name; it is shown as such rather than credited to anyone.
+// Format request counts by serving node, busiest first. Preserve "unknown"
+// when the front door did not identify a node.
 export function spreadText(spread) {
   return Object.entries(spread ?? {})
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([n, c]) => `${n} ${c}`).join(" · ");
 }
 
-// clusterTables lays out a cluster run (internal/bench.ClusterReport): one
-// request at a time and where it landed, then the load sweep with each
-// level's spread across the nodes.
 export function clusterTables(rep) {
   if (!rep) return null;
   const n1 = (v) => (v || v === 0 ? Number(v).toFixed(1) : "—");
@@ -1478,12 +1269,6 @@ export function clusterTables(rep) {
   };
 }
 
-// heldRequests lists every request a router in the mesh is holding for a
-// slot, longest wait first, with the node holding it.
-//
-// The header count said "2 held at the router" and nothing else. In the runs
-// of 2026-10-06 finding out that one of them had waited six minutes, and for
-// what, meant reading a node's traffic log over SSH.
 export function heldRequests(nodes) {
   return (nodes ?? [])
     .flatMap((n) => (n.held ?? []).map((h) => ({
@@ -1495,10 +1280,8 @@ export function heldRequests(nodes) {
     .sort((a, b) => b.waitedMs - a.waitedMs);
 }
 
-// movedIn adds up, per serving node, what every router in the mesh has sent
-// it and how many of those requests were a conversation arriving from another
-// engine. A move is where re-reading comes from: in one run 2.6M of 3.6M
-// tokens read again were read on the call straight after one.
+// Aggregate requests sent to each serving node and conversations moved
+// from another engine; moves can require re-reading context.
 export function movedIn(nodes) {
   const out = {};
   for (const n of nodes ?? []) {
@@ -1511,14 +1294,12 @@ export function movedIn(nodes) {
   return out;
 }
 
-// waitedText is a wait in the unit a person would say it in.
 export function waitedText(ms) {
   const s = Math.round((ms ?? 0) / 1000);
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
-// gib is a size in MiB said in GiB, to one decimal below ten.
 export function gib(mib) {
   if (mib === null || mib === undefined) return "—";
   const g = mib / 1024;

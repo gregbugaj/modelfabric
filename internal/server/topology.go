@@ -11,17 +11,13 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/osproc"
 )
 
-// Topology is what one node knows about itself: its addresses, what listens
-// where and who may use it, what it serves, and the
-// engines it runs. The dashboard gathers one from every node it can manage
-// and draws the mesh from them.
+// Topology describes this node's listeners, access rules and engines.
+// The dashboard combines snapshots from manageable nodes.
 
 type Listener struct {
-	Name string `json:"name"` // front | mesh | public | llmd
-	Addr string `json:"addr"`
-	// Scope is who can reach it: loopback, tailnet, public (through a proxy).
-	Scope string `json:"scope"`
-	// Auth is how a caller is checked there.
+	Name    string `json:"name"` // front | mesh | public | llmd
+	Addr    string `json:"addr"`
+	Scope   string `json:"scope"`
 	Auth    string `json:"auth"`
 	Serves  string `json:"serves"`
 	Enabled bool   `json:"enabled"`
@@ -50,12 +46,10 @@ type TopoGPU struct {
 }
 
 type Topology struct {
-	Node      string `json:"node"`
-	Role      string `json:"role"` // gpu | entrypoint | router
-	TailnetIP string `json:"tailnet_ip,omitempty"`
-	Version   string `json:"version,omitempty"`
-	// Platform and OSVersion are this node's OS/arch and what the OS calls
-	// itself, so a mixed fleet reads at a glance (see mesh.NodeState).
+	Node      string       `json:"node"`
+	Role      string       `json:"role"` // gpu | entrypoint | router
+	TailnetIP string       `json:"tailnet_ip,omitempty"`
+	Version   string       `json:"version,omitempty"`
 	Platform  string       `json:"platform,omitempty"`
 	OSVersion string       `json:"os_version,omitempty"`
 	Preferred string       `json:"preferred,omitempty"`
@@ -81,7 +75,6 @@ type TopoPeer struct {
 	Alive   bool   `json:"alive"`
 }
 
-// SetMeshListen records the tailnet listener's address, for topology.
 func (s *Server) SetMeshListen(addr string) { s.meshListen = addr }
 
 func (s *Server) handleTopology(w http.ResponseWriter, _ *http.Request) {
@@ -173,7 +166,6 @@ func (s *Server) handleTopology(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
-// engineBase finds a local engine's base URL among the mesh's candidates.
 func engineBase(s *Server, name string) string {
 	for _, m := range s.m.State().Models {
 		for _, c := range s.m.Candidates(m, true) {

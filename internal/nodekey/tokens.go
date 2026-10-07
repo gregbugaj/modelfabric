@@ -16,20 +16,11 @@ import (
 	"time"
 )
 
-// Named tokens, besides the node key.
+// Named inference tokens are shown once, stored as hashes, and revoked individually.
+// Unlike the node key, they cannot authenticate internal forwarding markers.
 //
-// One key per node meant every app, script and borrowed laptop held the same
-// secret, and revoking any of them revoked all of them. A token is a credential
-// of its own: named, shown once, stored only as a hash, and revoked alone. It
-// is accepted wherever the node key is accepted from an app — inference — and
-// nowhere else: the node key also proves a request came from this node itself
-// (the forwarding marker; see server.FrontHandler), and no token can.
-//
-// The file is shared between the node and `mfsh key`, which edits it on disk
-// rather than over the API because a key is the node's own file (key_cmd.go).
-// Writers take a lock and re-read before changing it; the node notices a
-// change by its size and modification time, so a token created at the
-// command line works on the next request without a restart.
+// CLI and node writers lock and re-read the shared file. The node detects
+// changes by size and mtime, so updates take effect without restarting.
 
 const (
 	tokensFile = "tokens.json"
@@ -73,7 +64,6 @@ type Token struct {
 	LastUsed time.Time `json:"last_used,omitzero"`
 }
 
-// Store is the tokens of one ModelFabric home.
 type Store struct {
 	dir string
 
@@ -95,7 +85,6 @@ type fileStamp struct {
 	ok    bool
 }
 
-// Tokens is the store for home.
 func Tokens(home string) *Store {
 	return &Store{dir: home, used: map[string]time.Time{}}
 }
@@ -291,9 +280,8 @@ func readTokens(p string) ([]Token, error) {
 	return f.Tokens, nil
 }
 
-// writeTokens replaces the file whole, owner-only: the hashes are not
-// secrets, but which apps hold a credential and when they last used it is
-// nobody else's business.
+// writeTokens atomically replaces the owner-only file. Token names and usage
+// metadata remain private even though stored credentials are hashed.
 func writeTokens(p string, ts []Token) error {
 	if ts == nil {
 		ts = []Token{}

@@ -45,7 +45,6 @@ func TestSettingsPrecedence(t *testing.T) {
 	if _, err := s.resolveSettings("qwen/x", "missing", runtime.Settings{}); err == nil {
 		t.Fatal("a missing preset was silently dropped")
 	}
-	// Clearing defaults removes them.
 	must(s.SetDefaults("qwen/x", ModelDefaults{}))
 	d, err := s.Defaults("qwen/x")
 	if err != nil {
@@ -91,8 +90,6 @@ func TestImportLMStudioPreset(t *testing.T) {
 	}
 }
 
-// An entrypoint (a cloud VM fronting the mesh) never loads a model, by hand
-// or on demand.
 func TestEntrypointRefusesLoads(t *testing.T) {
 	s := newTestSupervisor(t)
 	s.cfg.Entrypoint, s.cfg.JIT = true, true
@@ -112,7 +109,6 @@ func TestCorruptSettingsAreReportedNotIgnored(t *testing.T) {
 	s := newTestSupervisor(t)
 	dir := s.cfg.DataDir
 
-	// A defaults file that is not JSON.
 	if err := os.MkdirAll(filepath.Join(dir, "model-defaults"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +119,6 @@ func TestCorruptSettingsAreReportedNotIgnored(t *testing.T) {
 		t.Error("a corrupt defaults file was treated as no defaults")
 	}
 
-	// A preset holding a load-only setting.
 	if err := os.MkdirAll(filepath.Join(dir, "presets"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +151,6 @@ func TestDeletingAPresetInUseIsRefused(t *testing.T) {
 	if !strings.Contains(err.Error(), "qwen/x") {
 		t.Errorf("the refusal should name the model: %v", err)
 	}
-	// Once nothing names it, it deletes.
 	if err := s.SetDefaults("qwen/x", ModelDefaults{}); err != nil {
 		t.Fatal(err)
 	}
@@ -165,8 +159,6 @@ func TestDeletingAPresetInUseIsRefused(t *testing.T) {
 	}
 }
 
-// visionSupervisor is a supervisor whose catalog holds one model with a
-// projector and one without.
 func visionSupervisor(t *testing.T) *Supervisor {
 	s := &Supervisor{cfg: Config{DataDir: t.TempDir()}}
 	s.cat = catalog.NewFromModels(map[string]catalog.Model{
@@ -176,16 +168,8 @@ func visionSupervisor(t *testing.T) *Supervisor {
 	return s
 }
 
-// A fresh node must serve images without anyone having configured it: one slot,
-// and room for an image prompt.
-//
-// Speculation used to be off here too, against "failed to process mtmd chunk".
-// That defect is gone from the builds this fleet runs (re-tested 2026-09-24 with
-// the projector loaded, drafting live through two concurrent image requests, on
-// CUDA and on Metal), and it applied to every load of a model with a projector.
-// Whether drafting pays is about the work — 66 tok/s against 134 on a 5090 with
-// predictable output, slightly negative without — so the choice belongs to the
-// node, which saves spec_mode off for itself.
+// Default image loads need one slot and enough context for an image prompt.
+// Speculation is independent; do not restore the blanket mtmd workaround.
 func TestVisionModelsLoadSafeByDefault(t *testing.T) {
 	s := visionSupervisor(t)
 	got, err := s.resolveSettings("seer", "", runtime.Settings{})
@@ -199,16 +183,13 @@ func TestVisionModelsLoadSafeByDefault(t *testing.T) {
 		t.Errorf("a vision model should be left to the runtime's own speculation "+
 			"choice, which is its MTP head: %+v", *got.SpecMode)
 	}
-	// The slot count and the context are one decision: -c is context × slots,
-	// so cutting slots without naming a context let the load fall to the 8k
-	// runtime default, and an 18107-token image prompt was refused by the
-	// engine within minutes of the change.
+	// Without an explicit context, reducing slots selected the 8k runtime
+	// default and rejected an 18,107-token image prompt.
 	if got.ContextLength == nil || *got.ContextLength != 32768 {
 		t.Errorf("a vision model needs room for an image prompt, got %+v", got.ContextLength)
 	}
 }
 
-// And a text model is untouched by any of it.
 func TestTextModelsIgnoreVisionDefaults(t *testing.T) {
 	s := visionSupervisor(t)
 	if err := s.SetVisionDefaults(runtime.Settings{Parallel: ptr(1)}); err != nil {
@@ -223,8 +204,6 @@ func TestTextModelsIgnoreVisionDefaults(t *testing.T) {
 	}
 }
 
-// Per node, because capacity is: a node with room for four vision slots says
-// so, and that is what its models load with.
 func TestVisionDefaultsAreEditable(t *testing.T) {
 	s := visionSupervisor(t)
 	if err := s.SetVisionDefaults(runtime.Settings{Parallel: ptr(4)}); err != nil {
@@ -237,7 +216,6 @@ func TestVisionDefaultsAreEditable(t *testing.T) {
 	if got.Parallel == nil || *got.Parallel != 4 {
 		t.Fatalf("the node's own slot count should win: %+v", got.Parallel)
 	}
-	// Cleared, it returns to the safe default rather than to nothing.
 	if err := s.SetVisionDefaults(runtime.Settings{}); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +228,6 @@ func TestVisionDefaultsAreEditable(t *testing.T) {
 	}
 }
 
-// The vision defaults are the lowest layer: everything model-specific wins.
 func TestVisionDefaultsLoseToEverythingElse(t *testing.T) {
 	s := visionSupervisor(t)
 	if err := s.SetDefaults("seer", ModelDefaults{Settings: runtime.Settings{Parallel: ptr(2)}}); err != nil {
@@ -303,7 +280,7 @@ func TestVisionContextIsPerNodeAndOverridable(t *testing.T) {
 }
 
 // A load that asked for the model without its projector is not image work, so
-// the node's vision defaults must not apply — otherwise -vision off still
+// the node's vision defaults must not apply - otherwise -vision off still
 // inherits the one slot that exists only for images.
 func TestVisionOffSkipsTheVisionDefaults(t *testing.T) {
 	s := visionSupervisor(t)
@@ -321,7 +298,6 @@ func TestVisionOffSkipsTheVisionDefaults(t *testing.T) {
 	if got.ContextLength != nil {
 		t.Errorf("the 32k image context should not apply: %d", *got.ContextLength)
 	}
-	// Asking for images explicitly still gets them.
 	yes := true
 	got, err = s.resolveSettings("seer", "", runtime.Settings{Vision: &yes})
 	if err != nil {

@@ -1,24 +1,5 @@
-// Package docslint checks the prose in this repository for the two kinds of
-// slop that have actually appeared in it.
-//
-// It exists because the audit that found them was run by hand, after the fact,
-// and three of the four offending paragraphs had been written that same day.
-// A rule nobody runs is a rule that decays, so these run with the tests.
-//
-// It checks filler phrases that can be deleted without losing meaning, real
-// tailnet addresses anywhere in the Markdown, and em dashes in the docs site.
-//
-// Filler first. Every pattern below matched something real here; none is included on
-// principle, because a style linter that flags every adverb gets switched off.
-//
-// It deliberately does NOT check paragraph length, and that is worth recording.
-// The hand audit found four bloated paragraphs that were really lists written
-// as prose, so a >75-word rule looked obvious. Run against the tree it flagged
-// four more of 81-117 words that are well-argued prose — the flyout's design
-// rationale, the quantization control's — sitting in exactly the same range as
-// the genuine offenders. Length does not separate an argument from a disguised
-// list; only reading does. A rule that would have forced those four into
-// bullets is worse than no rule, so that judgement stays in review.
+// Package docslint checks Markdown for filler phrases, real tailnet addresses,
+// and em dashes in site prose. Paragraph length is not a lint rule.
 package docslint
 
 import (
@@ -31,8 +12,6 @@ import (
 	"strings"
 )
 
-// filler is text that can be deleted without losing meaning. Each pattern here
-// matched something real in this repository; none is included on principle.
 var filler = []struct {
 	re  *regexp.Regexp
 	why string
@@ -50,19 +29,14 @@ var filler = []struct {
 	{regexp.MustCompile(`(?i)\bcomprehensive\b`), `"comprehensive" is never checked by anyone`},
 }
 
-// tailnetAddr is any address in Tailscale's 100.64.0.0/10 range. Docs use
-// 100.64.0.x as the example range; anything else is a real machine. A real one
-// reached the published benchmark page inside a code block, which is why this
-// scans code too: a leaked address in a command is still leaked.
+// tailnetAddr matches Tailscale addresses in prose and code blocks.
+// Only the documentation example range 100.64.0.x is allowed.
 var tailnetAddr = regexp.MustCompile(`\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.\d{1,3}\.\d{1,3}\b`)
 
 func isExampleAddr(a string) bool { return strings.HasPrefix(a, "100.64.0.") }
 
-// emDash is checked only under site/content. The published docs were
-// rewritten on 2026-09-29 to drop them because a page full of em dashes reads
-// as generated; repository notes are working documents and keep their own
-// style. Code and inline code are exempt: the dashboard renders "—" for an
-// unknown value, and the docs have to be able to show that.
+// emDash applies to site/content prose. Code blocks and inline code are exempt
+// so documentation can show literal UI values.
 const emDash = "—"
 
 func isPublishedDoc(path string) bool {
@@ -75,9 +49,8 @@ func isPublishedDoc(path string) bool {
 // Assembled from parts so this file does not itself contain it.
 var hijackedDomain = "modelfabric" + ".ai"
 
-// ScanHijacked walks root and reports every text file naming the hijacked
-// domain: code, scripts and config as well as prose, because the dangerous
-// copies were in install.sh and the site's metadata, not only the docs.
+// ScanHijacked reports the previous domain in source, scripts, configuration,
+// and prose, including executable installation URLs.
 func ScanHijacked(root string) ([]Finding, error) {
 	var out []Finding
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -98,7 +71,7 @@ func ScanHijacked(root string) ([]Finding, error) {
 			return err
 		}
 		if bytes.IndexByte(b, 0) >= 0 {
-			return nil // binary
+			return nil
 		}
 		text := string(b)
 		for off := 0; ; {
@@ -114,7 +87,6 @@ func ScanHijacked(root string) ([]Finding, error) {
 	return out, err
 }
 
-// Finding is one thing worth changing.
 type Finding struct {
 	File string
 	Line int
@@ -123,7 +95,6 @@ type Finding struct {
 
 func (f Finding) String() string { return fmt.Sprintf("%s:%d: %s", f.File, f.Line, f.Why) }
 
-// Scan walks root and reports slop in every Markdown file under it.
 func Scan(root string) ([]Finding, error) {
 	var out []Finding
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -131,7 +102,6 @@ func Scan(root string) ([]Finding, error) {
 			return err
 		}
 		if d.IsDir() {
-			// Generated and vendored trees are nobody's prose.
 			switch d.Name() {
 			case "node_modules", ".next", "dist", ".git", "_pagefind":
 				return fs.SkipDir

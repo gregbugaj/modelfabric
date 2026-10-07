@@ -40,7 +40,6 @@ data: [DONE]
 `
 )
 
-// streamingServer replies to a chat completion with fixed SSE text.
 func streamingServer(t *testing.T, frames string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +80,6 @@ func TestTokensAreCountedWhateverTheEngineCallsThem(t *testing.T) {
 	}
 }
 
-// serverEngine is an engine whose requests go to a test server.
 type serverEngine struct{ base string }
 
 func (s serverEngine) Reload(context.Context, string, int, int) error { return nil }
@@ -91,14 +89,9 @@ func (s serverEngine) Target(context.Context, string) (string, string, error) {
 func (s serverEngine) Inflight(context.Context, string) (int, error)     { return 0, nil }
 func (s serverEngine) Current(context.Context, string) (int, int, error) { return 1, 4096, nil }
 
-// The failure this pair of tests exists to prevent: a 27B model on a Mac was
-// reported as "0 tok/s together, 0 decode, first token 0.0s" and then
-// "Recommended: 1 slot at 262144-token context". Every token it generated had
-// arrived under a field name the parser did not read, so the sweep measured
-// nothing and recommended it anyway.
-//
-// A request that succeeds and produces no countable token is a failure to
-// count, not a rate of zero.
+// Regression: unrecognized token fields produced a zero rate and a slot
+// recommendation despite successful generation. Treat an uncountable reply
+// as a measurement failure.
 func TestARowThatProducedNoTokensIsNotAMeasurement(t *testing.T) {
 	withMemory(t, 36*gb, 20*gb)
 	// Well-formed frames whose token lives under a name nothing reads: the

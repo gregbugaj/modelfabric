@@ -18,9 +18,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/runtime"
 )
 
-// getCmd downloads a model from Hugging Face, like `lms get`. It accepts LM
-// Studio hub ids (qwen/qwen3.8-27b) as well as repositories and URLs. With
-// -from it copies a model another node in the mesh already has instead.
 func getCmd(args []string) error {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -129,9 +126,6 @@ func getCmd(args []string) error {
 		}
 		return err
 	}
-	// The plan itself shows "(none published)" for files the hub gives no
-	// hash for, and those are not checksum-verified. Claiming every download
-	// was verified overstated exactly the case the operator needs to know.
 	unverified := 0
 	for _, f := range plan.Files {
 		if f.SHA256 == "" {
@@ -175,7 +169,7 @@ func resolveHubID(ctx context.Context, client *hub.Client, cfg config.Config, id
 	defer cancel()
 	repo, near, err := client.HubGGUFRepo(sctx, id)
 	if err != nil {
-		return "", "", nil // the search is a convenience; fall through to the repo
+		return "", "", nil // fall back to the repository reference
 	}
 	if repo != "" {
 		return repo, hub.LMStudioCommunity, nil

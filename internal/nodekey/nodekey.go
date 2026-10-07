@@ -1,14 +1,5 @@
-// Package nodekey holds this node's API key: the credential apps present to
-// ModelFabric's own front door.
-//
-// A node exposed through a TLS proxy or Tailscale Funnel needs one.
-//
-// An older build kept the key in gateway/master.key, and that location is
-// still read first, on purpose. That key is deployed: it
-// sits in clients' configuration, in benchmark environments, behind reverse
-// proxies. Generating a fresh one because a file moved would revoke every
-// credential already issued and look, from the outside, exactly like ModelFabric
-// breaking.
+// Package nodekey manages credentials for the inference front door.
+// Read the legacy gateway/master.key first to preserve existing client credentials.
 package nodekey
 
 import (
@@ -21,7 +12,6 @@ import (
 )
 
 const (
-	// file is where a key created from now on is written.
 	file = "api.key"
 	// legacyFile is where older builds kept it. Read, never written.
 	legacyFile = "gateway/master.key"

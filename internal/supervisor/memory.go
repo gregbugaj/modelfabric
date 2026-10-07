@@ -23,8 +23,8 @@ var cacheDropMarks = [][]byte{
 const longestMark = 40
 
 type engineWatch struct {
-	offset  int64  // how far into its log has been counted
-	carry   []byte // the end of the last read
+	offset  int64
+	carry   []byte
 	dropped int64
 	rssMB   int64
 	rssAt   time.Time

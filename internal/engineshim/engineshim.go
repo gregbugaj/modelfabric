@@ -1,22 +1,7 @@
-// Package engineshim proxies inference to an engine, applies output defaults
-// and disk-cache slot placement, and publishes synthesized KV metrics.
-//
-// llama.cpp reports no KV gauge on /metrics — measured on b11026 and b11040,
-// whose whole set is token and request counters plus n_busy_slots_per_decode.
-// The number is not missing, only differently shaped: /slots reports each
-// slot's capacity and the prompt resident in it. ModelFabric computes utilization
-// from that.
-//
-// What it cannot do is hand it to llm-d. The EPP scrapes each endpoint at the
-// address and port it routes to (measured: a per-endpoint metricsPort is
-// ignored, and a port on the metrics data source stops scraping altogether), so
-// the metric has to come from the thing llm-d dials. Hence this: a listener
-// that answers /metrics with the engine's own metrics plus the synthesized
-// gauge, on the same port that proxies inference.
-//
-// llm-d dials the shim, and ModelFabric's router uses it when disk prompt cache
-// placement is enabled. Inference bodies may be rewritten to add an output
-// limit or select a slot; they are not always passed through unchanged.
+// Package engineshim proxies inference, applies output defaults and slot placement,
+// and publishes KV utilization synthesized from /slots. EPP scrapes metrics from
+// the inference endpoint, so both use this listener. Request bodies may be
+// rewritten to add output limits or select slots.
 package engineshim
 
 import (
@@ -57,19 +42,9 @@ type Slot struct {
 	NPromptTokens int  `json:"n_prompt_tokens"`
 }
 
-// BusySlots counts the slots serving a request, which is how many requests the
-// engine has in flight.
-//
-// ModelFabric's own counter only sees requests its router dispatched, and under
-// llm-d nothing goes that way: Envoy dials the engine directly, so the
-// dashboard showed 0 in flight on an engine whose KV cache was visibly
-// climbing. The engine is the only thing that knows, exactly as it is for KV.
-//
-// Measured on 2.40.0 with a 700-token generation: is_processing stays true
-// throughout, matching llamacpp:requests_processing. An older note here said
-// it goes false while generating, which was about whether it gates
-// n_prompt_tokens; it does not hold as a description of the flag on this
-// build, and requests in flight is what this counts.
+// BusySlots counts running slots, including traffic that bypasses the router.
+// On llama.cpp 2.40.0, is_processing remains true during generation and
+// matches requests_processing.
 func BusySlots(slots []Slot) (int, bool) {
 	if len(slots) == 0 {
 		return 0, false
@@ -83,15 +58,9 @@ func BusySlots(slots []Slot) (int, bool) {
 	return n, true
 }
 
-// KVUsage is the share of the KV pool a llama.cpp engine currently holds: the
-// tokens resident in its slots over the capacity of those slots.
-//
-// It counts caches kept for reuse, not just requests in flight, because that is
-// what occupies the pool — a warm engine with idle slots is not an empty one,
-// and the prefix those slots hold is exactly what routing tries to reuse. What
-// it cannot count is tokens generated after the prompt: /slots reports the
-// prompt a slot holds and nothing about the completion, so a long generation
-// reads lower than the memory it really occupies.
+// KVUsage divides resident prompt tokens by total slot capacity, including
+// idle cached prefixes. /slots omits completion tokens, so long generations
+// can consume more KV memory than this estimate reports.
 func KVUsage(slots []Slot) (float64, bool) {
 	if len(slots) == 0 {
 		return 0, false
@@ -99,7 +68,7 @@ func KVUsage(slots []Slot) (float64, bool) {
 	pool, held := 0, 0
 	for _, s := range slots {
 		if s.NCtx <= 0 {
-			return 0, false // an engine that does not say cannot be guessed at
+			return 0, false
 		}
 		pool += s.NCtx
 		held += s.NPromptTokens
@@ -199,7 +168,6 @@ func (s *Shim) SetCache(name string, p Placer) {
 	s.cache.Store(&cacheHook{name: name, placer: p})
 }
 
-// Caching reports whether the disk prompt cache places this shim's requests.
 func (s *Shim) Caching() bool { return s.cache.Load() != nil }
 
 // place pins a generating request to the slot the cache chooses, and returns
@@ -271,16 +239,13 @@ func (s *Shim) SetMaxOutputTokens(n int) { s.maxOutputTokens = n }
 // MaxOutputTokens is the ceiling it fills in, 0 for none.
 func (s *Shim) MaxOutputTokens() int { return s.maxOutputTokens }
 
-// Watching reports whether the shim carries replies to the live token view.
 func (s *Shim) Watching() bool { return s.tap != nil }
 
 // Watch makes the shim publish the replies it carries. nil disables it.
 func (s *Shim) Watch(t *tokentap.Tap) { s.tap = t }
 
-// New returns a shim for the engine at base ("http://127.0.0.1:18000").
-// peekModel reads the model out of a request body and puts the body back, so
-// a watcher can say which model is writing. A body it cannot read is not an
-// error here: the reply still proxies, it is just labelled less.
+// peekModel extracts the model and restores the body for proxying.
+// Unreadable bodies continue without a model label.
 func peekModel(r *http.Request) string {
 	if r.Body == nil || r.ContentLength <= 0 || r.ContentLength > 1<<20 {
 		return ""
@@ -305,9 +270,8 @@ func New(base string, log *slog.Logger) (*Shim, error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine address %q: %w", base, err)
 	}
-	// url.Parse accepts plenty that is not an origin: "127.0.0.1:18000" parses
-	// with scheme "127.0.0.1", and an empty host parses fine. Both used to be
-	// accepted here and fail later, during a scrape, as a mystery.
+	// url.Parse permits missing hosts and non-HTTP schemes. Validate the
+	// origin before creating a shim that would fail later during scraping.
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, fmt.Errorf("engine address %q needs an http or https scheme", base)
 	}
@@ -320,7 +284,6 @@ func New(base string, log *slog.Logger) (*Shim, error) {
 	return &Shim{engine: u, log: log, client: &http.Client{Timeout: 3 * time.Second}}, nil
 }
 
-// Listen starts the shim on addr, returning the port it bound.
 func (s *Shim) Listen(addr string) (int, error) {
 	// Listening twice used to overwrite s.srv/s.ln, leaving the first server
 	// running with nothing able to shut it down.
@@ -356,8 +319,6 @@ func (s *Shim) Listen(addr string) (int, error) {
 				defer func() { done(sw.status) }()
 			}
 		}
-		// Costs one atomic read when nobody is watching, which is the normal
-		// case: a request llm-d schedules must not pay for an idle tap.
 		if s.tap != nil && s.tap.Active() && r.Method == http.MethodPost &&
 			strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			tw, done := s.tap.Wrap(w, r.Header.Get("X-Fabric-Trace"), peekModel(r))
@@ -376,7 +337,6 @@ func (s *Shim) Listen(addr string) (int, error) {
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
-// Close stops the shim.
 func (s *Shim) Close() error {
 	if s.srv == nil {
 		return nil

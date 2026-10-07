@@ -23,19 +23,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// `mfsh chat`: a conversation against the mesh, from the terminal.
-//
-// The roadmap said no chat client — "this is infrastructure, not a client" —
-// and for a product that holds. This is not that. It exists so the mesh can be
-// exercised end to end without installing anything: no SDK, no aider, no
-// browser, nothing whose own bugs have to be ruled out before ModelFabric's can be
-// looked at. Half the evening's debugging was working out whether a symptom
-// was ModelFabric's or the client's.
-//
-// So what it shows is not the reply. Any client shows the reply. It shows
-// **which node and engine answered, and how fast** — the thing a chat client
-// has no reason to report and the only reason this one exists.
-
 const chatHelp = `  /model              pick a model from the mesh
   /node               pin to one node, or back to the whole mesh
   /system [text]      set the system prompt (no text clears it)
@@ -72,10 +59,9 @@ type chatTurn struct {
 	promptTokens             int
 	completionTokens         int
 	cachedTokens             int
-	// contextLen is how many tokens the serving engine allows one conversation,
-	// and contextNote a disagreement between what it was loaded with and what it
-	// reports. Zero means the mesh could not say — mlx-lm serves no /props — and
-	// then no headroom is shown rather than one computed against a guess.
+	// contextLen is the serving engine's per-conversation token limit; contextNote
+	// records a mismatch with its loaded settings. Zero means unknown (for example,
+	// mlx-lm has no /props), so headroom is omitted.
 	contextLen  int
 	contextNote string
 }
@@ -84,9 +70,9 @@ type chatSession struct {
 	addr      string
 	model     string
 	system    string
-	pinned    string       // a node's base URL, empty for the whole mesh
-	pinnedTo  string       // its name, for the prompt
-	key       string       // this node's API key, when it wants one
+	pinned    string // a node's base URL, empty for the whole mesh
+	pinnedTo  string // its name, for the prompt
+	key       string
 	pending   []attachment // images to send with the next message
 	showThink bool
 	msgs      []map[string]any
@@ -107,15 +93,12 @@ func chatCmd(args []string) error {
 	if err := ensureNode(*addr); err != nil {
 		return err
 	}
-	// No timeout: a long reply on a slow engine runs for minutes, and a client
-	// that gives up halfway is exactly the failure this exists to rule out.
+	// No timeout: a long reply on a slow engine can take minutes.
 	s := &chatSession{
 		addr: *addr, model: *model, system: *system, showThink: *think,
 		key: *key, client: &http.Client{},
 	}
-	// A node only checks a key when it is configured to, and this usually runs
-	// on the node itself, where the key is on disk. Reading it here means the
-	// common case needs no flag; a node that wants no key ignores it.
+	// Use the local configured key by default; nodes without authentication ignore it.
 	if s.key == "" {
 		if k, err := nodekey.Key(fabricHome()); err == nil {
 			s.key = k
@@ -134,7 +117,6 @@ func chatCmd(args []string) error {
 	return s.run()
 }
 
-// pickModel offers what the mesh serves, which is the union across nodes.
 func (s *chatSession) pickModel() (string, error) {
 	models, err := s.models()
 	if err != nil {
@@ -190,11 +172,8 @@ func (s *chatSession) run() error {
 		if line == "" {
 			continue
 		}
-		// Dropped files are looked for before slash commands, because a
-		// dropped path is usually absolute and so begins with a slash: an
-		// image dragged onto the terminal was being answered with "no such
-		// command: /home/greg/Pictures/...". Only paths that exist on disk
-		// count, so a real command is never mistaken for one.
+		// Check existing image paths before slash commands: dropped absolute paths
+		// begin with a slash and would otherwise be rejected as unknown commands.
 		if paths, rest := dropped(line); len(paths) > 0 {
 			for _, p := range paths {
 				if err := s.attach(p); err != nil {
@@ -271,9 +250,6 @@ func (s *chatSession) command(line string) (bool, error) {
 			s.model, s.msgs = m, nil
 			fmt.Println("  " + dim("model is now "+m+"; conversation cleared"))
 		} else {
-			// Saying nothing read as a command that had failed. With one model
-			// in the mesh the picker does not even appear, so this is the only
-			// feedback there is.
 			fmt.Println("  " + dim("still "+m+" — the only model the mesh serves"))
 		}
 	case "/node":
@@ -288,12 +264,9 @@ func (s *chatSession) command(line string) (bool, error) {
 	return false, nil
 }
 
-// pickNode pins the conversation to one node, which is how this tells a
-// routing problem from an engine problem: the same prompt, the same model, one
-// machine at a time.
+// pickNode pins the conversation to one node to isolate routing from engine failures.
 func (s *chatSession) pickNode() error {
-	// Its own shape rather than meshNodeView: pinning needs each node's
-	// address, which that one has no reason to carry.
+	// Pinning needs node addresses, which meshNodeView does not include.
 	type chatNode struct {
 		Node      string `json:"node"`
 		Addr      string `json:"addr"`
@@ -337,9 +310,7 @@ func (s *chatSession) pickNode() error {
 		fmt.Println("  " + dim("routing to the whole mesh again"))
 		return nil
 	}
-	// A peer's own front door, so the request is placed by that node rather
-	// than this one — pinning here must not be confused with `mfsh prefer`,
-	// which changes routing for everything on the node.
+	// Use the peer entrypoint for this conversation; mfsh prefer changes routing for all local requests.
 	for _, n := range append([]chatNode{mesh.Self}, mesh.Peers...) {
 		if n.Node == pick {
 			s.pinned, s.pinnedTo = "http://"+n.Addr, pick
@@ -363,8 +334,7 @@ func (s *chatSession) printStats() {
 		fmt.Println("  " + dim("nothing generated yet"))
 		return
 	}
-	// Which reply this is. A failed turn leaves the previous one here, and
-	// without a time the numbers read as the failure's.
+	// Timestamp the last successful reply so a failed turn does not appear to own its metrics.
 	fmt.Printf("  %s\n", dim("the last reply that completed, "+
 		time.Since(t.at).Round(time.Second).String()+" ago"))
 	row := func(k, v string) { fmt.Printf("  %-18s %s\n", dim(k), v) }
@@ -385,19 +355,13 @@ func (s *chatSession) printStats() {
 		row("generated", fmt.Sprintf("%d tokens", t.completionTokens))
 	}
 	row("chunks", fmt.Sprintf("%d thinking, %d reply", t.reasoning, t.content))
-	// How much room is left. The benchmark's only unsolved tasks died at
-	// ContextWindowExceededError with no warning that they were near it, and a
-	// conversation here grows the same way — faster with an image in it.
 	turns := len(s.msgs) / 2
 	note := ""
 	if imgs := s.imagesInHistory(); imgs > 0 {
 		note = dim(fmt.Sprintf(", %d image(s) re-sent each turn", imgs))
 	}
 	row("conversation", fmt.Sprintf("%d turn(s)%s", turns, note))
-	// The headroom this file could not show until the mesh published a context
-	// length. Against the *next* prompt, not the last one: what matters is
-	// whether the turn you are about to send fits, and it carries everything
-	// already said plus the reply just received.
+	// Estimate the next prompt, including the reply just received.
 	if t.contextLen > 0 && t.promptTokens > 0 {
 		next := t.promptTokens + t.completionTokens
 		pct := 100 * float64(next) / float64(t.contextLen)
@@ -405,8 +369,6 @@ func (s *chatSession) printStats() {
 			comma(next), comma(t.contextLen), pct)
 		switch {
 		case pct >= 90:
-			// Named, not hinted: past this a turn is likely to be refused, and
-			// the refusal arrives as an error with the conversation lost.
 			row("headroom", red(line)+dim("  — /clear or start a new conversation"))
 		case pct >= 75:
 			row("headroom", yellow(line))
@@ -415,8 +377,7 @@ func (s *chatSession) printStats() {
 		}
 	}
 	if t.contextNote != "" {
-		// The engine is not running what it was loaded with, so every figure
-		// above is measured against a limit that is not the one in effect.
+		// Flag a context mismatch because the reported headroom may use the wrong limit.
 		row("context", yellow(t.contextNote))
 	}
 	if t.total > 0 && t.completionTokens > 0 {
@@ -456,11 +417,6 @@ func pick(cond bool, a, b string) string {
 	return b
 }
 
-// say sends one turn and prints the reply as it arrives.
-//
-// Always streamed, whatever the node would do for a caller that did not ask:
-// the point is to watch it being written, and a spinner followed by a wall of
-// text tells you nothing about where the time went.
 func (s *chatSession) say(ctx context.Context, text string) error {
 	s.msgs = append(s.msgs, map[string]any{"role": "user", "content": s.userContent(text)})
 	sent := s.pending
@@ -483,9 +439,7 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// The loopback front door checks a key only when the node is configured to;
-	// sending one it does not want is harmless, and not sending one it does
-	// want fails with a clear 401 rather than a mystery.
+	// Nodes without configured authentication ignore the key.
 	if s.key != "" {
 		req.Header.Set("Authorization", "Bearer "+s.key)
 	}
@@ -503,10 +457,7 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// The attachments are dropped, not put back. Keeping them meant every
-		// later message silently carried the image until one succeeded: a
-		// question about JavaScript, typed after a failed image, failed with
-		// the same image error. Dropping a file again costs one gesture.
+		// Drop failed attachments so subsequent text turns do not repeat the same image error.
 		s.msgs = s.msgs[:len(s.msgs)-1]
 		if len(sent) > 0 {
 			defer fmt.Printf("  %s\n", dim(fmt.Sprintf("%d image(s) were not sent and are no longer attached", len(sent))))
@@ -526,7 +477,6 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 	var thinking bool
 	first := true
 	fmt.Println()
-	// Runs until the reply's first word, so the wait is never silent.
 	status := startChatStatus(start)
 	defer status.end()
 	sc := bufio.NewScanner(resp.Body)
@@ -586,7 +536,6 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 				}
 				fmt.Print(dim(think))
 			} else {
-				// Hidden, so the count is the only sign anything is happening.
 				status.set("thinking", int64(t.reasoning))
 			}
 		}
@@ -595,8 +544,6 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 			if first {
 				t.ttft, first = time.Since(start), false
 			}
-			// The reply is starting: the status line has done its job and must
-			// not be redrawn over the text.
 			status.end()
 			if thinking {
 				fmt.Print("\n\n")
@@ -610,9 +557,7 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 		return err
 	}
 	t.total, t.at = time.Since(start), time.Now()
-	// What the engine that served this turn allows one conversation. Asked after
-	// the reply rather than before: the node is only known from the response
-	// headers, and on a mesh the next turn may land somewhere else entirely.
+	// Read context after the reply identifies its serving node; later turns may route elsewhere.
 	t.contextLen, t.contextNote = s.contextOf(t.node, t.engine)
 	s.last = t
 	s.msgs = append(s.msgs, map[string]any{"role": "assistant", "content": reply.String()})
@@ -623,8 +568,6 @@ func (s *chatSession) say(ctx context.Context, text string) error {
 	return nil
 }
 
-// footer is the line this command exists for: where the reply came from, and
-// what it cost. A chat client would print the reply and stop.
 func (s *chatSession) footer(t *chatTurn) string {
 	where := dim("served by ") + dim("not reported")
 	if t.node != "" {
@@ -651,20 +594,14 @@ func (s *chatSession) footer(t *chatTurn) string {
 	return strings.Join(parts, dim("  ·  "))
 }
 
-// Images, because vision is the part of this mesh most worth poking at from a
-// terminal: a model loaded `-vision off` keeps no projector and cannot read
-// one, ModelFabric routes image requests only to engines that can, and llama.cpp
-// fails a drafted prompt carrying an image outright. All three are routing
-// questions, and all three need a real image to ask.
+// Image requests require a vision-enabled engine; llama.cpp rejects images with draft decoding.
 
-// attachment is an image waiting to go with the next message.
 type attachment struct {
 	path string
 	mime string
 	data []byte
 }
 
-// dataURL is how an image travels in an OpenAI-shaped request.
 func (a attachment) dataURL() string {
 	return "data:" + a.mime + ";base64," + base64.StdEncoding.EncodeToString(a.data)
 }
@@ -696,17 +633,13 @@ func (s *chatSession) attach(path string) error {
 		return fmt.Errorf("%s does not look like an image llama.cpp can read (png, jpeg, webp, gif, bmp)", filepath.Base(path))
 	}
 	s.pending = append(s.pending, attachment{path: path, mime: mime, data: data})
-	// Base64 inflates by a third, and the whole thing rides in a JSON body
-	// that has to be prefilled as image tokens — worth saying before a
-	// six-megabyte screenshot is sent to a Mac at 166 tok/s.
+	// Warn about image cost: base64 adds a third to the body size, and image tokens require prefill.
 	fmt.Printf("  %s %s %s\n", dim("attached"), filepath.Base(path),
 		dim(fmt.Sprintf("(%s, %s as sent)", mime, humanBytes(int64(len(data)*4/3)))))
 	return nil
 }
 
-// mimeOfImage sniffs the bytes rather than trusting the extension: a .png that
-// is really a JPEG is common enough, and the engine rejects the mismatch with
-// an error that says nothing about which file caused it.
+// mimeOfImage detects the content type from bytes to avoid engine errors from incorrect extensions.
 func mimeOfImage(data []byte, path string) string {
 	if t := http.DetectContentType(data); strings.HasPrefix(t, "image/") {
 		return t
@@ -736,15 +669,8 @@ func (s *chatSession) userContent(text string) any {
 	return parts
 }
 
-// While the model is thinking there is nothing to print: reasoning is hidden
-// by default, and on this model it is most of the output. The terminal sat
-// blank for a minute with no way to tell a slow engine from a dead one — the
-// exact confusion this command exists to remove.
-//
-// So a status line runs until the first word of the reply, then gets out of
-// the way. It redraws in place on its own clock rather than per token, because
-// a token can be ten seconds away on a slow node and a spinner that only moves
-// when one arrives is not a spinner.
+// Keep progress visible while reasoning text is hidden. Redraw on a timer,
+// independent of token arrival, until the first reply text arrives.
 type chatStatus struct {
 	stop chan struct{}
 	done chan struct{}
@@ -765,7 +691,7 @@ func startChatStatus(start time.Time) *chatStatus {
 		tokens: &n, label: &label, mu: &sync.Mutex{},
 	}
 	if !isStdoutTTY() {
-		close(s.done) // a pipe gets no spinner; it would be escape codes in a file
+		close(s.done) // avoid terminal escapes in redirected output
 		return s
 	}
 	go func() {
@@ -811,8 +737,6 @@ func (s *chatStatus) end() {
 	<-s.done
 }
 
-// comma groups thousands. A context limit is a five- or six-figure number and
-// "131072" next to "130900" hides the thing worth seeing.
 func comma(n int) string {
 	s := strconv.Itoa(n)
 	if n < 0 {
@@ -828,13 +752,9 @@ func comma(n int) string {
 	return b.String()
 }
 
-// contextOf is the per-request context of one engine, and any disagreement it
-// reported, read from the mesh this node can already see.
-//
-// Zero when it cannot be determined — an engine serving no /props, a node that
-// has dropped out, a reply with no node header. The footer then shows no
-// headroom at all, which is the honest answer: a percentage against a guessed
-// limit is the kind of number that gets believed.
+// contextOf returns an engine's per-request context and any reported mismatch.
+// Zero means unknown: missing /props, an unavailable node or no node header.
+// The footer omits headroom when the limit is unknown.
 func (s *chatSession) contextOf(node, engine string) (int, string) {
 	if node == "" {
 		return 0, ""

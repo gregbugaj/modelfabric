@@ -2,8 +2,6 @@ import { $ } from "./core.js";
 import { tick } from "./polling.js";
 import { el } from "./rendering.js";
 
-/* ---------- actions ---------- */
-
 let noticeTimer = null;
 
 export function showNotice(message, tone = "info") {
@@ -12,11 +10,10 @@ export function showNotice(message, tone = "info") {
   el.dataset.tone = tone;
   el.hidden = false;
   clearTimeout(noticeTimer);
-  // Errors stay put; a load failure is worth reading properly.
+  // Keep errors visible until dismissed so load failures can be read.
   if (tone !== "error") noticeTimer = setTimeout(() => (el.hidden = true), 4500);
 }
 
-// The preferred-node control: LM Link's "Preferred Device" toggle.
 export function preferCell(n) {
   const td = el("td");
   if (n.preferred) {
@@ -57,7 +54,7 @@ export async function post(path, body) {
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
-    // Non-JSON error bodies still deserve a readable message.
+    // Preserve readable errors when the response is not JSON.
   }
   if (!resp.ok) {
     throw new Error(data?.error?.message || text || `HTTP ${resp.status}`);

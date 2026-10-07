@@ -13,15 +13,9 @@ import (
 // internal/tokentap, because the engine shim needs the same thing on whichever
 // machine actually runs the model.
 
-// tapTokens wraps w so a watcher sees the reply, and returns the function that
-// closes out the request. Both are no-ops when nobody is watching, which costs
-// one atomic read.
-//
-// Every listener that serves inference has to call this. The tap first went
-// only into FrontHandler, on the reasoning that it is where the proxied path
-// and ModelFabric's own router meet — true, and still blind to `public_listen`,
-// which is its own handler and is how every caller from outside the machine
-// arrives.
+// tapTokens wraps responses for watchers and returns a completion callback.
+// With no watchers both are no-ops costing one atomic read. Every inference
+// listener, including public_listen, must call it.
 func (s *Server) tapTokens(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, func()) {
 	if !s.tokens.Active() || !inferencePath(r) {
 		return w, func() {}
@@ -34,13 +28,6 @@ func (s *Server) tapTokens(w http.ResponseWriter, r *http.Request) (http.Respons
 	return s.tokens.Wrap(w, trace, model)
 }
 
-// handleTokenStream serves live output as server-sent events.
-//
-// SSE rather than a WebSocket, deliberately. Measured on a real run, 98% of
-// this stream is the JSON envelope repeated per token and 2% is the text — so
-// the win is in coalescing deltas, not in the transport, whose framing differs
-// by a handful of bytes. SSE also needs no dependency: Go's standard library
-// has no WebSocket server, and ModelFabric ships as one binary with none.
 func (s *Server) handleTokenStream(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	w.Header().Set("Content-Type", "text/event-stream")

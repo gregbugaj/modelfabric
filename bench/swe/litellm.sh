@@ -1,51 +1,22 @@
 #!/bin/bash
-# The "litellm" arm: a stock LiteLLM proxy in Docker that sends each request to
-# whichever of the same engines the other arms use has the fewest requests
-# open. It is the baseline a team would get by putting an off-the-shelf
-# gateway in front of their machines, with no knowledge of caches, slot counts
-# or engine speed.
+# LiteLLM baseline using least-busy placement across the same engine processes.
 #
-#   litellm.sh start RUNDIR   start it; prints BASE=<url> and KEY=<key>
-#   litellm.sh stop [RUNDIR]  remove the container; with RUNDIR, first record
-#                             its peak memory and whether it was ever killed
+#   litellm.sh start RUNDIR   print BASE and KEY for the proxy
+#   litellm.sh stop [RUNDIR]  record memory and OOM status, then remove the proxy
 #
-# What makes it a fair arm, decided by reading what ModelFabric does to a
-# request on its way to an engine:
-#
-# - It dials each llama-server directly on its engine port, not ModelFabric's
-#   shim in front of it, and so sees exactly the engine processes, flags and
-#   caches the other arms use. Sampling, thinking and reasoning settings are
-#   launch flags on those processes, not per-request rewrites, so they apply
-#   to LiteLLM unchanged.
-# - ModelFabric fills max_tokens only when a request has none, and the agent
-#   always sends 16384, so there is nothing to replicate.
-# - least-busy, no weights: the engine with the fewest in-flight requests.
-#   Random (simple-shuffle, LiteLLM's default) was the first choice and was
-#   dropped as a strawman: nobody running real machines keeps it once one is
-#   slow, so beating it would prove little. least-busy is the sensible stock
-#   setting, and the same idea as the published run's `direct` arm. It still
-#   counts a one-slot Mac's open request the same as a 5090's.
-# - num_retries 0 and cooldowns off: LiteLLM retrying or benching an engine
-#   would be routing logic of its own, and an error should count as an error.
-# - The timeout matches the agent's 1800s. LiteLLM's default is 600s, and the
-#   slowest call in the published run took 39 minutes: a stock timeout would
-#   have cut off exactly the calls this benchmark is about.
-#
-# It runs on the entrypoint when there is one, so requests take the same hops
-# as the other arms: agent -> entrypoint -> engine. It listens on the
-# entrypoint's tailnet address with a key generated per run, and only for the
-# length of that run. The engine ports behind it have no authentication of
-# their own, which is why it is never left running.
+# Dial engine ports directly; launch settings apply unchanged. Agent requests
+# supply max_tokens, so ModelFabric's missing-value default is irrelevant.
+# Disable retries and cooldowns so errors remain visible. Match the agent timeout.
+# Run on the entrypoint when configured to preserve network hops. Listen on its
+# tailnet address with a per-run key, then remove the proxy after the run.
+# Backend engine ports have no authentication.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
 IMAGE=${SWE_LITELLM_IMAGE:-ghcr.io/berriai/litellm:v1.83.14-stable}
 PORT=${SWE_LITELLM_PORT:-4000}
 NAME=mfsh-bench-litellm
-# The entrypoint has little memory to spare (4GB on entrypoint-01, about 900MB
-# free); a capped container that dies is a clear failure, where an uncapped
-# one could push ModelFabric itself out of memory. 1g was too tight: LiteLLM
-# v1.83 holds 923MiB of its own memory idle, before a single request.
+# Cap proxy memory to protect the entrypoint. LiteLLM v1.83 used 923 MiB idle, so a 1 GiB cap was insufficient.
 MEMORY=${SWE_LITELLM_MEMORY:-1536m}
 
 # on runs a command where LiteLLM lives: the entrypoint, or this machine.
@@ -57,12 +28,10 @@ on() {
   fi
 }
 
-# stop also removes the config: it holds the run's key, and a key for a proxy
-# that no longer exists is nothing anyone should find later.
+# Remove the stopped proxy's config because it contains the run key.
 stop() {
   local rundir=${1:-}
-  # A proxy the kernel killed mid-run makes LiteLLM look slow or broken for a
-  # reason that has nothing to do with routing. Say so in the run, not later.
+  # Record OOM failures so resource exhaustion is not attributed to routing.
   if [ -n "$rundir" ]; then
     mkdir -p "$rundir"
     on "docker inspect -f 'oom_killed={{.State.OOMKilled}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' $NAME 2>/dev/null; \

@@ -27,7 +27,6 @@ import (
 // ErrChecksum means a download did not match its published digest.
 var ErrChecksum = errors.New("checksum mismatch")
 
-// Progress reports download progress for one file.
 type Progress func(file string, done, total int64)
 
 // Install downloads, verifies, extracts and proves a plan, then publishes it
@@ -123,8 +122,6 @@ func (c *Client) download(ctx context.Context, a Asset, dest string, progress Pr
 	if a.SHA256 == "" {
 		return fmt.Errorf("%s has no published digest; refusing an unverifiable download", a.Name)
 	}
-	// A complete file from an earlier interrupted install is reused if it
-	// still verifies.
 	if sum, err := fileSHA256(dest); err == nil && sum == a.SHA256 {
 		return nil
 	}
@@ -218,8 +215,8 @@ func fileSHA256(p string) (string, error) {
 }
 
 // extractTarGz unpacks an archive whose entries share one top-level
-// directory, dropping that directory. Anything that would land outside dest —
-// absolute paths, "..", symlinks pointing out — is rejected, not skipped: an
+// directory, dropping that directory. Anything that would land outside dest ;
+// absolute paths, "..", symlinks pointing out; is rejected, not skipped: an
 // archive that tries is not one to install.
 func extractTarGz(r io.Reader, dest string) error {
 	gz, err := gzip.NewReader(r)
@@ -255,9 +252,9 @@ func extractTarGz(r io.Reader, dest string) error {
 		}
 		target := filepath.Join(dest, filepath.FromSlash(name))
 		// The path check above only proves the entry names a place inside
-		// dest. If a component of that path is already a symlink — a
+		// dest. If a component of that path is already a symlink; a
 		// destination that is not freshly created, say "bin" pointing
-		// somewhere else — the write follows it straight back out.
+		// somewhere else; the write follows it straight back out.
 		if err := noSymlinkUnder(dest, target); err != nil {
 			return err
 		}
@@ -300,7 +297,6 @@ func extractTarGz(r io.Reader, dest string) error {
 	}
 }
 
-// escapes reports whether a cleaned, slash-separated path leaves its root.
 // noSymlinkUnder refuses to write through a symlinked component between dest
 // and target. It is the difference between "this entry names a path inside the
 // package" and "this write lands inside the package".
@@ -335,10 +331,8 @@ func escapes(p string) bool {
 
 var devicePattern = regexp.MustCompile(`^\s*(CUDA|ROCm|Vulkan)\d+:\s*(.+)$`)
 
-// Probe proves a package runs here: the engine must start, and for a GPU
-// backend enumerate at least one device of that kind — and every GPU the
-// survey found, so a build compiled without this card's architecture is
-// caught at install rather than at the first load. It returns the devices.
+// Probe starts the engine and verifies that it enumerates every surveyed GPU
+// of the required backend. Return the devices, or reject an incompatible build.
 func Probe(ctx context.Context, pkgDir, vendorDir, backend string, hw runtime.Hardware) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -397,7 +391,7 @@ func tail(s string, n int) string {
 }
 
 // writeManifests writes LM Studio's two package files, so ModelFabric's own reader
-// — the same one that reads LM Studio's packages — discovers this one.
+// ; the same one that reads LM Studio's packages; discovers this one.
 func writeManifests(dir string, p *Plan, devices []string) error {
 	platform := map[string]string{"x64": "x86_64", "arm64": "arm64"}[p.Arch]
 	gpu := map[string]any{}
@@ -438,8 +432,6 @@ func writeManifests(dir string, p *Plan, devices []string) error {
 	if err := writeJSON(filepath.Join(dir, "backend-manifest.json"), manifest); err != nil {
 		return err
 	}
-	// LM Studio's display-data.json, likewise: the name people read, and
-	// release notes naming the upstream build.
 	display := [][]any{{"en", map[string]any{
 		"langKey":     "en",
 		"displayName": p.DisplayName,

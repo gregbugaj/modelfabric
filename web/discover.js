@@ -6,9 +6,6 @@ import { el } from "./rendering.js";
 import { operations, progressBar } from "./runtime.js";
 import { compactCount, downloadTargets, formatBytes, platformBadge, quantRows, relativeTime, renderMarkdown } from "./ui-model.js";
 
-/* ---------- Discover: the hub, LM Studio's model browser ---------- */
-
-// A small icon set, drawn inline so the dashboard fetches nothing.
 const ICONS = {
   download: '<path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/>',
   heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10Z"/>',
@@ -21,21 +18,14 @@ const ICONS = {
   star: '<path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"/>',
   chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
 };
-// Platform glyphs, in the same stroked style as ICONS. A node's platform is
-// worth seeing at a glance now that the fleet is mixed: only a Mac runs Metal
-// and MLX, only Linux runs llm-d.
 export const PLATFORM_ICONS = {
-  // Each platform in its own colours, as people know them: Tux's orange beak
-  // and feet, the Apple stripes, Microsoft's four panes. The body of the
-  // penguin is currentColor so it stays visible in both themes; the cut-outs
-  // are the surface behind the icon, which is the table row or a node circle.
+  // Use currentColor for contrast in both themes and the surrounding
+  // surface color for icon cut-outs.
   mac: '<path fill="url(#mfsh-apple)" d="M16.8 13.1c0 3.6-2.2 6.7-3.7 6.7-.85 0-1.25-.42-2.1-.42s-1.28.42-2.12.42c-1.5 0-3.68-3.1-3.68-6.7 0-2.7 1.85-4.3 3.6-4.3.92 0 1.55.5 2.2.5s1.22-.5 2.18-.5c1.75 0 3.62 1.6 3.62 4.3Z"/><path fill="#61bb46" d="M13.05 6.35c.62-.75 1.68-1.25 2.55-1.25.12.95-.28 1.9-.9 2.6-.62.72-1.6 1.2-2.5 1.15-.13-.9.23-1.8.85-2.5Z"/>',
   linux: '<path fill="currentColor" d="M12 2.6c2 0 3.3 1.5 3.3 3.6 0 1 .35 1.7 1 2.5 1.2 1.5 2.1 3.4 2.1 5.4 0 3.6-2.6 5.8-6.4 5.8S5.6 17.7 5.6 14.1c0-2 .9-3.9 2.1-5.4.65-.8 1-1.5 1-2.5 0-2.1 1.3-3.6 3.3-3.6Z"/><ellipse cx="12" cy="15.4" rx="3" ry="3.6" fill="var(--surface)"/><circle cx="10.5" cy="6.2" r="1.05" fill="var(--surface)"/><circle cx="13.5" cy="6.2" r="1.05" fill="var(--surface)"/><circle cx="10.6" cy="6.35" r=".45" fill="currentColor"/><circle cx="13.4" cy="6.35" r=".45" fill="currentColor"/><path fill="#f7a41d" d="M12 7.5c.75 0 1.35.5 1.35 1s-.6 1-1.35 1-1.35-.5-1.35-1 .6-1 1.35-1Z"/><path fill="#f7a41d" d="M8.7 19.6c-.7.8-1.6 1.3-2.5 1.5.2-1 .8-1.9 1.6-2.4Zm6.6 0 .9-.9c.8.5 1.4 1.4 1.6 2.4-.9-.2-1.8-.7-2.5-1.5Z"/>',
   windows: '<path fill="#f25022" d="M3.8 6.1 11 5.1v6.4H3.8Z"/><path fill="#7fba00" d="m12.2 4.9 8-1.1v7.7h-8Z"/><path fill="#00a4ef" d="M3.8 12.7H11v6.3l-7.2-1Z"/><path fill="#ffb900" d="M12.2 12.7h8v7.6l-8-1.1Z"/>',
 };
 
-// The Apple stripes live in one hidden <defs> the icons point at, so the
-// gradient is defined once however many nodes are on screen.
 export function ensurePlatformDefs() {
   if (document.getElementById("mfsh-plat-defs")) return;
   const defs = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -55,8 +45,7 @@ export function ensurePlatformDefs() {
   document.body.append(defs);
 }
 
-// platformTag renders a node's platform as a glyph with the detail on hover.
-// A node that does not report one shows nothing rather than a guess.
+// Do not infer a platform when the node omits it.
 export function platformTag(platform, osVersion, size = 19) {
   const b = platformBadge(platform, osVersion);
   const glyph = PLATFORM_ICONS[b.key];
@@ -79,8 +68,6 @@ function withIcon(name, text, cls = "") {
   return s;
 }
 
-// The creator's picture, through the node (cached); initials until it loads
-// or when there is none.
 function avatar(org, size = 32) {
   const box = el("span", "avatar");
   box.style.width = box.style.height = `${size}px`;
@@ -101,7 +88,7 @@ function contextLabel(n) { return n ? (n >= 1024 ? `${Math.round(n / 1024)}K` : 
 
 export const dv = { author: "", q: "", results: [], searched: false, repo: "", details: null, quant: "", chosen: new Set(),
   storage: {}, storageAt: 0, more: [], timer: 0,
-  pickerOpen: false }; // the quantization list stays collapsed until asked for
+  pickerOpen: false };
 
 async function dvSearch() {
   dv.searched = true;
@@ -146,7 +133,7 @@ async function refreshStorage() {
   if (Date.now() - dv.storageAt < 30e3) return;
   dv.storageAt = Date.now();
   await Promise.all(mm.catalog.perNode.map(async (n) => {
-    try { dv.storage[n.node] = await fetchJSON(nodeAPI(n.node, "/api/v1/storage")); } catch { /* unknown */ }
+    try { dv.storage[n.node] = await fetchJSON(nodeAPI(n.node, "/api/v1/storage")); } catch { /* Metadata unavailable. */ }
   }));
 }
 
@@ -177,7 +164,7 @@ async function loadMore(d) {
   try {
     const r = await fetchJSON(`/api/v1/hub/search?${new URLSearchParams({ q: who, author: "" })}`);
     dv.more = (r.results ?? []).filter((m) => m.repo !== d.repo).slice(0, 6);
-  } catch { /* optional */ }
+  } catch { /* Optional metadata. */ }
   if (dv.details === d) renderMore();
 }
 
@@ -187,7 +174,6 @@ function renderPage() {
   page.replaceChildren();
   const name = d.repo.split("/")[1].replace(/-GGUF$/i, "");
 
-  // Header: who made it, what it is called, where it lives.
   const head = el("div", "dv-head");
   const title = el("div", "dv-title");
   const titleText = el("div", "dv-title-text");
@@ -211,7 +197,6 @@ function renderPage() {
   head.append(title, stats);
   page.append(head);
 
-  // What it is, at a glance.
   const facts = el("div", "dv-facts");
   const fact = (label, value, cls = "") => {
     if (!value) return;
@@ -255,17 +240,11 @@ function renderDownloadCard(d) {
     return card;
   }
 
-  // 1. Which file: LM Studio's download options.
-  // 1. Which file. A popular repo ships a dozen quantizations, so the list
-  // collapses to the chosen one — as LM Studio's download options do — and
-  // opens to a scrollable list rather than pushing the page down.
+  // Collapse the quantization list to avoid expanding the page for large repos.
   card.append(el("div", "dv-step", "Quantization"));
   const chosenOpt = d.options.find((o) => o.quant === dv.quant) ?? d.options[0];
   const { rows: qrows, common } = quantRows(d.options, chosenOpt?.quant);
 
-  // The size column: the number, and under it a bar against the largest file.
-  // The choice between quantizations is quality against bytes on a disk, so
-  // the bytes are drawn, not only printed.
   const sizeCell = (r, bar) => {
     const cell = el("span", "dv-size");
     cell.append(el("span", "dv-bytes", r.sizeLabel));
@@ -279,8 +258,6 @@ function renderDownloadCard(d) {
     return cell;
   };
 
-  // The quantization is the row's identity, so it leads; a badge earns its
-  // place only by telling this row from the others.
   const optionLabel = (r, withCheck) => {
     const label = el("span", "dv-option-main");
     if (withCheck) {
@@ -313,21 +290,15 @@ function renderDownloadCard(d) {
 
   const list = el("div", "dv-options");
   if (qrows.length > 1) {
-    // One line for everything the options agree on, instead of the same badge
-    // on every row: format, and a projector they all carry.
     const facts = [`${common.count} builds`];
     if (common.format) facts.push(common.format);
     if (common.projector) facts.push("vision projector included");
-    // Outside the scroll area: it describes the list, so it should not scroll
-    // away as you look down it.
     picker.append(el("div", "dv-picker-head", facts.join(" \u00b7 ")));
   }
   for (const r of qrows) {
     const o = d.options.find((x) => x.quant === r.quant);
-    // A label with a real radio, not a button: a <button> is an awkward grid
-    // container (its children do not become grid items, so the size column
-    // collapsed) and it carries the UA's own background, which read as grey
-    // blocks in dark mode.
+    // A label supports the grid layout; a button's native layout and
+    // background broke the size column and dark theme.
     const row = el("label", "dv-option" + (r.active ? " active" : ""));
     const radio = el("input", "dv-radio");
     radio.type = "radio";
@@ -347,7 +318,6 @@ function renderDownloadCard(d) {
   picker.append(list);
   card.append(picker);
 
-  // 2. Where: the nodes, as cards to tick.
   card.append(el("div", "dv-step", "Download to"));
   const nodes = el("div", "dv-nodes");
   nodes.id = "dv-nodes";
@@ -424,7 +394,6 @@ function renderDownloadSection(card = document) {
   go.addEventListener("click", dvDownload);
   const total = option ? formatBytes(option.bytes * Math.max(n, 1)) : "";
   action.append(go, el("span", "muted small", n ? `${total} in total · runs on each node; this tab can close` : ""));
-  // Recent failures and cancellations, so a stopped download is not a mystery.
   for (const [node, list] of Object.entries(ops)) {
     for (const op of list) {
       if (op.kind !== "download" || !op.model.startsWith(d.repo) || op.state === "running" || op.state === "succeeded") continue;
@@ -435,7 +404,6 @@ function renderDownloadSection(card = document) {
   }
 }
 
-// Called on every poll: progress and states change; the rest stays put.
 export function renderDownloads() {
   if (dv.details) renderDownloadSection();
 }
@@ -484,8 +452,6 @@ async function cancelDownload(node, op) {
   tick();
 }
 
-// Discover opens over My Models, as LM Studio's does: finding a model is
-// part of managing models, not a place of its own.
 $("dv-open").addEventListener("click", () => {
   $("dv-dialog").showModal();
   if (!dv.searched) dvSearch();

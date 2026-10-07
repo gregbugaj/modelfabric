@@ -1,19 +1,6 @@
 import icons from '../data/brand-icons.json';
 
-/*
- * What ModelFabric is built on — a compact strip for the footer.
- *
- * Only the projects ModelFabric actually stands on: the transport, the engines, the
- * model source, and what it optionally puts in the request path. Go and uv used
- * to be here and were cut; how something is compiled is not what it is built
- * on. A proxy a user chooses to put in front is not something ModelFabric is
- * built on either.
- *
- * Marks come from simple-icons (CC0) where the project has one. llama.cpp,
- * MLX and llm-d don't, so they get a typographic tile rather than a logo
- * someone invented for them. Each link carries its role as a title, so
- * the detail survives without cluttering a footer.
- */
+/* Use simple-icons (CC0) when available; use text tiles for projects without marks. */
 
 type Item = {
   name: string;

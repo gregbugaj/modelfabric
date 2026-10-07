@@ -1,13 +1,4 @@
-/* The dashboard's styles, in the order they cascade.
- *
- * CSS has no scoping, so the only semantics of splitting a stylesheet is the
- * order its parts are concatenated in: these @imports are that order, and each
- * part is a verbatim line range of the single styles.css this replaced. Adding
- * a section means adding a file and an @import in the position it belongs.
- *
- * Kept as an index rather than as <link> tags in index.html so the order lives
- * in one place, next to the files it orders.
- */
+/* Import order defines the cascade; add new styles at the required position. */
 @import "./css/base.css";
 @import "./css/sidebar-rail.css";
 @import "./css/content.css";

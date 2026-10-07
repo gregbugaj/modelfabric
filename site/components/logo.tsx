@@ -1,11 +1,4 @@
-/*
- * The ModelFabric mark: three peers and the links between them, same geometry as the
- * dashboard's rail (web/index.html).
- *
- * It paints itself in the product blue rather than inheriting currentColor.
- * Inheriting made it render as plain navbar text — black in light mode, white
- * in dark — which is not a logo, it is a glyph.
- */
+/* Match the dashboard mark in web/index.html and preserve its color across themes. */
 export function Logo({ size = 20, tone = 'brand' }: { size?: number; tone?: 'brand' | 'inherit' }) {
   return (
     <svg

@@ -21,7 +21,6 @@ func TestPinnedInputsRejectLaterTampering(t *testing.T) {
 	if _, _, err := store.Prepare("m", dir, []string{model}, ""); err != nil {
 		t.Fatalf("first prepare should pin: %v", err)
 	}
-	// Unchanged files keep working.
 	if _, _, err := store.Prepare("m", dir, []string{model}, ""); err != nil {
 		t.Fatalf("second prepare on unchanged files: %v", err)
 	}
@@ -70,7 +69,6 @@ func TestPinSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A fresh Store over the same directory is what a restart looks like.
 	second, _ := NewStore(pinDir)
 	if _, _, err := second.Prepare("m", dir, []string{model}, ""); !errors.Is(err, ErrChanged) {
 		t.Fatalf("pin did not survive restart: %v", err)
@@ -85,7 +83,7 @@ func TestUnpinIsIdempotent(t *testing.T) {
 }
 
 // Re-hashing a 16GB model on every load costs seconds. An unchanged file is
-// accepted on its size and mtime instead — but any change must still be caught.
+// accepted on its size and mtime instead; but any change must still be caught.
 func TestFastPathSkipsHashingUnchangedFiles(t *testing.T) {
 	dir := t.TempDir()
 	model := write(t, dir, "model.gguf", "weights")
@@ -95,7 +93,7 @@ func TestFastPathSkipsHashingUnchangedFiles(t *testing.T) {
 		t.Fatalf("first prepare: %v", err)
 	}
 	// Corrupt the *content* while restoring size and mtime, then confirm the
-	// fast path accepts it — this documents the trade rather than hiding it.
+	// fast path accepts it; this documents the trade rather than hiding it.
 	info, _ := os.Stat(model)
 	if err := os.WriteFile(model, []byte("XXXXXXX"), 0o644); err != nil {
 		t.Fatal(err)
@@ -107,7 +105,6 @@ func TestFastPathSkipsHashingUnchangedFiles(t *testing.T) {
 		t.Fatalf("same size and mtime should take the fast path: %v", err)
 	}
 
-	// With VerifyFull the same situation must be rejected.
 	store.VerifyFull = true
 	if _, _, err := store.Prepare("m", dir, []string{model}, ""); !errors.Is(err, ErrChanged) {
 		t.Fatalf("VerifyFull must re-hash and reject, got %v", err)
@@ -150,7 +147,6 @@ func TestFastPathCatchesSizeAndMtimeChanges(t *testing.T) {
 			_, _, err := store.Prepare("m", dir, []string{model}, "")
 			switch tc.name {
 			case "mtime changes":
-				// Content is unchanged, so the re-hash must succeed.
 				if err != nil {
 					t.Fatalf("an mtime-only change should re-hash and pass: %v", err)
 				}
@@ -165,7 +161,7 @@ func TestFastPathCatchesSizeAndMtimeChanges(t *testing.T) {
 
 // Two keys that sanitize to the same name shared a pin file, so one model
 // could be verified against another's manifest; and a corrupt or unreadable
-// pin was treated as "not pinned", which re-blessed whatever was on disk —
+// pin was treated as "not pinned", which re-blessed whatever was on disk ;
 // the opposite of what pinning is for.
 func TestPinsDoNotCollideAndCorruptionIsNotSilent(t *testing.T) {
 	s, err := NewStore(t.TempDir())
@@ -175,18 +171,15 @@ func TestPinsDoNotCollideAndCorruptionIsNotSilent(t *testing.T) {
 	if s.path("a/b") == s.path("a_b") {
 		t.Fatal("two keys share one pin file")
 	}
-	// An unseen key is simply unpinned.
 	if _, ok, err := s.get("never-seen"); ok || err != nil {
 		t.Fatalf("unseen key: ok=%v err=%v; want false,nil", ok, err)
 	}
-	// A corrupt pin is an error, not "unpinned".
 	if err := os.WriteFile(s.path("broken"), []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.get("broken"); err == nil || ok {
 		t.Fatalf("a corrupt pin was treated as missing (ok=%v err=%v)", ok, err)
 	}
-	// A pin that records a different key does not speak for this one.
 	if err := os.WriteFile(s.path("mine"), []byte(`{"key":"someone-else"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

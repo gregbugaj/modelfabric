@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// The reason this package exists rather than a fresh key file: the gateway's key
-// is deployed in clients, proxies and benchmark environments. Reading it is what
-// keeps those working across the gateway's removal.
+// Legacy gateway keys remain valid to preserve existing client credentials.
 func TestTheGatewaysKeyIsStillHonoured(t *testing.T) {
 	home := t.TempDir()
 	legacy := filepath.Join(home, "gateway")
@@ -29,7 +27,6 @@ func TestTheGatewaysKeyIsStillHonoured(t *testing.T) {
 		t.Errorf("Key = %q, want the deployed key %q: generating a new one would "+
 			"revoke every credential already issued", got, deployed)
 	}
-	// And nothing new is written beside it, which would be two keys for one node.
 	if _, err := os.Stat(filepath.Join(home, "api.key")); err == nil {
 		t.Error("a second key file was created while a usable one existed")
 	}

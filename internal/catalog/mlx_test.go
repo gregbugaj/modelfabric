@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// writeMLXModel lays out a model directory the way Hugging Face ships one.
 func writeMLXModel(t *testing.T, dir, config string, shards ...string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

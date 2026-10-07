@@ -2,8 +2,7 @@ import type { MetadataRoute } from 'next';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Walks content/ rather than keeping a hand-written list, so a new page is in
-// the sitemap the moment it exists.
+// Derive routes from content/ so new pages enter the sitemap automatically.
 function pages(dir: string, base = ''): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {

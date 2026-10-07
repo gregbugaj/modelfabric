@@ -119,12 +119,10 @@ func (s *Server) chatInfer(ctx context.Context, body []byte) (io.ReadCloser, str
 	return resp.Body, resp.Header.Get("X-Fabric-Node"), nil
 }
 
-// innerHeader marks a /v1/responses call made by the Responses layer itself,
-// so the front door routes it instead of handing it back to the layer. It is
-// honoured only with the node key: nobody else can skip the layer.
+// innerHeader marks Responses-layer calls for routing without recursion.
+// Only requests authenticated with the node key may set it.
 const innerHeader = "X-Fabric-Inner"
 
-// layered reports a /v1/responses request the Responses layer should answer.
 func (s *Server) layered(r *http.Request) bool {
 	// Without a front door of its own to call there is nothing to layer on,
 	// and the request is routed as it always was.

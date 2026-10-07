@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-// Every listener that serves inference must tap, and each one is a separate
-// handler. The tap first went only into FrontHandler, which left
-// public_listen — the listener every caller from outside the machine uses —
-// showing nothing at all. A third listener added later would be blind the
-// same way, so both are asserted here by name.
+// Every inference listener must tap responses. Cover both handlers because
+// public_listen previously bypassed token capture.
 func TestEveryInferenceListenerTaps(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -27,10 +24,6 @@ func TestEveryInferenceListenerTaps(t *testing.T) {
 			if rec := call(tc.handler(f), testKey, ""); rec.Code != http.StatusOK {
 				t.Fatalf("status %d, want 200", rec.Code)
 			}
-			// The fixture's engine answers with plain JSON rather than an event
-			// stream, so there are no deltas — but a watcher must still be told
-			// the request happened and ended, or its view of a busy node is a
-			// blank panel.
 			select {
 			case e := <-ch:
 				if e.Trace == "" {

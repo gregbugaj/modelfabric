@@ -7,12 +7,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/config"
 )
 
-// Online is tailscaled's control-plane opinion and it can be wrong in the
-// direction that matters. minion reported *itself* offline while its data
-// plane was fine — direct LAN path, tailscale ping 1ms, /z/state answering,
-// engines serving — and ModelFabric dropped it from the mesh. A benchmark would
-// then have run across two nodes while reporting three, which is the class of
-// error that already invalidated one pilot.
+// Regression: a peer can serve traffic while Tailscale reports it offline.
+// Recently active peers still need an HTTP probe.
 func TestReachableTrustsTheDataPlane(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
@@ -36,11 +32,8 @@ func TestReachableTrustsTheDataPlane(t *testing.T) {
 	}
 }
 
-// A peer's own report has to survive the hop into the peer table. Accepted and
-// Scheduler were declared on PeerView and never filled: a peer's front-door
-// count read 0 however busy it was, and nothing in the mesh could name the
-// node scheduling for it — which is exactly the node an entrypoint deployment
-// needs to find.
+// Regression: propagate Accepted and Scheduler from the peer's report into
+// PeerView so remote front-door load and scheduler ownership remain visible.
 func TestPeerViewCarriesWhatThePeerReported(t *testing.T) {
 	m := New(config.Default(), "self")
 	m.upsert("100.0.0.2", "sites-01", "http://100.0.0.2:1234", &NodeState{

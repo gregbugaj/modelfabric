@@ -17,10 +17,8 @@ import (
 // with a tool on offer it calls the tool; given a tool result it answers from
 // it; otherwise it reports how many messages it was sent.
 type fakeModel struct {
-	bodies []map[string]any
-	// loop makes it call the tool every time, as a model stuck in a loop does.
-	loop bool
-	// badArgs makes its first tool call carry arguments that are not JSON.
+	bodies  []map[string]any
+	loop    bool
 	badArgs bool
 }
 
@@ -107,7 +105,6 @@ func TestAConversationIsContinuedByItsResponseID(t *testing.T) {
 	if err != nil || second.Output[0].Content != "4 messages" {
 		t.Fatalf("second: %+v %v; want system, user, assistant, user", second.Output, err)
 	}
-	// The first response can be continued again: a branch, not a move.
 	branch, _, _ := r.Run(context.Background(), req(t, `{"model":"m","input":"Another way.","previous_response_id":"`+first.ResponseID+`"}`), nil)
 	if branch.Output[0].Content != "4 messages" {
 		t.Fatalf("branch: %+v", branch.Output)
@@ -158,8 +155,6 @@ func TestStoreAndItsRefusals(t *testing.T) {
 	}
 }
 
-// The model asks for a tool, this node runs it on the MCP server and hands
-// the result back, and the answer comes from the result.
 func TestToolsAreRunForTheModel(t *testing.T) {
 	tests := []struct {
 		name, integration string

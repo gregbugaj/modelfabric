@@ -132,9 +132,6 @@ func TestTokensAPIWithoutAStore(t *testing.T) {
 	}
 }
 
-// Rotating from the dashboard cuts off the old node key at once, without a
-// restart, and leaves named tokens working: they are the reason to rotate
-// rather than to be afraid of it.
 func TestRotatingTheNodeKey(t *testing.T) {
 	f := newFrontFixture(t, false, true)
 	home := t.TempDir()

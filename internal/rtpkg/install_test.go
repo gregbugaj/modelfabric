@@ -9,10 +9,8 @@ import (
 	"testing"
 )
 
-// The runtime installer extracts archives, so "inside the package" has to
-// mean where the bytes land, not just what the entry is called. A destination
-// that already contains a symlinked directory used to carry the write straight
-// back out of the package.
+// Regression: symlinked destination directories must not redirect archive
+// extraction outside the runtime package.
 func TestExtractRefusesToWriteThroughASymlink(t *testing.T) {
 	outside := t.TempDir()
 	dest := t.TempDir()

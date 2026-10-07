@@ -1,18 +1,6 @@
-// Package bench measures how fast a model runs on one machine, in a fixed
-// shape that can be repeated: prompts of 1K to 64K tokens with a fixed 128
-// out, then 1, 2, 4 and 8 requests at once, sharing a prompt or not.
-//
-// It is not the tuner. The tuner asks how many slots a machine should run and
-// sweeps that; this asks how fast the model is here, and keeps everything that
-// changes the answer still and written down: the exact text sent (corpus.go),
-// the exact number of tokens generated, the engine's build and settings, the
-// model file, the GPU and its driver. A result that cannot be reproduced
-// cannot be compared, and comparing is the point.
-//
-// Like the tuner it runs on the node it measures, against that node's own
-// engine: through the router it would measure wherever the router chose. It
-// reloads the engine for each phase (one slot with a long context for the
-// prompt sweep, eight short slots for batching) and puts back what it found.
+// Package bench measures local engine performance over prompt lengths and
+// concurrency levels. Reports record corpus, engine, model, and hardware inputs.
+// Each phase reloads the local engine; original settings are restored afterward.
 package bench
 
 import (
@@ -48,7 +36,6 @@ var (
 	StandardBatch = []int{2, 4, 8}
 )
 
-// Fill supplies the standard suite where the caller chose nothing.
 func (c *Config) Fill() {
 	if c.Prompts == "" {
 		c.Prompts = "prose"
@@ -72,7 +59,6 @@ func (c *Config) Fill() {
 	sort.Ints(c.Batch)
 }
 
-// Single is one prompt length, one request at a time.
 type Single struct {
 	Test         string  `json:"test"`          // pp4096/tg128
 	PromptTokens int     `json:"prompt_tokens"` // as the engine counted them
@@ -86,7 +72,6 @@ type Single struct {
 	Error        string  `json:"error,omitempty"`
 }
 
-// Batch is n requests at once.
 type Batch struct {
 	N       int     `json:"n"`
 	TGTPS   float64 `json:"tg_tps"`  // generated tokens across all, per second of generation
@@ -102,7 +87,6 @@ type Batch struct {
 	Error     string  `json:"error,omitempty"`
 }
 
-// Report is a run, with everything needed to run it again.
 type Report struct {
 	Node    string     `json:"node"`
 	Model   string     `json:"model"`
@@ -117,11 +101,10 @@ type Report struct {
 	Command string     `json:"command"`
 	Notes   []string   `json:"notes,omitempty"`
 	Took    float64    `json:"took_s"`
-	Phase   string     `json:"phase,omitempty"` // while running: what it is doing
+	Phase   string     `json:"phase,omitempty"`
 	Partial bool       `json:"partial,omitempty"`
 }
 
-// Machine is the hardware and system the numbers belong to.
 type Machine struct {
 	OS       string `json:"os,omitempty"`
 	GPU      string `json:"gpu,omitempty"`
@@ -131,8 +114,6 @@ type Machine struct {
 	Version  string `json:"modelfabric,omitempty"`
 }
 
-// EngineInfo is what ran the model: the build and every setting it loaded
-// with, per phase, and the model file.
 type EngineInfo struct {
 	Runtime string         `json:"runtime,omitempty"`
 	File    string         `json:"file,omitempty"`
@@ -143,7 +124,6 @@ type EngineInfo struct {
 	Timings string         `json:"timings"`               // "engine" or "client"
 }
 
-// Engine is the node's model, for the length of a run.
 type Engine interface {
 	tuner.Engine
 	// Loaded describes what is serving the model now: its process (for
@@ -195,7 +175,6 @@ func Run(ctx context.Context, e Engine, mem Memory, cfg Config, progress func(Re
 		}
 	}()
 
-	// Phase 1: one slot with room for the longest prompt.
 	longest := cfg.PP[len(cfg.PP)-1]
 	singleCtx := roundUp(longest+cfg.TG+512, 1024)
 	emit(fmt.Sprintf("loading with one slot of %d tokens", singleCtx))
@@ -245,7 +224,6 @@ func Run(ctx context.Context, e Engine, mem Memory, cfg Config, progress func(Re
 		emit(row.Test)
 	}
 
-	// Phase 2: as many slots as the largest batch, each short.
 	if len(cfg.Batch) > 0 && ctx.Err() == nil {
 		maxN := cfg.Batch[len(cfg.Batch)-1]
 		batchCtx := roundUp(cfg.BatchPP+cfg.TG+512, 1024)

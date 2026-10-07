@@ -12,9 +12,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tuner"
 )
 
-// A benchmark and a tuning sweep both reload the engine. Run together, each
-// would measure a load the other had just replaced, as two overlapping sweeps
-// once did on minion: every row "did not run".
+// Benchmarks and tuning sweeps must not overlap: each reloads the engine
+// and would invalidate the other's measurement.
 func TestBenchAndTuneExcludeEachOther(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -39,7 +39,7 @@ import (
 )
 
 // ErrInputVerification covers digest mismatch, missing files, invalid paths and
-// incomplete manifests — the spec's InputVerificationError.
+// incomplete manifests; the spec's InputVerificationError.
 var ErrInputVerification = errors.New("input verification failed")
 
 // VerifiedInput is a content-verified local tree.
@@ -60,14 +60,13 @@ type OCIImageRef struct {
 //
 // Runtime and RuntimeImage are mutually exclusive. This native host uses
 // Runtime; RuntimeImage represents content pinned by container digest.
-// The model is always a VerifiedInput — never an image reference.
+// The model is always a VerifiedInput; never an image reference.
 type PreparedInputs struct {
 	Runtime      *VerifiedInput `json:"runtime,omitempty"`
 	RuntimeImage *OCIImageRef   `json:"runtime_image,omitempty"`
 	Model        VerifiedInput  `json:"model"`
 }
 
-// Validate enforces the runtime/model asymmetry.
 func (p PreparedInputs) Validate() error {
 	switch {
 	case p.Runtime == nil && p.RuntimeImage == nil:
@@ -115,7 +114,7 @@ func BuildManifest(root string, files []string) ([]byte, error) {
 		}
 		// Metadata and content come from one open file handle. Two pathname
 		// lookups could describe two different objects if the file, or a
-		// symlink to it, were replaced in between — a manifest recording one
+		// symlink to it, were replaced in between; a manifest recording one
 		// file's size and another's digest.
 		info, sum, err := statAndSHA256(abs)
 		if err != nil {
@@ -126,7 +125,7 @@ func BuildManifest(root string, files []string) ([]byte, error) {
 		}
 		// The manifest is line-oriented, so a name containing a newline or a
 		// carriage return would be written as several records that could not
-		// be parsed back — or could be made to parse as something else.
+		// be parsed back; or could be made to parse as something else.
 		if strings.ContainsAny(rel, "\n\r") {
 			return nil, fmt.Errorf("%w: %q contains a line break", ErrInputVerification, rel)
 		}
@@ -232,11 +231,8 @@ func VerifyInput(root string, manifest []byte, expectedSHA256, revision string) 
 	}, nil
 }
 
-// Revalidate re-checks prepared inputs immediately before launch.
-//
-// Verification and startup are separate moments, and the spec is explicit that
-// "a manifest must not bless mutable files that are replaced between
-// verification and startup". Calling this at spawn time closes that window.
+// Revalidate checks prepared inputs again immediately before launch to detect
+// files replaced since initial verification.
 func (p PreparedInputs) Revalidate(manifests Manifests) error {
 	if err := p.Validate(); err != nil {
 		return err
@@ -266,12 +262,8 @@ func (p PreparedInputs) Revalidate(manifests Manifests) error {
 // the bytes is what makes launch-time revalidation possible.
 type Manifests map[string][]byte
 
-// VerifyTree is the convenience path for a tree we are adopting for the first
-// time: build the manifest and return it alongside its digest.
-//
-// It does not then verify the tree against that manifest. Doing so would re-read
-// and re-hash every file to confirm what BuildManifest just measured — provably
-// redundant, and for a multi-gigabyte model it doubles the cost of every load.
+// VerifyTree builds a manifest and digest for a tree being adopted.
+// BuildManifest already hashes every file, so a second verification is redundant.
 func VerifyTree(root string, files []string, revision string) (*VerifiedInput, []byte, error) {
 	manifest, err := BuildManifest(root, files)
 	if err != nil {

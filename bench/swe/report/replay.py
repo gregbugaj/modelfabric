@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Write the numbers behind the router comparison page.
+"""Generate measurement data for the router comparison page.
 
 Usage:
   replay.py --arm KEY=LABEL ... --run KEY=RUN_DIR ... [--note KEY=RUN_DIR:TEXT]
             --out site/data/routing.json
 
-Each RUN_DIR is an AIPerf replay that aiperf-calls.py has been run on, so it
-holds calls.jsonl and calls.meta.json. Several --run for one arm are that
-arm's repeats, in the order given. The first --arm is ours and is drawn last,
-on top.
-
-Everything on the page that is a measurement comes from this file, so adding a
-run means saving its engine logs, running aiperf-calls.py on it, and running
-this again with one more --run.
+Each RUN_DIR must contain calls.jsonl and calls.meta.json from aiperf-calls.py.
+Repeated --run values for an arm retain their supplied order. The first arm
+is drawn last, above the others. Add runs by saving engine logs, processing
+them with aiperf-calls.py and supplying additional --run arguments.
 """
 import argparse
 import json

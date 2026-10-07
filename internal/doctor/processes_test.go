@@ -40,20 +40,16 @@ func ownership(t *testing.T, stateDir string, pid int) Check {
 	return d.checks[0]
 }
 
-// The case this section was written for: a node that answers every request but
-// was not started by `mfsh up`, so `mfsh down` reports "no node is running"
-// about it. Every other check called that node healthy, which was true and
-// useless -- the process had to be found with `ss -ltnp`.
+// Report nodes started outside `mfsh up` even when they pass health checks
+// but lack the ownership record required by `mfsh down`.
 func TestNodeStartedOutsideMfshUpIsReported(t *testing.T) {
-	got := ownership(t, t.TempDir(), os.Getpid()) // a state dir with no record
+	got := ownership(t, t.TempDir(), os.Getpid())
 	if got.Status != StatusWarn {
 		t.Errorf("status %q, want a warning: an unstoppable node reported as fine is how this hid", got.Status)
 	}
 	if !strings.Contains(got.Detail, "mfsh down` will not stop it") {
 		t.Errorf("the detail does not say what is wrong: %q", got.Detail)
 	}
-	// The fix line is the whole value here -- it is what had to be worked out
-	// by hand, twice.
 	if !strings.Contains(got.Fix, "kill -TERM") || !strings.Contains(got.Fix, "mfsh up") {
 		t.Errorf("fix should say how to stop and restart it, got %q", got.Fix)
 	}
@@ -72,7 +68,6 @@ func TestRecordNamingADifferentProcessIsReported(t *testing.T) {
 	}
 }
 
-// A matching record is the normal case, and must not nag.
 func TestManagedNodeIsReportedOK(t *testing.T) {
 	pid := os.Getpid()
 	birth, err := osproc.BirthID(pid)

@@ -1,9 +1,8 @@
-"""Replay one SWE trajectory turn by turn against one engine.
+"""Replay one SWE trajectory sequentially against one engine.
 
 Usage: replay-sequential.py TRAJ_JSON TURNS [ENGINE_URL]
-This is the agent's real access pattern: one conversation growing turn by turn
-in one slot. It is what reproduces context-checkpoint growth; load the engine
-with `-arg -v` to see "created context checkpoint ... size" lines.
+Growing one conversation in a slot reproduces context-checkpoint growth.
+Load with -arg -v to log checkpoint creation and size.
 """
 import json, sys, urllib.request
 # Arguments are checked before the first request goes out: TURNS was parsed

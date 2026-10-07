@@ -6,15 +6,9 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/osproc"
 )
 
-// mlock keeps a model's weights resident, which is what LM Studio asks for.
-// llama.cpp locks the whole mapped file, so on a machine whose RAM is smaller
-// than the model it either fails (a small RLIMIT_MEMLOCK, and a warning on
-// every load) or succeeds and pins more memory than the system can spare.
-// Both happen on a GPU box with modest RAM: minion has 15GB for a 16GB 27B.
-// The weights live in VRAM there anyway, so locking the host copy buys
-// nothing.
+// llama.cpp locks the whole mapped weights file. If it exceeds RLIMIT_MEMLOCK,
+// locking fails; if it exceeds available RAM, locking can starve the host.
 
-// Probes, replaced in tests.
 var (
 	memAvailable = readMemAvailable
 	memTotal     = readMemTotal
@@ -38,12 +32,8 @@ func fitLoadMode(mode string, size int64) string {
 			}
 		}
 		if len(keep) == 0 {
-			// "mlock" alone is try_mmap=false with keep_in_memory=true, so
-			// mmap here does go against what was asked. It is still the right
-			// answer: the reason the lock was dropped is that memory is tight,
-			// and "none" would have llama.cpp read the whole model into
-			// anonymous memory — the worst outcome on exactly that machine.
-			// mmap lets the kernel page it instead.
+			// Fall back to mmap when memory is tight. "none" would read the whole
+			// model into anonymous memory; mmap allows the kernel to page it out.
 			return "mmap"
 		}
 		return strings.Join(keep, "+")
@@ -51,14 +41,10 @@ func fitLoadMode(mode string, size int64) string {
 	return mode
 }
 
-// llama-server keeps evicted slot states in a host-RAM prompt cache, 8 GiB by
-// default. On a GPU box with modest RAM that is on top of the context
-// checkpoints (see Definition.CtxCheckpoints) and the process itself; minion
-// (15 GiB) was OOM-killed by the two together. The cache only saves prefill,
-// so it is capped at an eighth of RAM there rather than risk the engine.
+// llama-server's default 8 GiB host prompt cache adds to context checkpoints
+// and caused OOMs on a 15 GiB host. Cap it at one eighth of RAM.
 const defaultCacheRAMMiB = 8192
 
-// fitCacheRAM returns the prompt-cache cap in MiB for this host.
 func fitCacheRAM() int {
 	total := memTotal()
 	if total <= 0 {
@@ -67,13 +53,6 @@ func fitCacheRAM() int {
 	return min(defaultCacheRAMMiB, int(total>>20)/8)
 }
 
-// HostMemory is the machine's total and currently available memory in bytes,
-// zero for either when the platform will not say.
-//
-// Exported for the slot tuner, which reloads an engine once per slot count and
-// can wedge a machine doing it. On a unified-memory Mac the engine's KV comes
-// out of the same pool as everything else, and a sweep that pushed two
-// concurrent requests through a 27B MLX model took the host off the network
-// entirely — no OOM kill, no error, just a machine that stopped answering. A
-// sweep has to be able to see that coming.
+// HostMemory returns total and available host memory in bytes, zero when
+// unknown. The slot tuner uses it to avoid exhausting shared CPU/GPU memory.
 func HostMemory() (total, available int64) { return memTotal(), memAvailable() }

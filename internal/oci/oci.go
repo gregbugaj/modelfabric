@@ -1,12 +1,6 @@
-// Package oci fetches a single file out of a container image over the
-// registry's HTTP API — no Docker, no container runtime.
-//
-// Some tools publish only an image, not a binary (llm-d's EPP). A statically
-// linked binary inside such an image runs anywhere, so ModelFabric pulls just that
-// file. Everything is content-addressed: the image is pinned by the digest of
-// its index, which names the platform manifest by digest, which names each
-// layer by digest. Every blob is hashed as it streams and rejected on
-// mismatch, so the file extracted is exactly the one the pin identifies.
+// Package oci extracts a file from a container image through the registry HTTP API.
+// Index, manifest, and layer digests pin the contents; every downloaded blob is
+// verified before accepting extracted data. No container runtime is required.
 package oci
 
 import (
@@ -35,7 +29,6 @@ type Ref struct {
 	Digest     string // "sha256:…" of the image index (or single manifest)
 }
 
-// ErrDigest means a blob did not match the digest that named it.
 var ErrDigest = errors.New("digest mismatch")
 
 const (
@@ -71,7 +64,6 @@ func extractWith(ctx context.Context, c *client, arch, filePath, dest string, pr
 	if err != nil {
 		return err
 	}
-	// An index lists one manifest per platform; pick ours.
 	if mt == mtOCIIndex || mt == mtDockerList {
 		var idx struct {
 			Manifests []struct {
@@ -202,7 +194,6 @@ func (c *client) get(ctx context.Context, kind, digest, accept string) (*http.Re
 	return resp, nil
 }
 
-// manifest fetches a manifest by digest and verifies it hashes to that digest.
 func (c *client) manifest(ctx context.Context, digest string) (string, []byte, error) {
 	resp, err := c.get(ctx, "manifests", digest, acceptManifest)
 	if err != nil {
@@ -236,7 +227,7 @@ func whiteoutOf(name, want string) bool {
 // searchLayer streams one layer, hashing it to completion even after finding
 // the file; extracted bytes are kept only after the layer digest verifies.
 // It reports whether it extracted the
-// file, and separately whether the layer deletes it — a whiteout means the
+// file, and separately whether the layer deletes it; a whiteout means the
 // search must stop rather than continue into lower layers.
 func (c *client) searchLayer(ctx context.Context, digest, want, dest string, progress func(int64)) (found, deleted bool, err error) {
 	resp, err := c.get(ctx, "blobs", digest, "")

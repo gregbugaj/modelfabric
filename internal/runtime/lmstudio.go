@@ -10,24 +10,11 @@ import (
 	"strings"
 )
 
-// Discovery of LM Studio engine packages.
-//
-// Packages publish their launch contract in these manifests, so the host can
-// use their declared executable and dependencies without guessing paths:
-//
-//	backend-manifest.json
-//	  engine_protocol_server: {runtime_kind, executable_relative_path}
-//	  engine, version, platform, cpu, gpu, supported_model_formats
-//	  vendor_lib_package_names: [...]        <- separate dependency packages
-//
-//	engine-protocol-server-artifacts.json
-//	  files: [{relative_path, executable}]   <- the exact artifact set
-//
-// The vendor list matters: the entrypoint links against libraries that live in
-// a *different* package, so pinning the engine directory alone would not pin
-// what actually runs.
+// LM Studio packages declare their launch contract in backend-manifest.json:
+// engine_protocol_server names the executable and vendor_lib_package_names
+// lists shared dependencies. engine-protocol-server-artifacts.json lists files
+// for verification. Pinning the engine directory alone excludes vendor libraries.
 
-// backendManifest is the subset of backend-manifest.json we rely on.
 type backendManifest struct {
 	Name     string   `json:"name"`
 	Engine   string   `json:"engine"`
@@ -54,10 +41,8 @@ type backendManifest struct {
 	// Provenance is present only in packages ModelFabric installed itself; LM
 	// Studio ignores unknown keys, so the manifest stays in its schema.
 	Provenance *PackageProvenance `json:"modelfabric,omitempty"`
-	// LegacyProvenance is the same record under the key packages were written
-	// with before the project was renamed ModelFabric. Read, never written: a
-	// package installed then is still ours, and without this it would read as
-	// an adopted vendor package that `mfsh runtime remove` refuses to touch.
+	// LegacyProvenance reads the pre-rename provenance key so previously
+	// installed packages remain eligible for runtime removal. Never written.
 	LegacyProvenance *PackageProvenance `json:"llmz,omitempty"`
 }
 
@@ -74,7 +59,6 @@ type PackageProvenance struct {
 	ProbedDevices []string `json:"probed_devices,omitempty"`
 }
 
-// artifactManifest is engine-protocol-server-artifacts.json.
 type artifactManifest struct {
 	RuntimeKind    string `json:"runtime_kind"`
 	ExecutablePath string `json:"executable_relative_path"`
@@ -84,8 +68,6 @@ type artifactManifest struct {
 	} `json:"files"`
 }
 
-// LMStudioRoot returns the LM Studio data directory, or "" if absent.// confine joins a manifest-supplied relative path to its root and refuses
-// anything that lands outside, so a package cannot name a file it does not own.
 func confine(root, rel string) (string, error) {
 	p := filepath.Join(root, filepath.FromSlash(rel))
 	r, err := filepath.Rel(root, p)
@@ -98,6 +80,7 @@ func confine(root, rel string) (string, error) {
 	return p, nil
 }
 
+// LMStudioRoot returns the LM Studio data directory, or "" if absent.
 func LMStudioRoot() string {
 	if r := os.Getenv("LMSTUDIO_HOME"); r != "" {
 		return r
@@ -153,7 +136,7 @@ func DiscoverPackages(backends string, origin Origin) ([]*Definition, error) {
 		pkg := filepath.Join(backends, e.Name())
 		d, err := definitionFromPackage(pkg, vendorDir, origin)
 		if err != nil || d == nil {
-			continue // not a usable engine package; skip quietly
+			continue
 		}
 		defs = append(defs, d)
 	}
@@ -177,11 +160,8 @@ func definitionFromPackage(pkg, vendorDir string, origin Origin) (*Definition, e
 	if bm.Type != "engine" || bm.EngineProtocolServer.ExecutablePath == "" {
 		return nil, nil
 	}
-	// An engine ModelFabric has no adapter for cannot be claimed as supported, and
-	// neither can one whose weights format nothing here can read. LM Studio's
-	// own MLX packages are rejected by the first test on purpose: they ship
-	// in-process .node addons and no server to spawn, so ModelFabric brings its own
-	// mlx-lm package instead (engine "mlx").
+	// Reject unsupported engine families and formats. LM Studio's MLX packages
+	// contain in-process .node addons, so ModelFabric uses a separate mlx-lm server.
 	if _, ok := engines[bm.Engine]; !ok {
 		return nil, nil
 	}
@@ -202,7 +182,7 @@ func definitionFromPackage(pkg, vendorDir string, origin Origin) (*Definition, e
 
 	// The entrypoint's RUNPATH is $ORIGIN, so it finds its own siblings. What
 	// it cannot find is the vendor package (libcudart and friends), which the
-	// manifest names separately — so those directories go on the library path.
+	// manifest names separately - so those directories go on the library path.
 	var libDirs []string
 	for _, v := range bm.VendorLibPackages {
 		// Same for a vendor package name: these directories become
@@ -221,11 +201,8 @@ func definitionFromPackage(pkg, vendorDir string, origin Origin) (*Definition, e
 		env["LD_LIBRARY_PATH"] = strings.Join(libDirs, string(os.PathListSeparator))
 	}
 	if bm.Engine == "mlx" {
-		// mlx-lm resolves a model id it does not recognise against Hugging
-		// Face and downloads it. ModelFabric points the engine at a local directory
-		// and sends only the id it was started with, so any lookup at all
-		// means something is wrong — and an engine must not fetch weights
-		// nobody asked for. Offline turns that into a clean failure.
+		// mlx-lm downloads unrecognized model ids. Offline mode makes an unexpected
+		// lookup fail instead of fetching weights outside the prepared model.
 		env["HF_HUB_OFFLINE"] = "1"
 	}
 
@@ -285,10 +262,8 @@ func definitionFromPackage(pkg, vendorDir string, origin Origin) (*Definition, e
 
 var llamaReleasePattern = regexp.MustCompile(`llama\.cpp release b(\d+)`)
 
-// readDisplayData reads a package's display-data.json: its human name, and
-// which upstream llama.cpp build it wraps. LM Studio's own version (2.41.0) is
-// its numbering; the release notes for that version name the build ("llama.cpp
-// release b11026"). Empty and zero when the file does not say.
+// readDisplayData reads the display name and upstream llama.cpp build from
+// package release notes. Returns empty and zero when absent.
 func readDisplayData(pkg, version string) (name string, build int) {
 	raw, err := os.ReadFile(filepath.Join(pkg, "display-data.json"))
 	if err != nil {
@@ -348,7 +323,6 @@ func supportsFormat(engine string, formats []string) bool {
 	return false
 }
 
-// backendLabel summarises the accelerator a package targets.
 func backendLabel(bm backendManifest) string {
 	if bm.GPU.Framework != "" {
 		return strings.ToLower(bm.GPU.Framework)
@@ -359,10 +333,8 @@ func backendLabel(bm backendManifest) string {
 	return "cpu"
 }
 
-// ArtifactFiles returns the package's declared artifact set, for verification.
-//
-// Using the package's own list is better than walking the directory: it is what
-// the vendor says constitutes the runtime, and it excludes incidental files.
+// ArtifactFiles returns the package-declared artifact set for verification,
+// excluding incidental files.
 func (d *Definition) ArtifactFiles() ([]string, error) {
 	if d.pkgDir == "" {
 		return []string{d.Path()}, nil
@@ -407,10 +379,8 @@ func (d *Definition) ArtifactFiles() ([]string, error) {
 // PackageDir is the package root, or "" for a runtime not from a package.
 func (d *Definition) PackageDir() string { return d.pkgDir }
 
-// Provenance is set for packages ModelFabric installed itself.
 func (d *Definition) Provenance() *PackageProvenance { return d.provenance }
 
-// Dir is the working directory for a launch.
 func (d *Definition) Dir() string {
 	if d.pkgDir != "" {
 		return d.pkgDir
@@ -418,7 +388,6 @@ func (d *Definition) Dir() string {
 	return filepath.Dir(d.Path())
 }
 
-// envList renders Env for exec.
 func (d *Definition) envList() []string {
 	if len(d.Env) == 0 {
 		return nil
@@ -435,10 +404,8 @@ func (d *Definition) envList() []string {
 	return out
 }
 
-// Domains reports what the engine can serve ("llm", "embedding").
 func (d *Definition) Domains() []string { return d.domains }
 
-// VendorDirs lists dependency packages outside the engine directory.
 func (d *Definition) VendorDirs() []string { return d.vendorDirs }
 
 // LMStudioModelsDir is where an LM Studio install keeps downloaded models.

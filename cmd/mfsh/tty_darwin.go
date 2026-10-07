@@ -2,8 +2,7 @@ package main
 
 import "syscall"
 
-// macOS uses the BSD names; the numbers differ from Linux's TCGETS/TCSETS,
-// which is why the shared constants were wrong here.
+// macOS uses BSD TIOCGETA/TIOCSETA values rather than Linux TCGETS/TCSETS.
 const (
 	ioctlReadTermios  = syscall.TIOCGETA
 	ioctlWriteTermios = syscall.TIOCSETA

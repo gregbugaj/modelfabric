@@ -14,8 +14,7 @@ else
   echo "aider already cloned"
 fi
 
-# The harness looks for exercises under tmp.benchmarks/ relative to its own
-# checkout; this is its layout, not a choice of ours.
+# The harness requires exercises under tmp.benchmarks/ in its checkout.
 mkdir -p aider/tmp.benchmarks
 if [ ! -d aider/tmp.benchmarks/polyglot-benchmark/.git ]; then
   echo "cloning polyglot exercises..."

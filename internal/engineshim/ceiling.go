@@ -10,17 +10,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/outputlimit"
 )
 
-// The shim is the last ModelFabric hop before the engine, which makes it the only
-// place an output ceiling can be guaranteed.
-//
-// The router applies one too, but the router is not always in the path:
-// under llm-d a request goes Envoy -> shim -> engine and skips the router
-// entirely. The incident that prompted this did not pass through the router,
-// so a ceiling there alone would not have prevented it — a fix that misses
-// the case it was written for is worse than none, because it reads as covered.
-//
-// Everything reaching an engine ModelFabric supervises passes through here, whoever
-// scheduled it.
+// Enforce the output ceiling at the shim because llm-d routes directly
+// from Envoy to the shim, bypassing the router.
 
 // maxPeek bounds how much of a body is read to inspect it. A chat request
 // carrying images is large, and reading an unbounded body into memory to add

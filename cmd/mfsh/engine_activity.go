@@ -13,15 +13,8 @@ import (
 	"time"
 )
 
-// Following the engines rather than the requests.
-//
-// `mfsh log` streams what this node's router placed, which is the whole story
-// until llm-d owns a model: then Envoy dials the engines itself, and a benchmark
-// can run for hours across three machines while `mfsh log` prints its banner and
-// nothing else. The engines still know what they are doing, and ModelFabric already
-// reads it for its own routing — this prints that.
+// Engine activity includes llm-d traffic, which bypasses this node's router and request log.
 
-// engineSample is one engine at one moment.
 type engineSample struct {
 	node, id     string
 	model        string
@@ -31,11 +24,7 @@ type engineSample struct {
 	prefillTokS  float64
 	decodeTokS   float64
 	specAccepted float64
-	// Lifetime totals. A rate says how fast an engine is; these say what it
-	// was given, which is the question a routing benchmark asks. They are
-	// deliberately absent from busy(), which decides when to print a line:
-	// they move every second, so keying on them would print every engine at
-	// every poll.
+	// Lifetime totals measure work distribution; exclude them from busy() to avoid printing every poll.
 	promptTokens int64
 	cachedTokens int64
 	outputTokens int64
@@ -44,9 +33,7 @@ type engineSample struct {
 
 func (s engineSample) key() string { return s.node + "/" + s.id }
 
-// busy is what a line is printed for: slots in use and KV. The rates drift by
-// a token per second between polls, so keying on them would print every
-// engine every second and bury the thing worth seeing.
+// busy tracks slot and KV changes; fluctuating rates would cause output on every poll.
 func (s engineSample) busy() string {
 	return fmt.Sprintf("%d/%d %.0f", s.inflight, s.slots, s.kv*100)
 }
@@ -55,9 +42,7 @@ func engineActivityCmd(addr string, asJSON bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// The banners go to stderr so `mfsh log -engines -json > run.ndjson`
-	// records only the samples: a header line in the middle of the data is
-	// what makes a recording awkward to read back.
+	// Send banners to stderr so redirected JSON contains only samples.
 	fmt.Fprintln(os.Stderr, dim("Following every engine in the mesh: requests in flight, KV cache, prefill rate. Ctrl-C to stop."))
 	if asJSON {
 		fmt.Fprintln(os.Stderr, dim("One JSON object per line, every engine every second, whether or not it changed — a recording is a time series and gaps in it are not silence."))
@@ -84,10 +69,7 @@ func engineActivityCmd(addr string, asJSON bool) error {
 		for _, s := range samples {
 			seen = true
 			if asJSON {
-				// Every sample, not only the changes: a recording is joined
-				// against a run by time, and a reader cannot tell a missing
-				// second from an unchanged one. Suppressing repeats is right
-				// for a person watching and wrong for a file.
+				// Record every sample so unchanged activity can be distinguished from missing data.
 				if err := enc.Encode(engineSampleJSON{
 					Time: now.UTC().Format(time.RFC3339Nano), Node: s.node, Instance: s.id,
 					Model: s.model, Inflight: s.inflight, Slots: s.slots,
@@ -101,7 +83,7 @@ func engineActivityCmd(addr string, asJSON bool) error {
 				continue
 			}
 			if last[s.key()] == s.busy() {
-				continue // nothing moved; printing it again is noise
+				continue
 			}
 			last[s.key()] = s.busy()
 			fmt.Printf("%s  %-10s %s  %s  %s\n",
@@ -119,8 +101,6 @@ func engineActivityCmd(addr string, asJSON bool) error {
 	}
 }
 
-// inflightCell reads "2/2 busy" at capacity, because a full engine is the
-// thing worth noticing: the next request for it queues.
 func inflightCell(s engineSample) string {
 	txt := fmt.Sprintf("%d/%d", s.inflight, s.slots)
 	switch {
@@ -132,10 +112,6 @@ func inflightCell(s engineSample) string {
 	return dim(txt + " idle")
 }
 
-// rateCell is both halves of the work: reading the conversation and writing
-// the answer. Prefill alone hid the thing speculative decoding changes —
-// decode was 66 tok/s without the model's MTP head and 134 with it, and
-// nothing in this view moved.
 func rateCell(s engineSample) string {
 	out := fmt.Sprintf("%5.0f pp/s  %5.0f tg/s", s.prefillTokS, s.decodeTokS)
 	if s.specAccepted >= 0 {
@@ -177,9 +153,7 @@ func sampleEngines(ctx context.Context, addr string) ([]engineSample, error) {
 	return out, nil
 }
 
-// engineSampleJSON is one engine at one moment, as a recording line. Field
-// names match the mesh API so a reader that already parses /z/mesh needs no
-// second vocabulary.
+// engineSampleJSON uses mesh API field names for recorded samples.
 type engineSampleJSON struct {
 	Time         string  `json:"time"`
 	Node         string  `json:"node"`
@@ -191,18 +165,13 @@ type engineSampleJSON struct {
 	PrefillTokS  float64 `json:"prefill_tok_s"`
 	DecodeTokS   float64 `json:"decode_tok_s"`
 	SpecAccepted float64 `json:"spec_accepted"`
-	// Lifetime totals, so a recording can answer what share of the fleet's
-	// work each engine was given. Without them a run's record holds only
-	// rates, and the share has to be read live before the next reload wipes
-	// the counters.
+	// Record lifetime totals to preserve work distribution after an engine reload resets its counters.
 	PromptTokens int64  `json:"prompt_tokens"`
 	CachedTokens int64  `json:"cached_tokens"`
 	OutputTokens int64  `json:"output_tokens"`
 	State        string `json:"state"`
 }
 
-// KV usage is a ratio and prefill a rate; full float64 precision here is
-// noise that makes a recording harder to read and no more accurate.
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 

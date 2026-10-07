@@ -15,7 +15,6 @@ import (
 //go:embed all:web/dist
 var uiFS embed.FS
 
-// isAPIPath reports whether a path belongs to the API rather than the UI.
 func isAPIPath(p string) bool {
 	for _, mount := range []string{"/api", "/z"} {
 		if p == mount || strings.HasPrefix(p, mount+"/") {
@@ -34,11 +33,7 @@ func uiHandler(log *slog.Logger) http.Handler {
 	files := http.FileServer(http.FS(sub))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Never let the SPA fallback answer an API path: a client expecting
-		// JSON would receive index.html and fail to parse it.
-		// The bare mount points count too: only the slash-suffixed prefixes
-		// were checked, so "/api" and "/z" fell through and answered a JSON
-		// client with index.html.
+		// Exclude API paths, including bare /api and /z, from the SPA fallback to prevent HTML responses to JSON clients.
 		if isAPIPath(r.URL.Path) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
@@ -55,10 +50,7 @@ func uiHandler(log *slog.Logger) http.Handler {
 		if _, err := fs.Stat(sub, p); err != nil {
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
-			// index.html is what actually goes out, so the cache policy has to
-			// describe index.html. Keeping the asset policy for a missing
-			// assets/... path told the browser to cache the SPA shell for a
-			// year at that URL.
+			// Use index.html's cache policy for fallbacks; a missing asset URL must not cache the SPA shell for a year.
 			served = "index.html"
 		}
 		if strings.HasPrefix(served, "assets/") {

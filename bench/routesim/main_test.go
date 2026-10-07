@@ -18,9 +18,6 @@ func served(e *engine, conv string, prompt, out int, now float64) int {
 	return r.cachedGot
 }
 
-// The engine model is what every simulated number rests on, so its three
-// behaviours are pinned: a conversation finds its own slot, an evicted one is
-// restored from host RAM when it fits there, and is read again when it does not.
 func TestEngineModel(t *testing.T) {
 	t.Run("a returning conversation finds its slot", func(t *testing.T) {
 		e := testEngine(2, 100000, 0)
@@ -54,7 +51,6 @@ func TestEngineModel(t *testing.T) {
 			t.Errorf("cached %d, want only the shared prefix", got)
 		}
 	})
-	// Two conversations that together exceed the pool evict each other.
 	t.Run("a pool two conversations overflow keeps only one", func(t *testing.T) {
 		e := testEngine(2, 262144, 0)
 		served(e, "a", 133000, 100, 0)
@@ -76,7 +72,6 @@ func testSim(poll float64, engines ...*engine) *sim {
 	return s
 }
 
-// drain runs the clock until nothing is due, or until the given time.
 func (s *sim) drain(until float64) {
 	for s.q.Len() > 0 && s.q[0].at <= until {
 		ev := heap.Pop(&s.q).(event)
@@ -86,11 +81,8 @@ func (s *sim) drain(until float64) {
 	s.now = until
 }
 
-// The first model fixed a request's speed when it started and gave every
-// request on an engine an equal share. It replayed the 88-minute router run of
-// 2026-10-05 in 37, because what the recorded calls show is not equal sharing:
-// a request writing beside one that is reading a prompt gets a tenth of its
-// speed for as long as the read lasts.
+// Concurrent prefill reduces decode throughput to roughly a tenth of its
+// standalone rate; fixed rates and equal sharing underpredicted runtime.
 func TestRequestsOnOneEngineSlowEachOther(t *testing.T) {
 	// 1000 tok/s reading, 100 writing; two readers share 1.4x one; a writer
 	// beside a writer keeps 0.6; a writer beside a reader gets 10 tok/s.
@@ -124,13 +116,9 @@ func TestRequestsOnOneEngineSlowEachOther(t *testing.T) {
 	}
 }
 
-// What the router knows of a peer is its load at the last poll plus every
-// request sent there since, with nothing taken off for one that finished. In
-// the 2026-10-05 router run that sent 109 requests away from a home engine
-// that had a slot free: an agent asks again 0.2s after its answer, and its own
-// finished request was still counted. A model in which the router sees the
-// engines exactly cannot reproduce that, and predicted 10 moves for a run that
-// made 142.
+// Reproduce stale peer load: dispatched requests are added immediately, but
+// completed requests remain counted until the next poll. A quick follow-up
+// can therefore leave its home engine despite an available slot.
 func TestTheRoutersViewIsAsOldAsThePoll(t *testing.T) {
 	for _, c := range []struct {
 		name string

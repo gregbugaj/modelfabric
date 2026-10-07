@@ -1,8 +1,5 @@
-// The Benchmark page's third tab: the cluster benchmark (internal/bench,
-// RunCluster). Requests go through this node's own front door and are placed
-// as an app's are, so it measures the whole setup rather than one machine.
-// The run is held by this node, through /api/v1/bench/cluster, so it survives
-// this tab closing; the page polls it.
+// Cluster benchmarks use this node's front door to exercise mesh routing.
+// /api/v1/bench/cluster owns the run, so it survives closing the tab.
 
 import { $ } from "./core.js";
 import { checks, copyButton, picked, table } from "./bench.js";
@@ -34,15 +31,14 @@ function build() {
   $("bc-stop").addEventListener("click", stop);
 }
 
-// Every model loaded anywhere in the mesh, with the nodes holding it: the
-// run is through the front door, so a model need not be loaded here.
+// The front door can route to any loaded model, including peer-only models.
 export async function openCluster() {
   build();
   let mesh;
   try {
     mesh = await fetchJSON("/z/mesh");
   } catch (err) {
-    // As on the node benchmark: a node that is restarting is back in a moment.
+    // Retry while the node restarts, as for node benchmarks.
     setStatus(`Could not read the mesh (${err.message}); retrying…`);
     clearTimeout(bc.retry);
     bc.retry = setTimeout(() => { if (!$("bn-cluster").hidden && !document.querySelector('section[data-view="bench"]')?.hidden) void openCluster(); }, 2000);
@@ -68,8 +64,7 @@ export async function openCluster() {
     o.value = "";
     sel.append(o);
   }
-  // An embedding model sorts first by name and generates nothing: the box
-  // opened on it, above results for the model that had actually been run.
+  // Prefer the previous run's model over a sorted-first embedding model.
   if (!models.includes(bc.model)) bc.model = models.find((m) => !/embed/i.test(m)) ?? models[0] ?? "";
   sel.value = bc.model;
   $("bc-run").disabled = !bc.model;
@@ -152,8 +147,6 @@ async function poll() {
   } else if (bc.model) {
     setStatus("");
   }
-  // Until a model is chosen by hand, the box shows the one the results below
-  // are for.
   if (!st.running && !bc.picked && st.report?.model && bc.holders[st.report.model] && st.report.model !== bc.model) {
     bc.model = st.report.model;
     $("bc-model").value = bc.model;

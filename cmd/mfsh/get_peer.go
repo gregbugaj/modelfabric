@@ -17,7 +17,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/hub"
 )
 
-// sharedModel is a peer's answer to GET /api/v1/share/model.
 type sharedModel struct {
 	Key      string `json:"key"`
 	Format   string `json:"format"`
@@ -31,22 +30,15 @@ type sharedModel struct {
 	} `json:"files"`
 }
 
-// getFromPeer copies a model another node already holds, over the tailnet,
-// instead of downloading it from Hugging Face again.
-//
-// Everything goes through this node's /api/v1/nodes/{node}/ proxy, so the CLI
-// only ever talks to loopback and the peer decides, by Tailscale owner,
-// whether to hand its files over. The bytes are fetched with the hub client:
-// resumable, checked against the peer's SHA-256 as they stream, and renamed
-// into place only once they match.
+// getFromPeer copies a model through the local node proxy. The peer authorizes
+// access by Tailscale owner. Downloads resume and verify the peer's SHA-256
+// before renaming files into place.
 func getFromPeer(ctx context.Context, addr, node, ref, format, root string, yes bool) error {
 	base := "/api/v1/nodes/" + url.PathEscape(node) + "/share"
 	q := url.Values{"model": {ref}}
 	if format != "" {
 		q.Set("format", format)
 	}
-	// A peer hashes a model the first time it is asked for it, which for a
-	// 20 GB model is most of a minute of disk reads, with nothing to show.
 	fmt.Fprintf(os.Stderr, "%s %s on %s %s\n", dim("asking for"), bold(ref), bold(node),
 		dim("(a model it has not shared before is hashed first)"))
 	var offer sharedModel
@@ -56,8 +48,7 @@ func getFromPeer(ctx context.Context, addr, node, ref, format, root string, yes 
 	if len(offer.Files) == 0 {
 		return fmt.Errorf("%s lists no files for %s", node, ref)
 	}
-	// The peer names where the copy lands. A peer is the owner's own machine,
-	// but its answer is still input: nothing outside the models root.
+	// Confine peer-provided destination paths to the models root.
 	if !filepath.IsLocal(filepath.FromSlash(offer.Dir)) {
 		return fmt.Errorf("%s offered %s at %q, which is outside a models root", node, ref, offer.Dir)
 	}
@@ -69,9 +60,7 @@ func getFromPeer(ctx context.Context, addr, node, ref, format, root string, yes 
 	t.indent = "  "
 	for _, f := range offer.Files {
 		if len(f.SHA256) != 64 {
-			// The hub client skips the check for a file with no digest. From a
-			// peer every file has one, so a missing one is an error, not a
-			// file to take on trust.
+			// Require peer digests: the hub client skips verification when a digest is absent.
 			return fmt.Errorf("%s gave no SHA-256 for %s", node, f.Name)
 		}
 		if !filepath.IsLocal(filepath.FromSlash(f.Name)) {
@@ -141,9 +130,6 @@ func getFromPeer(ctx context.Context, addr, node, ref, format, root string, yes 
 	if err := call(rctx, addr, http.MethodPost, "/api/v1/models/rescan", map[string]any{}, nil); err != nil {
 		return nil // no node running: the next start scans it
 	}
-	// A peer may name a model from LM Studio's hub catalog, which this
-	// machine may not have, and then the same files are listed here under
-	// their path. Say so rather than print a load command that fails.
 	models, err := fetchModels(rctx, addr)
 	if err == nil && !slices.ContainsFunc(models, func(m apiModel) bool { return m.Key == offer.Key }) {
 		fmt.Printf("\n  %s is not listed under that name here; %s shows what it is called on this machine\n",
@@ -154,10 +140,9 @@ func getFromPeer(ctx context.Context, addr, node, ref, format, root string, yes 
 	return nil
 }
 
-// checkNoClobber refuses a copy that would overwrite a different file already
-// on this machine, and returns the bytes of files already here and identical. The hub client replaces a file whose content does not match,
-// which is right for a half-finished download and wrong for a model this node
-// already had under the same name: that is someone's data.
+// checkNoClobber rejects copies that would overwrite different local files and
+// returns the byte count of identical files. The hub client would otherwise
+// replace mismatched files, including existing models.
 func checkNoClobber(dir string, files []hub.File) (int64, error) {
 	var have int64
 	for _, f := range files {

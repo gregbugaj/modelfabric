@@ -14,16 +14,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/llmd"
 )
 
-// llm-d on this node: a scheduler for one model, and where ModelFabric sends that
-// model's requests while it runs. Loopback only, like all management — the peer
-// listener refuses /api/.
-//
-// There is one path now:
-//
-//	ModelFabric's router -> engines                     for every model
-//	ModelFabric -> Envoy -> EPP -> engines              for the model llm-d schedules
-//
-// ModelFabric routes for itself and makes the per-model split here.
+// llm-d schedules one model through Envoy and EPP; all other models use the
+// mesh router. Its management routes use the /api/v1 access controls.
 
 type llmdState struct {
 	Enabled     bool   `json:"enabled"`
@@ -95,13 +87,10 @@ func writeState(path string, v any) error {
 	return nil
 }
 
-// SetLLMD attaches the llm-d supervisor and where its state is persisted.
 func (s *Server) SetLLMD(l *llmd.LLMD, statePath string) {
 	s.llmd, s.llmdState = l, statePath
 }
 
-// LLMDEnabled reports the persisted llm-d choice: whether it is on, its model
-// and its options.
 func LLMDEnabled(statePath string) (bool, string, llmd.Options) {
 	var st llmdState
 	_ = readState(statePath, &st)
@@ -232,7 +221,6 @@ func (s *Server) handleLLMDDisable(w http.ResponseWriter, r *http.Request) {
 	s.handleLLMDStatus(w, r)
 }
 
-// handleLLMDStatus reports llm-d for this node.
 func (s *Server) handleLLMDStatus(w http.ResponseWriter, _ *http.Request) {
 	if s.llmd == nil {
 		writeJSON(w, http.StatusOK, llmd.Status{State: "disabled"})
@@ -241,11 +229,6 @@ func (s *Server) handleLLMDStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.llmd.Status())
 }
 
-// llmdTarget is Envoy's address when llm-d is scheduling this model, else ok is
-// false.
-//
-// Per model, not per node: llm-d schedules one model, and every other model on
-// this node is ModelFabric's own router's business.
 func (s *Server) llmdTarget(model string) (*url.URL, bool) {
 	if s.llmd == nil || model == "" {
 		return nil, false
@@ -254,9 +237,7 @@ func (s *Server) llmdTarget(model string) (*url.URL, bool) {
 	if st.State != "running" || st.Model != model {
 		return nil, false
 	}
-	// No endpoints means llm-d is up but has nothing to place on, and Envoy
-	// would answer 503. ModelFabric's own router can still serve the model, so it
-	// gets the request rather than a scheduler with nowhere to put it.
+	// Without endpoints Envoy returns 503; fall back to the mesh router.
 	if len(st.Endpoints) == 0 {
 		return nil, false
 	}

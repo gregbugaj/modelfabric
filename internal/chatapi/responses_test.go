@@ -96,7 +96,6 @@ func TestResponsesAreContinuedByID(t *testing.T) {
 	if _, sent := f.bodies[1]["previous_response_id"]; sent {
 		t.Fatal("previous_response_id reached the engine, which refuses it")
 	}
-	// And the follow-up's own id continues in turn.
 	_, third := do(r, `{"model":"m","input":"And again?","previous_response_id":"resp_b"}`)
 	if text(third) != "saw 5 items" {
 		t.Fatalf("third %s", text(third))

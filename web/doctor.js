@@ -3,19 +3,14 @@ import { fetchJSON, mm, nodeAPI, selfNode } from "./my-models.js";
 import { el, meshView } from "./rendering.js";
 import { checking } from "./runtime.js";
 
-/* ---------- Doctor: the node's own checks, for this node or a peer ---------- */
-
-// The report is not cached. A diagnosis is about the state right now, and a
-// stale one is worse than none — the thing being diagnosed is usually changing
-// while you look at it.
+// Do not cache reports: the diagnosed node may change between checks.
 let doctorNode = "";
 let doctorBusy = false;
 
 export function renderDoctorNodes() {
   const sel = $("dr-node");
   if (!sel) return;
-  // From the mesh view, which every page polls — mm.nodes only fills while My
-  // Models is open, so the picker was empty on arrival here.
+  // Use the mesh view; mm.nodes is populated only while My Models is open.
   const peers = (meshView?.nodes ?? [])
     .filter((n) => n.alive && n.name && n.name !== selfNode)
     .map((n) => n.name)
@@ -48,8 +43,6 @@ export async function runDoctor() {
   } catch (err) {
     body.replaceChildren();
     empty.hidden = false;
-    // A peer that cannot answer is its own finding: an older build has no
-    // such endpoint, and one that is down cannot be asked at all.
     empty.textContent = /no such endpoint/i.test(err.message)
       ? `${doctorNode} runs a build without health checks — open its own dashboard, or update it.`
       : `Could not reach ${doctorNode}: ${err.message}`;
@@ -74,7 +67,6 @@ function renderDoctor(checks) {
     row.append(el("span", "dr-name", c.name));
     const detail = el("span", "dr-detail");
     detail.append(el("span", null, c.detail));
-    // The fix is shown only where something needs doing, as in the CLI.
     if (c.fix && (c.status === "warn" || c.status === "fail")) {
       const fix = el("div", "dr-fix");
       fix.append(el("span", "dr-arrow", "→"), el("code", null, c.fix));

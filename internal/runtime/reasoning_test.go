@@ -7,12 +7,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/catalog"
 )
 
-// A thinking model spends most of a classification's tokens before it answers.
-// These are llama.cpp launch flags: the server accepts reasoning_budget in a
-// request body and ignores it, so a per-request "control" silently does
-// nothing — measured as an unordered sweep (budget 0 gave more reasoning than
-// budget 512). Set at launch, it holds: 48 kept reasoning to 165-179
-// characters over three runs where -1 gave 718-1105.
+// Reasoning controls must be launch flags: llama.cpp accepts but ignores
+// reasoning_budget in request bodies.
 func TestReasoningFlagsReachTheEngine(t *testing.T) {
 	budget := 48
 	on, low := "on", "low"
@@ -32,7 +28,7 @@ func TestReasoningFlagsReachTheEngine(t *testing.T) {
 
 // Unset means the engine's own default, which is the model template's. A
 // budget of 0 is a real choice (end thinking at once) and must not be read as
-// "not set" — which a plain int would have done.
+// "not set" - which a plain int would have done.
 func TestReasoningUnsetAddsNoFlags(t *testing.T) {
 	d := &Definition{Name: "llama.cpp", Engine: "llama.cpp", ContextLength: 8192, Parallel: 1}
 	m := catalog.Model{Key: "q", Format: "gguf", Path: "/m.gguf"}

@@ -7,7 +7,7 @@
 //     every handle also carries the process's birth time; a mismatch means the
 //     PID now belongs to somebody else and we refuse to touch it.
 //   - argv comes from trusted runtime configuration, never from an inference
-//     request, and is executed directly — never through a shell.
+//     request, and is executed directly; never through a shell.
 //   - Readiness is bound to the expected endpoint *and* model. An unrelated
 //     server already listening on the port must not satisfy our launch.
 //   - Launch intent is persisted before the spawn, so a crash between fork and
@@ -32,7 +32,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/osproc"
 )
 
-// State is the result of inspecting a handle.
 type State string
 
 const (
@@ -40,7 +39,7 @@ const (
 	StateReady    State = "ready"
 	StateStopped  State = "stopped"
 	StateFailed   State = "failed"
-	// StateUnknown means we cannot prove what happened — typically a crash
+	// StateUnknown means we cannot prove what happened; typically a crash
 	// between persisting launch intent and recording process identity. It
 	// deliberately blocks another launch for the same deployment.
 	StateUnknown State = "unknown"
@@ -51,8 +50,6 @@ var (
 	ErrOwnership = errors.New("ownership check failed")
 )
 
-// LaunchSpec describes one launch. It mirrors the spec's dataclass so later
-// slices can depend on the same boundary.
 type LaunchSpec struct {
 	DeploymentID string   `json:"deployment_id"`
 	Generation   int      `json:"generation"`
@@ -60,10 +57,9 @@ type LaunchSpec struct {
 	Env          []string `json:"env,omitempty"`
 	Cwd          string   `json:"cwd"`
 	Endpoint     string   `json:"endpoint"`
-	// Model is the catalog key this engine was launched for.
-	Model string `json:"model"`
+	Model        string   `json:"model"`
 	// Engine is the runtime family ("llama.cpp", "mlx"), and ServedModel the id
-	// that engine answers to for Model — its own /v1/models id, which is not
+	// that engine answers to for Model; its own /v1/models id, which is not
 	// always the catalog key. Readiness is checked against these, which is what
 	// stops a stray server on the port from satisfying us.
 	Engine                 string        `json:"engine,omitempty"`
@@ -101,7 +97,6 @@ type Handle struct {
 // takes the whole spec because how to ask differs by engine.
 type ReadinessProbe func(ctx context.Context, spec LaunchSpec) error
 
-// Launcher owns process lifecycle for a set of deployments.
 type Launcher struct {
 	stateDir string
 	probe    ReadinessProbe
@@ -146,7 +141,7 @@ type record struct {
 }
 
 // recordPath names a deployment's record file. The readable part is sanitized,
-// which is lossy — "a/b" and "a_b" both became "a_b" and shared one file, so
+// which is lossy; "a/b" and "a_b" both became "a_b" and shared one file, so
 // one deployment could overwrite another's ownership record and break the
 // one-process-per-deployment guarantee. A digest of the full id disambiguates.
 func (l *Launcher) recordPath(deploymentID string) string {
@@ -180,10 +175,8 @@ func (l *Launcher) writeRecord(r record) error {
 	}
 	path := l.recordPath(r.DeploymentID)
 	tmp := path + ".tmp"
-	// The record has to survive a crash between writing it and spawning the
-	// process, which is the whole point of writing it first. Rename alone is
-	// atomic for readers but carries no durability, so both the file and the
-	// directory entry are flushed.
+	// Flush both the file and directory entry before spawning. Rename alone
+	// provides atomic replacement but does not make launch intent durable.
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -244,12 +237,8 @@ func (l *Launcher) Start(ctx context.Context, spec LaunchSpec, instanceID string
 		return nil, fmt.Errorf("%w: deployment %s already has an owned process",
 			ErrOwnership, spec.DeploymentID)
 	}
-	// An unresolved launch window from a previous host must be settled by the
-	// caller (via Recover) before we are allowed to spawn again — and so must
-	// a settled record whose process is still running. Only the pending case
-	// was refused, so a launcher that had not recovered yet (a fresh one after
-	// a restart) would spawn a second engine beside a live one and break the
-	// one-process-per-deployment guarantee this record exists to keep.
+	// Require recovery before spawning when a record is pending or its process
+	// is still alive; otherwise a restart can launch a duplicate engine.
 	if prev, err := l.readRecord(spec.DeploymentID); err == nil {
 		switch {
 		case prev.Pending:
@@ -301,7 +290,7 @@ func (l *Launcher) start(ctx context.Context, spec LaunchSpec, instanceID string
 		cmd.Env = append(os.Environ(), spec.Env...)
 	}
 	// Setpgid puts the engine in its own process group so we can signal the
-	// whole tree — engines routinely fork workers that would otherwise survive.
+	// whole tree; engines routinely fork workers that would otherwise survive.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	c := &child{done: make(chan struct{})}
@@ -358,7 +347,6 @@ func (l *Launcher) start(ctx context.Context, spec LaunchSpec, instanceID string
 		close(c.done)
 	}()
 
-	// Identity is known; the launch window is resolved.
 	if err := l.writeRecord(record{
 		DeploymentID: spec.DeploymentID,
 		Generation:   spec.Generation,
@@ -384,8 +372,6 @@ func (l *Launcher) start(ctx context.Context, spec LaunchSpec, instanceID string
 	return &handle, nil
 }
 
-// awaitReady polls until the engine serves the expected model, the process
-// exits, or the startup budget runs out.
 func (l *Launcher) awaitReady(ctx context.Context, c *child, spec LaunchSpec) error {
 	timeout := spec.StartupTimeout
 	if timeout <= 0 {
@@ -400,10 +386,8 @@ func (l *Launcher) awaitReady(ctx context.Context, c *child, spec LaunchSpec) er
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.done:
-			// A shell that exits successfully before readiness is still a
-			// failed launch: there is no endpoint to serve.
-			// The engine printed why on its way out; say it here rather than
-			// leaving an exit status and a log to go and find.
+			// Exit before readiness is a failed launch even with status zero.
+			// Include recognized engine log failures in the error.
 			return explain(fmt.Errorf("%w: engine exited before readiness (%v)", ErrLaunch, c.exitErr),
 				spec.StdoutPath)
 		case <-deadline:
@@ -463,7 +447,7 @@ func (l *Launcher) recordedProcessAlive(r *record) bool {
 func (l *Launcher) owns(h *Handle) (bool, error) {
 	birth, err := birthID(h.PID)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil // process is gone
+		return false, nil
 	}
 	if err != nil {
 		return false, err
@@ -478,7 +462,7 @@ func (l *Launcher) owns(h *Handle) (bool, error) {
 // to the group, then SIGKILL after the deadline.
 //
 // This is interruption, not graceful drain. llama.cpp exposes no quiescence
-// signal, so we do not claim in-flight requests are preserved — callers that
+// signal, so we do not claim in-flight requests are preserved; callers that
 // need that must settle traffic before calling Stop.
 func (l *Launcher) Stop(ctx context.Context, h *Handle, timeout time.Duration) error {
 	if h == nil {
@@ -524,7 +508,7 @@ func (l *Launcher) Stop(ctx context.Context, h *Handle, timeout time.Duration) e
 // waitExit reports whether the process is gone within d.
 //
 // The two cases need different evidence. For a process we spawned, c.done
-// closes once cmd.Wait reaps it — polling /proc would see a zombie and wrongly
+// closes once cmd.Wait reaps it; polling /proc would see a zombie and wrongly
 // conclude it is still alive. For an adopted process we are not the parent, so
 // there is no Wait to close anything and /proc is the only truth.
 func (l *Launcher) waitExit(h *Handle, c *child, d time.Duration, ctx context.Context) bool {
@@ -643,7 +627,6 @@ func (l *Launcher) Recover(deploymentID string) (*Handle, State) {
 	return h, StateStarting
 }
 
-// Recovered is one ownership record found at startup.
 type Recovered struct {
 	Handle *Handle
 	State  State

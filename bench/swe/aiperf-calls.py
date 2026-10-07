@@ -1,31 +1,21 @@
 #!/usr/bin/env python3
-"""Say which node served each request of an AIPerf replay.
+"""Identify the node serving each request in an AIPerf replay.
 
 Usage:
   aiperf-calls.py RUN_DIR [OUT.jsonl] [--bodies]
 
-RUN_DIR is a replay written by aiperf-run.sh, with each node's engine log for
-that run saved as RUN_DIR/engine-logs/NODE.log.
+RUN_DIR contains engine logs at engine-logs/NODE.log. Match response token
+counts and timing against these logs; engine build identifiers cannot
+distinguish nodes running the same build.
+Write one JSON line per request in submission order:
 
-A response names the engine's build and nothing else. That told the nodes
-apart while each ran a different llama.cpp; on 2026-10-06 two of them were put
-on the same build, and the summary then counted a conversation crossing
-between them as staying put: 26 moves reported where the engine logs show 53.
+  task, turn, sent, end   conversation and timestamps in Unix seconds
+  node                   serving node, or "" if no match
+  prompt, cached, out    total prompt, cached prompt and output tokens
+  slot, how              slot ID and selection method: lcp or lru
+  body                   original request with --bodies, for routesim -calls
 
-The engine's own log does say. Every request it serves is logged with the
-tokens it read, the time that took to the hundredth of a millisecond, and the
-slot's token count when it finished, and the response carries the same three
-figures. One line per request is written, in the order they were sent:
-
-  task, turn, sent, end   the conversation and when (unix seconds)
-  node                    the node whose log holds this request, "" if none
-  prompt, cached, out     tokens: whole prompt, served from cache, answer
-  slot, how               the slot it ran in and how the engine chose it:
-                          "lcp" for the slot holding its prompt, "lru" otherwise
-  body                    the request as sent, with --bodies (for routesim -calls)
-
-and beside it OUT.meta.json with, per node, how many conversations the engine
-dropped from its RAM cache to make room.
+OUT.meta.json records per-node host-RAM cache eviction counts.
 """
 import json
 import os

@@ -1,13 +1,10 @@
-// API tokens: named, created and revoked one at a time. Rendered as the
-// Tokens tab of the Server settings flyout.
-
 import { post, showNotice } from "./actions.js";
 import { fetchJSON } from "./my-models.js";
 import { el, frontView } from "./rendering.js";
 import { buildTokens } from "./ui-model.js";
 
-// Where a token is actually asked for. Creating one on a node that checks
-// nothing would otherwise look like it protected something.
+// Show where authentication is enforced so token creation does not
+// imply protection on listeners that accept unauthenticated requests.
 function scopeNote() {
   const where = [];
   if (frontView.requireKey) where.push("this address");
@@ -23,9 +20,8 @@ function scopeNote() {
 }
 
 /**
- * Render the token manager into body. The secret of a token just created is
- * shown once, in this render only: re-rendering (switching tabs, closing the
- * flyout) drops it, and nothing can show it again.
+ * The created secret exists only for this render. Re-rendering or closing
+ * the flyout discards it; the API cannot retrieve it again.
  */
 export async function renderTokens(body, justCreated = null) {
   body.replaceChildren(scopeNote());

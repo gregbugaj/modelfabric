@@ -11,28 +11,21 @@ import (
 	"sync"
 )
 
-// The text a benchmark sends is part of what it measures. Prefill speed does
-// not care what the tokens say, but generation can: with speculative
-// decoding, measured on one RTX 5090, the same model ran 8% slower on
-// unguessable text and twice as fast on predictable code. So the prompts are
-// fixed texts shipped in the binary, named and versioned, and every report
-// records which one it used and its checksum. Two runs agree on what they
-// sent, or the report says they did not.
+// Versioned corpora and checksums make benchmark inputs reproducible.
+// Prompt predictability affects speculative decoding performance.
 //
-//   prose: ModelFabric's own docs, markup stripped, asked for a summary.
-//   code:  ModelFabric's own Go source, asked to continue the file.
+// prose: documentation text requested as a summary.
+// code: Go source requested as a continuation.
 //
-// A new snapshot is a new version (prose-v2), never an edit of v1: a result
-// is only comparable to another made from the same text.
+// New snapshots require new versions; never edit an existing corpus version.
 
 //go:embed corpus/*.txt.gz
 var corpusFS embed.FS
 
-// Corpus is one named prompt text.
 type Corpus struct {
-	Name    string `json:"name"`    // prose | code
-	Version string `json:"version"` // v1
-	SHA256  string `json:"sha256"`  // of the text, so a report names exactly what was sent
+	Name    string `json:"name"` // prose | code
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"` // of the text, so a report names exactly what was sent
 	// Ask is the instruction after the text. It decides what the model
 	// generates, and so how much a speculative drafter can guess.
 	Ask  string `json:"ask"`
@@ -51,7 +44,6 @@ var (
 	corpusCache = map[string]*Corpus{}
 )
 
-// LoadCorpus returns the named corpus.
 func LoadCorpus(name string) (*Corpus, error) {
 	corpusMu.Lock()
 	defer corpusMu.Unlock()

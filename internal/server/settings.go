@@ -10,7 +10,7 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/supervisor"
 )
 
-// Per-model defaults and presets (LM Studio's gear icon and Presets).
+// Per-model defaults and inference presets.
 //
 //	GET    /api/v1/model-defaults?model=<key>   the model's saved defaults
 //	PUT    /api/v1/model-defaults?model=<key>   replace them ({preset, settings})
@@ -171,11 +171,8 @@ func (s *Server) handleImportPreset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"preset": p, "skipped": skipped})
 }
 
-// decodeStrict rejects unknown fields, so a misspelled setting is an error
-// rather than silently ignored.
-// decodeStrict reads exactly one JSON document from the body. Decode alone
-// stops at the end of the first value, so "{...}{...}" or an object followed by
-// junk was accepted and half the request silently ignored.
+// decodeStrict rejects unknown fields and requires exactly one JSON document,
+// preventing trailing values or junk from being ignored.
 func decodeStrict(r *http.Request, v any) error {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
@@ -188,8 +185,6 @@ func decodeStrict(r *http.Request, v any) error {
 	return nil
 }
 
-// Vision defaults: what a model carrying an image projector loads with on this
-// node. Per node because capacity is — see supervisor.VisionDefaults.
 func (s *Server) handleGetVisionDefaults(w http.ResponseWriter, _ *http.Request) {
 	if !s.requireSupervisor(w) {
 		return

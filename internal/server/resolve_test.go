@@ -6,10 +6,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// resolveEngine turns the upstream a scheduler reports back into a node and an
-// instance, so a request ModelFabric did not route still says where it ran. The
-// first version compared a bare host against host:port and so matched
-// nothing; these cases pin the join.
+// resolveEngine matches scheduler upstreams to instances by host:port.
+// Comparing a bare host to host:port previously prevented attribution.
 func TestResolveEngineMatchesHostAndPort(t *testing.T) {
 	self := mesh.NodeState{
 		Node: "xpredator", Addr: "100.64.0.1",
@@ -30,7 +28,7 @@ func TestResolveEngineMatchesHostAndPort(t *testing.T) {
 		{"peer engine", "http://100.64.0.2:18002/v1", "minion", "inst-b", true},
 		{"no trailing path", "http://100.64.0.2:18000", "minion", "inst-a", true},
 		// The port still decides which engine, so an unknown one leaves the
-		// engine blank — but the machine is named, not dropped.
+		// engine blank - but the machine is named, not dropped.
 		{"right host, wrong port", "http://100.64.0.2:18001/v1", "minion", "", true},
 		{"unknown host", "http://10.0.0.9:18000/v1", "", "", false},
 		{"empty", "", "", "", false},
@@ -62,8 +60,6 @@ func TestMatchEngineNamesThisNodeForAnUnknownLoopbackPort(t *testing.T) {
 // while the EPP behind it may schedule onto any node, so matching the address
 // would name this node as the server when it holds no engine at all.
 func TestResolveEngineRefusesOwnProxies(t *testing.T) {
-	// isOwnProxy reads only this node's own addresses; the mesh is never
-	// consulted.
 	s := &Server{frontListen: "127.0.0.1:1234"}
 	for _, c := range []struct {
 		name, base string

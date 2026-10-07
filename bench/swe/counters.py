@@ -1,47 +1,23 @@
 #!/usr/bin/env python3
-"""Reads, saves and checks the fleet's per-engine lifetime token counters.
+"""Read, save and check per-engine lifetime token counters.
 
     counters.py ADDR show                 print the table
     counters.py ADDR save FILE            print it and write FILE and FILE.json
     counters.py ADDR check [MAX]          exit 1 if any engine is above MAX
-    counters.py ADDR fingerprint FILE     record which engines are serving
-    counters.py ADDR verify FILE          exit 1 if they are not the same ones
+    counters.py ADDR fingerprint FILE     record serving engines
+    counters.py ADDR verify FILE          exit 1 if engine identities changed
 
-ADDR is a node's management address (`http://host:1234`), normally the run's
-control node.
-
-These counters come from each llama.cpp process and are reset only by
-restarting it, which is what reload.sh does between modes. Two things follow,
-and both have cost a result:
-
-  * They must be **saved before the next reload**, or the share of the fleet's
-    work each engine was given is gone. The 2026-09-24 `tuned` run's split
-    survives only because someone happened to read it live before the switch.
-
-  * They must be **verified back near zero after** a reload. A reload that
-    quietly did nothing on one node — a hung ssh, a model ModelFabric thought was
-    already loaded — leaves that node carrying the previous mode's totals into
-    this one. Nothing else in the run would look wrong; the attribution would
-    just be silently false.
-
-`check` allows a small non-zero reading rather than demanding exact zeros:
-between the restart and the check, ModelFabric's own poll and the context check each
-put a little through the engine.
-
-`fingerprint` and `verify` guard the other end. An engine that restarts *during*
-a mode — a node redeployed, a daemon bounced, an OOM kill — silently changes the
-fleet the run is measuring: half the results come from three engines and half
-from two, and nothing in the output says so. It has happened twice. The instance
-id changes on every load, so comparing the set before and after catches a
-restart, a disappearance and a replacement alike.
+ADDR is the control node's management URL. Save counters before reload resets
+them, then verify they are near zero so failed reloads cannot carry prior-run
+work into the next measurement. Allow startup probes to produce small counts.
+Compare engine instance IDs before and after each run to detect restarts,
+disappearances or replacements that would change the measured fleet.
 """
 import json
 import sys
 import urllib.request
 
-# A fresh engine should read a few hundred prompt tokens at most, from ModelFabric's
-# own probing. A mode that actually ran puts millions through. Anything in
-# between is worth stopping for rather than guessing about.
+# Allow startup probes on fresh engines, but reject token counts suggesting prior benchmark traffic.
 DEFAULT_MAX = 50_000
 
 
@@ -73,12 +49,8 @@ def table(rows):
            ("node", "prefilled", "share", "from cache", "cache hit", "generated", "now")]
     for r in rows:
         p, c = r["prompt"], r["cached"]
-        # "generated" comes from llama.cpp's tokens_predicted_total, which only
-        # moves when a request *finishes*. A slow engine part-way through its
-        # first reply therefore reads 0 — and the slowest engine is the one
-        # that reads 0 for longest, which is exactly backwards. The in-flight
-        # count is live, so print it alongside: an engine doing work must
-        # never look idle.
+        # tokens_predicted_total updates only on completion. Include live inflight
+        # counts so engines still generating their first response do not appear idle.
         busy = ""
         if r["inflight"] > 0:
             busy = "%d in flight" % r["inflight"]
@@ -100,8 +72,7 @@ def main():
     try:
         rows = read(addr)
     except Exception as e:
-        # A run should not die because the table could not be printed; only
-        # `check` is a guard, and it has to fail loudly.
+        # Only check mode is a blocking guard; display failures must not abort a run.
         print(f"counters.py: could not read {addr}: {e}", file=sys.stderr)
         return 1 if action == "check" else 0
 

@@ -23,8 +23,7 @@ func TestCheckNoClobber(t *testing.T) {
 		wantHave int64
 	}{
 		{"nothing there yet is fine", nil, false, 0},
-		// Counted as already here, so the summary reports only what crossed
-		// the tailnet: a re-run once said "copied at 3.2GB/s" having copied nothing.
+		// Existing bytes must not inflate the reported transfer rate.
 		{"an identical file is fine; the copy skips it", ptr("peer!"), false, 5},
 		{"same size, different bytes is refused", ptr("mine!"), true, 0},
 		{"a different size is refused", ptr("mine"), true, 0},

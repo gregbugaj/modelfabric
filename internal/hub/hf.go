@@ -30,10 +30,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/download"
 )
 
-// DefaultBaseURL is the Hugging Face endpoint.
 const DefaultBaseURL = "https://huggingface.co"
 
-// Ref is a parsed model reference.
 type Ref struct {
 	Repo  string // "user/repo"
 	Quant string // "Q4_K_M", or "" for the default choice
@@ -74,7 +72,6 @@ func ParseRef(s string) (Ref, error) {
 	return r, nil
 }
 
-// File is one artifact to fetch.
 type File struct {
 	Name   string // path inside the repository
 	Size   int64
@@ -86,10 +83,9 @@ type Plan struct {
 	Repo     string
 	Revision string // commit SHA
 	Files    []File
-	Quant    string // the quantization chosen
+	Quant    string
 }
 
-// TotalBytes is the plan's download size.
 func (p Plan) TotalBytes() int64 {
 	var n int64
 	for _, f := range p.Files {
@@ -98,7 +94,6 @@ func (p Plan) TotalBytes() int64 {
 	return n
 }
 
-// Client talks to a Hugging Face compatible hub.
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
@@ -187,14 +182,13 @@ func (c *Client) Resolve(ctx context.Context, ref Ref) (*Plan, error) {
 	}
 	files := weights
 	// A vision model needs its projector, or it loads and silently answers
-	// text-only — so it is fetched with the weights, not left as an extra.
+	// text-only; so it is fetched with the weights, not left as an extra.
 	if proj := chooseProjector(ggufs, weights); proj != nil {
 		files = append(files, *proj)
 	}
 	return &Plan{Repo: ref.Repo, Revision: m.SHA, Files: files, Quant: quant}, nil
 }
 
-// shardParts captures a split GGUF's prefix, index and total.
 var shardParts = regexp.MustCompile(`(?i)^(.*)-(\d{5})-of-(\d{5})\.gguf$`)
 
 // oneCompleteShardSet reports whether these files are all the shards of one
@@ -235,7 +229,6 @@ func isProjector(name string) bool {
 	return strings.HasPrefix(b, "mmproj") || strings.Contains(b, "-mmproj")
 }
 
-// quantOf extracts the quantization label from a GGUF filename.
 var quantOf = regexp.MustCompile(`(?i)(IQ\d+_[A-Z0-9_]+|Q\d+_K_[A-Z]+|Q\d+_K|Q\d+_\d+|BF16|F16|F32)`)
 
 // preference is the default order when no quantization is requested: the
@@ -287,7 +280,7 @@ func chooseWeights(files []File, want string) ([]File, string, error) {
 		}
 		// Looking shard-shaped is not the same as being one set. Checking only
 		// the suffix accepted two different models' shards mixed together, and
-		// an incomplete set ("1 of 3" with two files) — either of which
+		// an incomplete set ("1 of 3" with two files); either of which
 		// downloads something that cannot load.
 		if err := oneCompleteShardSet(chosen); err != nil {
 			return nil, "", fmt.Errorf("several %s files: %w: %s", pick, err, strings.Join(names, ", "))
@@ -299,7 +292,7 @@ func chooseWeights(files []File, want string) ([]File, string, error) {
 
 // chooseProjector picks the projector for the weights being downloaded. A repo
 // holding several model variants holds several projectors, and the best-ranked
-// one globally need not belong to the variant selected — pairing the wrong one
+// one globally need not belong to the variant selected; pairing the wrong one
 // makes a model claim vision it cannot do.
 func chooseProjector(files []File, weights []File) *File {
 	family := ""
@@ -339,14 +332,14 @@ func chooseProjector(files []File, weights []File) *File {
 }
 
 // weightsFamily is a weights file's name without its shard marker,
-// quantization and extension — the part a matching projector tends to share.
+// quantization and extension; the part a matching projector tends to share.
 func weightsFamily(name string) string {
 	name = strings.TrimSuffix(name, path.Ext(name))
 	if m := shardParts.FindStringSubmatch(name + ".gguf"); m != nil {
 		name = m[1]
 	}
 	if i := strings.LastIndex(name, "-"); i > 0 {
-		name = name[:i] // drop the quantization suffix
+		name = name[:i]
 	}
 	return name
 }
@@ -434,7 +427,6 @@ func safeRel(name string) (string, error) {
 }
 
 func (c *Client) fetch(ctx context.Context, p *Plan, f File, dest string, onBytes func(int64)) error {
-	// Already complete from an earlier run?
 	if info, err := os.Stat(dest); err == nil && info.Size() == f.Size {
 		if f.SHA256 == "" {
 			onBytes(f.Size)
@@ -444,7 +436,6 @@ func (c *Client) fetch(ctx context.Context, p *Plan, f File, dest string, onByte
 			onBytes(f.Size)
 			return nil
 		}
-		// Present but wrong: fall through and fetch again.
 	}
 
 	part := dest + ".part"
@@ -605,7 +596,6 @@ func (c *Client) HubGGUFRepo(ctx context.Context, id string) (repo string, nearM
 	if !ok || name == "" {
 		return "", nil, fmt.Errorf("%q is not a hub id (expected owner/name)", id)
 	}
-	// Already a GGUF repository, or already the publisher: nothing to map.
 	if strings.EqualFold(owner, LMStudioCommunity) || strings.HasSuffix(strings.ToLower(name), "-gguf") {
 		return "", nil, nil
 	}

@@ -1,8 +1,4 @@
-// Package server exposes the local OpenAI-compatible endpoint plus the mesh
-// control endpoints.
-//
-// Apps only ever talk to this server, on loopback. Whether a model lives on
-// this machine or three hops across the tailnet is not their concern.
+// Package server exposes OpenAI-compatible inference and mesh control endpoints.
 package server
 
 import (
@@ -32,23 +28,18 @@ import (
 )
 
 type Server struct {
-	m   *mesh.Mesh
-	r   *router.Router
-	sup *supervisor.Supervisor
-	// tune is the slot sweep this node is running, if any (tune.go).
+	m       *mesh.Mesh
+	r       *router.Router
+	sup     *supervisor.Supervisor
 	tune    tuneState
 	bench   benchState
 	cluster clusterState
-	// shared remembers the digests of files served to peers (share.go).
-	shared shareHashes
-	log    *slog.Logger
-	ui     http.Handler
+	shared  shareHashes
+	log     *slog.Logger
+	ui      http.Handler
 
-	// supErr explains why model management is unavailable, so the API can say
-	// what is actually wrong instead of guessing.
 	supErr string
 
-	// prefStore persists the preferred node across restarts.
 	prefStore string
 	// prefMu keeps each saved preference and its live update in the same order.
 	prefMu sync.Mutex
@@ -58,62 +49,47 @@ type Server struct {
 	// by construction: the tap sits on this node's front door and the route
 	// is not in peerAllowed, so the mesh listener refuses it.
 	tokens *tokentap.Tap
-	// feed pushes the dashboard's state to /api/v1/events as it changes.
-	feed *stateFeed
+	feed   *stateFeed
 	// metrics are the Prometheus counters served at /metrics. Fed from the
 	// same publish the traffic ring uses, so every routed request counts once.
 	metrics *metrics
-	// Doctor runs this node's health checks. Supplied by the caller because
-	// the paths and the runtime registry are the binary's, not the server's —
-	// and a node must report on itself, not on whoever is asking.
-	Doctor func() []doctor.Check
+	Doctor  func() []doctor.Check
 
-	// runtimeStore persists `mfsh runtime select` across restarts.
-	runtimeStore string
-	// reloadRuntimes rediscovers installed runtimes into the registry.
+	runtimeStore   string
 	reloadRuntimes func() error
-	runtimesRoot   string // where ModelFabric installs its own runtimes
+	runtimesRoot   string
 	// apiKey returns this node's API key (created on first use); requireKey
 	// makes the loopback front door check it (see front.go).
 	apiKey func() (string, error)
-	// accepted is what the front door is holding: inference requests taken and
-	// not yet answered. Every request enters there however it is routed after,
-	// which is the only vantage point that sees them all.
+	// accepted counts all front-door requests still pending, regardless of router.
 	accepted atomic.Int64
 
-	requireKey atomic.Bool
-	// /api/v1/chat (chat.go): the two MCP switches, where mcp.json is, and
-	// the conversations it keeps.
+	requireKey                  atomic.Bool
 	mcpEphemeral, mcpConfigured atomic.Bool
 	mcpFile                     string
 	chatOnce                    sync.Once
 	chat                        *chatapi.Runner
-	// keys holds the named tokens apps may use instead of the node key.
-	keys *nodekey.Store
-	// cors holds the origins allowed to call /v1 from a browser (origin.go).
-	cors corsOrigins
-	// conf is the config file this node runs from, for Server settings.
-	conf                      serverConfig
-	frontListen, publicListen string
-	keyHome                   string
-	meshListen                string
-	ids                       *tsid.Resolver
-	meshAdmin                 string
-	hub                       hubCache
-	cancels                   cancellable
-	llmd                      *llmd.LLMD
+	keys                        *nodekey.Store
+	cors                        corsOrigins
+	conf                        serverConfig
+	frontListen, publicListen   string
+	keyHome                     string
+	meshListen                  string
+	ids                         *tsid.Resolver
+	meshAdmin                   string
+	hub                         hubCache
+	cancels                     cancellable
+	llmd                        *llmd.LLMD
 	// scheduler overrides where a model's requests are sent, for tests. nil
 	// means ask llm-d (see front.go's scheduled).
 	scheduler func(model string) (*url.URL, bool)
-	llmdState string // persisted llm-d choice
+	llmdState string
 	build     BuildInfo
 	available availableCache
 }
 
-// SetRuntimeStore sets where the selected runtime is persisted.
 func (s *Server) SetRuntimeStore(path string) { s.runtimeStore = path }
 
-// SetSupervisorError records why the supervisor could not be built.
 func (s *Server) SetSupervisorError(err error) {
 	if err != nil {
 		s.supErr = err.Error()
@@ -131,10 +107,8 @@ func New(m *mesh.Mesh, r *router.Router, sup *supervisor.Supervisor, log *slog.L
 	// routes it afterwards.
 	if m != nil {
 		m.SetAcceptedProvider(func() int64 { return srv.accepted.Load() })
-		// Advertised so the mesh knows which node is scheduling, not only
-		// whether this one is: with an entrypoint the scheduler runs on a
-		// machine with no GPUs, and a dashboard reading its own llm-d showed
-		// "not running" through an entire benchmark that went through one.
+		// Advertise the scheduler's node so peers can show llm-d running on an
+		// entrypoint that hosts no engines.
 		m.SetSchedulerProvider(func() *mesh.SchedulerState {
 			if srv.llmd == nil {
 				return nil
@@ -162,7 +136,7 @@ func New(m *mesh.Mesh, r *router.Router, sup *supervisor.Supervisor, log *slog.L
 		r.JIT = func(ctx context.Context, model string, ttl int) (bool, error) {
 			err := sup.EnsureLoaded(ctx, model, ttl)
 			if errors.Is(err, supervisor.ErrJITDisabled) || errors.Is(err, supervisor.ErrNotInCatalog) {
-				return false, nil // not JIT's to serve: the plain 404 stands
+				return false, nil // JIT unavailable; preserve the 404
 			}
 			return true, err
 		}
@@ -173,21 +147,13 @@ func New(m *mesh.Mesh, r *router.Router, sup *supervisor.Supervisor, log *slog.L
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// OpenAI-compatible surface.
-	//
-	// The set matches what LM Studio documents plus what the llama.cpp engine
-	// actually serves, so existing tools work by pointing their base URL here.
-	// Every one of these carries a "model" in a JSON body, which is what the
-	// router needs to choose a destination.
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/models/{id}", s.handleModel)
 	for _, p := range []string{
 		"/v1/chat/completions",
 		"/v1/completions",
 		"/v1/embeddings",
-		// Responses is what makes Codex work against a local server.
 		"/v1/responses",
-		// Anthropic-shaped messages, served by the same engine.
 		"/v1/messages",
 		"/v1/messages/count_tokens",
 		"/v1/responses/input_tokens",
@@ -206,7 +172,6 @@ func (s *Server) Handler() http.Handler {
 		s.r.ForwardMultipart(w, req, "/v1/audio/transcriptions")
 	})
 
-	// LM Studio's enhanced REST surface. Same routing, richer model metadata.
 	mux.HandleFunc("GET /api/v0/models", s.handleModelsV0)
 	mux.HandleFunc("GET /api/v0/models/{id}", s.handleModelV0)
 	for _, p := range []string{"/api/v0/chat/completions", "/api/v0/completions", "/api/v0/embeddings"} {
@@ -223,11 +188,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /z/mesh", s.handleMesh)
 	mux.HandleFunc("GET /z/endpoints.yaml", s.handleLLMDEndpoints)
 	mux.HandleFunc("GET /z/log/stream", s.handleTrafficStream)
-	// The dashboard's state as it changes, so an open page stops polling.
 	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
-	// Live reply text as it is generated. Not in peerAllowed, so this is a
-	// loopback-only view of this node's own traffic — a peer asking for it
-	// gets the usual "use this node's loopback address for management".
+	// Live reply text is loopback-only; this route is excluded from peerAllowed.
 	mux.HandleFunc("GET /z/log/tokens", s.handleTokenStream)
 	mux.HandleFunc("GET /api/v1/traffic", s.handleTrafficSettings)
 	mux.HandleFunc("POST /api/v1/traffic", s.handleTrafficSettings)
@@ -242,13 +204,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/server-settings", s.handlePutServerSettings)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/v1/doctor", s.handleDoctor)
-	// Model management; handlers report unavailable when there is no supervisor.
 	s.registerLifecycle(mux)
 
 	s.registerHub(mux)
 	s.registerShare(mux)
 	mux.HandleFunc("GET /api/v1/topology", s.handleTopology)
-	// Another node's management API, for this node's dashboard.
 	mux.HandleFunc("/api/v1/nodes/{node}/{rest...}", s.handleNodeProxy)
 
 	mux.HandleFunc("GET /z/version", func(w http.ResponseWriter, _ *http.Request) {
@@ -273,8 +233,6 @@ type modelObject struct {
 	Nodes   []string `json:"nodes,omitempty"` // ModelFabric extension: who serves it
 }
 
-// handleModels returns the union of every model in the mesh. This is the
-// endpoint that makes remote models indistinguishable from local ones.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	byModel := s.listedModels(r)
 	ids := make([]string, 0, len(byModel))
@@ -299,11 +257,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
-// listedModels is what /v1/models advertises. With JIT on that includes every
-// model this node could load on demand, as LM Studio lists downloaded models
-// when JIT is enabled — a client can only request what it can see. Models not
-// loaded anywhere have no nodes. Tailnet callers cannot JIT, so they are shown
-// only what is loaded.
+// listedModels includes loadable catalog models when JIT is enabled; unloaded
+// models have no nodes. Tailnet callers cannot JIT and see only loaded models.
 func (s *Server) listedModels(r *http.Request) map[string][]string {
 	owners := s.modelOwners()
 	if s.sup != nil && s.sup.JITEnabled() && router.JITAllowed(r.Context()) {
@@ -337,13 +292,11 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.m.State())
 }
 
-// MeshView is the whole-mesh snapshot the UI renders.
 type MeshView struct {
-	Self   mesh.NodeState  `json:"self"`
-	Peers  []mesh.PeerView `json:"peers"`
-	Models []ModelView     `json:"models"`
-	// Preferred is the operator's preferred node (mfsh prefer), if any.
-	Preferred string `json:"preferred_node,omitempty"`
+	Self      mesh.NodeState  `json:"self"`
+	Peers     []mesh.PeerView `json:"peers"`
+	Models    []ModelView     `json:"models"`
+	Preferred string          `json:"preferred_node,omitempty"`
 }
 
 type ModelView struct {
@@ -435,9 +388,6 @@ func (w *statusWriter) WriteHeader(code int) {
 // still works through this wrapper.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Endpoints lists every model server in the mesh, for llm-d's file-discovery
-// plugin. Peers' instances are included, which is the whole point: an EPP wants
-// the fleet, not one machine.
 func (s *Server) Endpoints() []discovery.Endpoint {
 	var out []discovery.Endpoint
 
@@ -469,16 +419,10 @@ func (s *Server) Endpoints() []discovery.Endpoint {
 					"modelfabric.sh/vision": strconv.FormatBool(i.Vision),
 				},
 			})
-			// Capacity and speed, for schedulers that can use them (and for
-			// the operator reading the file): the fleet is heterogeneous.
 			ep := &out[len(out)-1]
-			// The EPP picks a metric mapping per endpoint from this label.
-			// Without it every endpoint is scraped as vLLM and its queue
-			// metrics silently read as absent — but claiming llama.cpp for an
-			// engine that serves no Prometheus metrics at all (mlx-lm) would be
-			// worse: the scheduler would read absent queues as idle. An engine
-			// llm-d has no mapping for is left unlabelled, and an unset engine
-			// is llama.cpp, which is all a peer too old to say can be running.
+			// The EPP selects its metric mapping from this label. Leave unsupported
+			// engines unlabelled so missing metrics are not interpreted as idle queues.
+			// An empty engine family means llama.cpp for compatibility with old peers.
 			if i.Engine == "" || i.Engine == "llama.cpp" {
 				ep.Labels[discovery.EngineTypeLabel] = discovery.EngineTypeLlamaCPP
 			}
@@ -491,10 +435,8 @@ func (s *Server) Endpoints() []discovery.Endpoint {
 			if i.Slots > 0 {
 				ep.Labels[discovery.SlotsLabel] = strconv.Itoa(i.Slots)
 			}
-			// Trusted only: llm-d schedules by this label, and a rate from a
-			// few short prompts would place real traffic on the strength of
-			// nothing. The dashboard shows the rough figure; the scheduler
-			// does not get it.
+			// Publish only trusted benchmark rates for scheduling; rough estimates
+			// remain dashboard-only.
 			if i.PrefillTrusted && i.PrefillTokS > 0 {
 				ep.Labels[discovery.PrefillLabel] = strconv.Itoa(int(i.PrefillTokS))
 			}
@@ -537,8 +479,6 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// modelV0 is LM Studio's richer model shape: it distinguishes loaded from
-// available and carries quantization, context and architecture.
 type modelV0 struct {
 	ID                string `json:"id"`
 	Object            string `json:"object"`
@@ -634,10 +574,8 @@ func (s *Server) SetAuth(key func() (string, error), requireOnLoopback bool) {
 	s.requireKey.Store(requireOnLoopback)
 }
 
-// SetTokens wires the named tokens accepted alongside the node key.
 func (s *Server) SetTokens(store *nodekey.Store) { s.keys = store }
 
-// SetMCP gives the node its two MCP switches and the mcp.json it reads.
 func (s *Server) SetMCP(file string, ephemeral, configured bool) {
 	s.mcpFile = file
 	s.mcpEphemeral.Store(ephemeral)
@@ -648,8 +586,6 @@ func (s *Server) SetMCP(file string, ephemeral, configured bool) {
 // with its own and the dashboard's Rotate replaces. Unset, neither is offered.
 func (s *Server) SetKeyHome(home string) { s.keyHome = home }
 
-// SetFrontDoor records where apps connect, for status: the loopback front
-// door and, if configured, the public listener.
 func (s *Server) SetFrontDoor(listen, public string) { s.frontListen, s.publicListen = listen, public }
 
 // metricsPort is the port a scheduler should dial for an instance: ModelFabric's

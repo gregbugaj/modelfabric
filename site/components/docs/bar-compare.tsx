@@ -1,20 +1,13 @@
 import type { ReactNode } from 'react';
 
-/*
- * A two-series bar comparison.
- *
- * Mermaid's xychart-beta draws several `bar` series at the same x position,
- * one in front of the other, with no legend — two series read as one and the
- * smaller is simply hidden. For a comparison, that is worse than a table. This
- * draws both bars, labelled, with the number printed at the end of each, so
- * nothing has to be inferred from a colour.
- */
+/* Draw separate, labelled bars; overlapping series in Mermaid xychart-beta
+ * hid the smaller values. */
 
 export type BarRow = {
   label: string;
   a: number;
   b: number;
-  /** Rendered instead of the raw numbers when the unit needs saying. */
+  /** Optional formatted values with units. */
   aText?: string;
   bText?: string;
 };

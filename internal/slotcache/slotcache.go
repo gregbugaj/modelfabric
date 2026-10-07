@@ -1,40 +1,12 @@
-// Package slotcache is the cold tier of the prompt cache: KV state that would
-// otherwise be thrown away is written to disk, and read back when the
-// conversation it belongs to returns.
+// Package slotcache persists evicted prompt KV state as whole llama.cpp slots.
+// The memory/disk cache design follows oMLX (github.com/jundot/omlx).
 //
-// An engine keeps a conversation's KV cache in a slot, and has only a few. When
-// a different conversation takes the slot the state is gone, and the next turn
-// of the first one re-reads its whole prompt. Measured on Qwen3-0.6B on the CPU
-// with a 6k-token prompt: 24.4 s to re-read it, 0.4 s when the slot was
-// restored from disk first (the save took 0.21 s and the restore 0.12 s, for a
-// 690 MB file). The saving grows with the prompt, and a coding agent's is the
-// largest there is.
+// Saving rewrites the whole slot, so saves occur before eviction or unload,
+// not after every turn. This package sets id_slot because llama-server reports
+// neither the selected slot nor its prompt. The engine validates restored
+// tokens against the request; a mismatch causes a cache miss.
 //
-// The idea is oMLX's (github.com/jundot/omlx): a hot tier in memory and a cold
-// tier on SSD, keyed by a chain of hashes over the prompt so that a returning
-// conversation is recognised by its prefix. oMLX runs the model in-process and
-// can slice the KV tensors into blocks, so it writes only the blocks that are
-// new. ModelFabric supervises llama-server from outside and cannot: the unit
-// here is a whole slot, through llama-server's own save and restore actions.
-// Two things follow from that, and both are deliberate:
-//
-//   - A slot is saved when it is about to be lost (another conversation is
-//     taking it, or the engine is being unloaded), not after every turn. A
-//     save rewrites the whole state, and a 90k-token conversation on a 27B
-//     model is tens of gigabytes; writing that every turn would wear a disk
-//     out to save a read nobody may ever ask for.
-//   - To know what a slot holds, this package decides which slot serves each
-//     request (the request's id_slot) instead of leaving it to the engine.
-//     llama-server does not report which slot it chose, and its /slots does
-//     not show the prompt.
-//
-// The engine still decides what is reusable: it compares tokens, and a
-// restored state that does not match the prompt is simply re-read. A wrong
-// guess here costs a cache miss, never a wrong answer.
-//
-// A saved slot contains the conversation's tokens. Turning this on writes
-// prompts to disk, which nothing else in ModelFabric does unasked; that is why
-// it is off unless configured.
+// Snapshots contain conversation tokens. Disk caching requires explicit opt-in.
 package slotcache
 
 import (
@@ -60,9 +32,8 @@ import (
 type Block = [32]byte
 
 const (
-	// minSaveBlocks is the shortest state worth a file. Below it the engine
-	// re-reads the prompt faster than a disk round trip is worth the space:
-	// 16 blocks is 4 KB of prompt, about a thousand tokens.
+	// minSaveBlocks avoids disk I/O for short prompts: 16 blocks is 4 KiB
+	// of prompt text, approximately 1000 tokens.
 	minSaveBlocks = 16
 	// minGainBlocks is how much more of the prompt a snapshot must cover than
 	// the best slot already does before it is restored over that slot.
@@ -76,7 +47,6 @@ const (
 	ioTimeout = 10 * time.Minute
 )
 
-// snapshot is one saved slot.
 type snapshot struct {
 	File  string    `json:"file"`
 	Sig   string    `json:"sig"`
@@ -190,10 +160,8 @@ func (s *Store) Attach(name, baseURL, sig string, slots int) {
 	}
 	e := &engine{name: name, base: strings.TrimRight(baseURL, "/"), sig: sig}
 	for i := 0; i < slots; i++ {
-		// task -1 matches nothing the engine reports, so a slot is "unknown"
-		// until this package has used it. That matters after a node restart:
-		// the engine outlived it and its slots hold conversations nobody here
-		// remembers.
+		// Task -1 cannot match an engine task. After a node restart, surviving
+		// engine slots are unknown until this package uses them.
 		e.slots = append(e.slots, &slot{sem: make(chan struct{}, 1), task: -1})
 	}
 	s.mu.Lock()
@@ -282,13 +250,8 @@ func (s *Store) Place(ctx context.Context, name string, chain []Block) (int, fun
 	if restore {
 		after = common(had, snap.chain)
 	}
-	// What the slot holds beyond the part that survives is about to be
-	// overwritten. Small losses are not worth a file, whether to the request
-	// (a regenerated last turn diverges by a block or two) or since the last
-	// save (one more question after a restore): a save rewrites the whole
-	// state, gigabytes to keep a few hundred tokens. The live run that
-	// motivated the second half rewrote an identical 659 MB file on every
-	// switch between two conversations.
+	// Saving rewrites the entire slot. Skip small changes since the last snapshot
+	// or in the prefix being evicted to avoid repeated multi-gigabyte writes.
 	if len(had)-after >= minSaveBlocks && unsaved >= minSaveBlocks {
 		if sn, err := s.save(ctx, e, id, had); err != nil {
 			s.log.Warn("slot not saved before reuse", "engine", name, "slot", id, "err", err)
@@ -483,7 +446,6 @@ func (s *Store) tasks(ctx context.Context, e *engine) []int {
 	return out
 }
 
-// action runs one of llama-server's slot actions.
 func (s *Store) action(ctx context.Context, e *engine, id int, action, file string) (map[string]any, int, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ioTimeout)
 	defer cancel()

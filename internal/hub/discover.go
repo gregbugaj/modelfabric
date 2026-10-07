@@ -15,10 +15,9 @@ import (
 	"time"
 )
 
-// Discover: what the dashboard's model browser shows — LM Studio's search
-// and model page — from public Hugging Face data only.
+// Discover: what the dashboard's model browser shows; LM Studio's search
+// and model page; from public Hugging Face data only.
 
-// Summary is one search result.
 type Summary struct {
 	Repo         string    `json:"repo"`
 	Author       string    `json:"author"`
@@ -73,7 +72,6 @@ func modelInfo(author, baseModel string, g ggufInfo) Model {
 	return m
 }
 
-// paramsLabel renders a parameter count as LM Studio does: 27.3B, 596M.
 func paramsLabel(n int64) string {
 	switch {
 	case n >= 1e9:
@@ -165,7 +163,6 @@ type QuantOption struct {
 	Recommended bool `json:"recommended,omitempty"`
 }
 
-// Details is a repository's model page.
 type Details struct {
 	Repo         string        `json:"repo"`
 	Revision     string        `json:"revision"`
@@ -181,7 +178,6 @@ type Details struct {
 	Model
 }
 
-// Details fetches a repository's download options and README.
 func (c *Client) Details(ctx context.Context, repo string) (*Details, error) {
 	if !repoPattern.MatchString(repo) {
 		return nil, fmt.Errorf("%q is not a repository (user/repo)", repo)

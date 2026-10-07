@@ -21,8 +21,6 @@ func reqWith(h map[string]string) *http.Request {
 	return r
 }
 
-// A caller's traceparent is adopted so ModelFabric continues someone else's trace
-// rather than starting a new one — that is the whole point of the standard.
 func TestTraceOfAdoptsCallerTraceParent(t *testing.T) {
 	tc := TraceOf(reqWith(map[string]string{
 		TraceParentHeader: "00-" + callerTrace + "-" + callerSpan + "-01",
@@ -66,18 +64,16 @@ func TestTraceOfPrefersTraceParentOverInternal(t *testing.T) {
 	}
 }
 
-// A malformed or reserved traceparent must not poison the trace — ModelFabric mints
-// its own instead of propagating nonsense.
 func TestTraceOfRejectsBadTraceParent(t *testing.T) {
 	for _, bad := range []string{
 		"",
 		"garbage",
 		"00-" + callerTrace, // too few fields
-		"00-00000000000000000000000000000000-" + callerSpan + "-01", // all-zero trace id
-		"00-" + callerTrace + "-0000000000000000-01",                // all-zero span
-		"00-nothex77b34da6a3ce929d0e0e4736-" + callerSpan + "-01",   // not hex
-		"ff-" + callerTrace + "-" + callerSpan + "-01",              // version ff is forbidden
-		"00-" + callerTrace[:16] + "-" + callerSpan + "-01",         // short trace id
+		"00-00000000000000000000000000000000-" + callerSpan + "-01",
+		"00-" + callerTrace + "-0000000000000000-01",
+		"00-nothex77b34da6a3ce929d0e0e4736-" + callerSpan + "-01",
+		"ff-" + callerTrace + "-" + callerSpan + "-01", // version ff is forbidden
+		"00-" + callerTrace[:16] + "-" + callerSpan + "-01",
 	} {
 		t.Run(bad, func(t *testing.T) {
 			tc := TraceOf(reqWith(map[string]string{TraceParentHeader: bad}))
@@ -102,7 +98,6 @@ func TestTraceOfAcceptsFutureVersions(t *testing.T) {
 	}
 }
 
-// What ModelFabric hands to the next hop must name its own span as the parent.
 func TestHeaderNamesThisNodesSpan(t *testing.T) {
 	tc := TraceOf(reqWith(map[string]string{
 		TraceParentHeader: "00-" + callerTrace + "-" + callerSpan + "-01",
@@ -120,8 +115,6 @@ func TestHeaderNamesThisNodesSpan(t *testing.T) {
 	}
 }
 
-// Two requests must not share a trace, or correlation says the opposite of the
-// truth.
 func TestMintedTracesAreDistinct(t *testing.T) {
 	seen := map[string]bool{}
 	for range 1000 {

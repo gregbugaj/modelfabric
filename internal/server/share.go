@@ -15,34 +15,23 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/catalog"
 )
 
-// Sharing a model's files with another node of the same owner, so a model one
-// machine already has is copied across the tailnet instead of downloaded from
-// Hugging Face again (`mfsh get <model> -from <node>`).
-//
-// Both routes are under /api/v1, so over the mesh they are same-owner only,
-// like management: weights can be gated or licensed, and handing them to any
-// tailnet member would be redistributing them. The routes serve only files
-// that belong to a model in the catalog, looked up by name, never a path
-// taken from the request.
-//
-// The file route has the shape of a Hugging Face resolve URL,
-// <repo>/resolve/<revision>/<file>, so the receiving side reuses the hub
-// client whole: resume by Range, a SHA-256 checked while the bytes stream,
-// and a .part file renamed only once the digest matches.
+// Same-owner model file sharing avoids repeated upstream downloads.
+// Routes use /api/v1 access controls and serve only catalog-owned files,
+// never request-supplied filesystem paths.
+// The <repo>/resolve/<revision>/<file> URL supports the hub client's Range
+// resume, streaming SHA-256 verification and atomic .part-file rename.
 
 func (s *Server) registerShare(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/share/model", s.handleShareModel)
 	mux.HandleFunc("GET /api/v1/share/files/{rest...}", s.handleShareFile)
 }
 
-// SharedFile is one file of a shared model.
 type SharedFile struct {
 	Name   string `json:"name"` // relative to the model's directory
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
 }
 
-// SharedModel is what a node offers for one model.
 type SharedModel struct {
 	Key    string `json:"key"`
 	Format string `json:"format"`
@@ -128,14 +117,12 @@ func serveSharedFile(w http.ResponseWriter, r *http.Request, path string) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// A weights file is bytes; a browser guessing otherwise from its first
-	// kilobyte is no use to anyone.
+	// Prevent browsers from sniffing weights as an active content type.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, "", info.ModTime(), f) // Range, for resume
 }
 
-// offer lists a model's files with their digests.
 func (s *Server) offer(m catalog.Model) (SharedModel, error) {
 	dir, rel, err := shareLayout(m)
 	if err != nil {
@@ -160,8 +147,6 @@ func (s *Server) offer(m catalog.Model) (SharedModel, error) {
 	return out, nil
 }
 
-// shareLayout returns the directory holding a model's files and where that
-// directory sits under the models root the model was found in.
 func shareLayout(m catalog.Model) (dir, rel string, err error) {
 	dir, _, err = catalog.ModelFiles(m)
 	if err != nil {
@@ -193,11 +178,8 @@ func repoToken(rel string) string {
 	return rel
 }
 
-// shareHashes remembers file digests by path, size and modification time, so
-// a second listing of the same model does not read 18 GB again. The same
-// trade the pin store makes: an edit that keeps size and mtime goes unseen
-// here, and the receiver's own digest check still catches corruption in
-// transit.
+// shareHashes caches digests by path, size and mtime. Edits preserving size
+// and mtime are not detected; receiver digest checks still catch transit errors.
 type shareHashes struct {
 	mu   sync.Mutex
 	sums map[string]shareHash
@@ -209,8 +191,6 @@ type shareHash struct {
 	sum  string
 }
 
-// shareHashesMax bounds the cache. Keys are catalog files, not request input,
-// so this is a ceiling for a very large models directory, not a defence.
 const shareHashesMax = 4096
 
 func (h *shareHashes) digest(path string) (int64, string, error) {

@@ -14,33 +14,19 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// Prometheus metrics for what this node's router did.
-//
-// ModelFabric already reads engines' /metrics and republishes them for llm-d; this
-// is the other direction — what ModelFabric itself knows and nothing else can see:
-// which node and engine served a request, whether it crossed the tailnet, and
-// who chose the destination. The engine's own counters stay the engine's.
-//
-// Written by hand rather than through a client library. The text format is a
-// dozen lines of printing, and ModelFabric is a single binary with no dependency it
-// did not have to have.
-//
-// Cardinality is the thing that kills a metrics endpoint, so the labels are
-// only ever values from a small fixed set: models and nodes in one mesh, a
-// status code, and who routed it. Engine instance ids are deliberately left
-// out — they change on every reload, so a long-lived node would grow a new
-// time series every time a model restarted.
+// Prometheus counters for requests routed by this node, separate from engine
+// metrics. Labels use mesh models, nodes, status codes and router names.
+// Instance IDs are excluded because reloads would create unbounded time series.
 
-// durationBuckets are upper bounds in seconds. Chosen around what a local mesh
-// actually produces: a cached short completion in tens of milliseconds, a cold
-// 27B prefill in tens of seconds.
+// durationBuckets are upper bounds in seconds, from cached completions in
+// milliseconds to cold prefills taking tens of seconds.
 var durationBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 
 // seriesKey is one labelled series. Every field is low-cardinality by
 // construction; see the note above.
 type seriesKey struct {
 	model  string
-	node   string // the node that served it; empty when nobody could say
+	node   string // serving node; empty when unknown
 	status int
 	via    string // "" when this node's own router chose
 	local  bool
@@ -95,19 +81,13 @@ func (m *metrics) record(e router.Event) {
 	}
 }
 
-// handleMetrics serves the Prometheus text exposition format.
-//
-// On loopback it is open, like the dashboard. Over the tailnet it is reachable
-// only from a device Tailscale reports as the same owner — a scraper on
-// another of your own machines — because model names and traffic volumes are
-// not something every tailnet member should read. No prompt ever appears here,
-// captured or not.
+// handleMetrics serves Prometheus text metrics on loopback or to same-owner
+// Tailscale devices. Metrics include model names and volumes, never prompts.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	s.metrics.write(w, s.meshGauges())
 }
 
-// meshGauges is the state half: what the node is, rather than what it did.
 func (s *Server) meshGauges() []gauge {
 	if s.m == nil {
 		return nil
@@ -221,7 +201,6 @@ func (m *metrics) write(w io.Writer, gauges []gauge) {
 	_, _ = io.WriteString(w, b.String())
 }
 
-// labels renders one series' label set, always in the same order.
 func labels(k seriesKey) string {
 	node := k.node
 	if node == "" {
@@ -238,15 +217,10 @@ func labels(k seriesKey) string {
 		escape(k.model), escape(node), k.status, escape(via), k.local)
 }
 
-// withLabel adds one label to a rendered set, which is how a histogram bucket
-// differs from the series it belongs to.
 func withLabel(rendered, name, value string) string {
 	return rendered[:len(rendered)-1] + fmt.Sprintf(`,%s="%s"}`, name, escape(value))
 }
 
-// escape applies the exposition format's rules for a label value: backslash,
-// double quote and newline. A model id comes from a filename, so this is not
-// hypothetical.
 func escape(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 	return r.Replace(s)

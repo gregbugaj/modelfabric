@@ -1,5 +1,3 @@
-/* ---- settings dialog ---- */
-
 #settings-dialog {
   width: min(880px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
   padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
@@ -25,7 +23,6 @@
 .btn.icon { padding: 5px 9px; }
 label.btn { display: inline-flex; }
 
-/* A one-line explanation under a panel head, e.g. what the preferred node does. */
 .panel-note {
   margin: 0; padding: 9px 18px; font-size: 13px; color: var(--text-muted);
   border-bottom: 1px solid var(--border-soft);

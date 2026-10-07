@@ -60,7 +60,6 @@ func TestValidateRefusesManagedFlagsAndBadValues(t *testing.T) {
 	}
 }
 
-// Every LM Studio setting reaches the engine's command line as llama.cpp's flag.
 func TestSettingsReachTheCommandLine(t *testing.T) {
 	d := testDef()
 	moe := catalog.Model{Key: "moe", Path: "/moe.gguf", Layers: 48, Experts: 128, DraftLayers: 1, SizeBytes: 1}
@@ -85,7 +84,6 @@ func TestSettingsReachTheCommandLine(t *testing.T) {
 			t.Errorf("argv missing %q\n  got: %s", want, got)
 		}
 	}
-	// ExtraArgs come last, after the runtime's own.
 	if !strings.HasSuffix(strings.TrimSpace(got), "--no-warmup") {
 		t.Errorf("extra args are not last: %s", got)
 	}
@@ -104,7 +102,6 @@ func TestDraftModelAndSpeculationModes(t *testing.T) {
 	if off.Speculative || off.DraftMax != 0 {
 		t.Fatalf("spec_mode off still speculates: %+v", off)
 	}
-	// mtp without a head does nothing rather than inventing one.
 	none := llamaCPP{}.Apply(d, plain, Requested{Settings: Settings{SpecMode: ptr("mtp")}})
 	if none.Speculative {
 		t.Fatal("mtp requested for a model without a draft head")

@@ -220,10 +220,9 @@ func TestExpireMarksStalePeersDead(t *testing.T) {
 func TestPreferredNodeWinsRegardlessOfLoad(t *testing.T) {
 	m := testMesh(t)
 	setEngine(m.engines[0], "qwen")
-	addPeer(m, "predator", 0, "qwen") // idle
-	addPeer(m, "sites-01", 0, "qwen") // idle
+	addPeer(m, "predator", 0, "qwen")
+	addPeer(m, "sites-01", 0, "qwen")
 
-	// Without a preference the idle peers beat the local engine only on score.
 	m.SetPreferred("sites-01")
 	got := names(m.Candidates("qwen", false))
 	if got[0] != "sites-01" {
@@ -246,7 +245,6 @@ func TestPreferredNodeFallsBackWhenUnusable(t *testing.T) {
 	setEngine(m.engines[0], "qwen")
 	addPeer(m, "predator", 0, "qwen")
 
-	// Preferred node holds no copy of this model.
 	m.SetPreferred("sites-01")
 	addPeer(m, "sites-01", 0, "some-other-model")
 	got := names(m.Candidates("qwen", false))
@@ -254,7 +252,6 @@ func TestPreferredNodeFallsBackWhenUnusable(t *testing.T) {
 		t.Fatalf("expected the other holders to remain routable, got %v", got)
 	}
 
-	// Preferred node is down.
 	m.peers["predator"].alive = true
 	m.SetPreferred("predator")
 	m.peers["predator"].alive = false
@@ -295,7 +292,6 @@ func TestUnknownSlotsAreNeverFull(t *testing.T) {
 	}
 }
 
-// Equally loaded engines: the faster prefill should take the cold prompt.
 func TestEqualLoadPrefersFasterPrefill(t *testing.T) {
 	m := testMesh(t)
 	setEngine(m.engines[0], "qwen")

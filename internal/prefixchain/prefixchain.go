@@ -1,10 +1,6 @@
-// Package prefixchain identifies a request's prompt by a chain of block
-// hashes: each block's hash includes the one before it, so one hash names the
-// whole prompt up to that point and a longer prompt's chain starts with a
-// shorter one's. ModelFabric's router and the engine shim's disk prompt cache
-// use the same chain. One package, so
-// a conversation hashes the same whichever way it arrived — and a leaf, since
-// the shim cannot import the router (mesh imports the shim).
+// Package prefixchain hashes prompt blocks as a chain, so each hash identifies
+// the full prefix through that block. The router and engine shim share this
+// format through a separate package to avoid an import cycle.
 package prefixchain
 
 import (
@@ -84,7 +80,6 @@ func WithSlot(body []byte, slot int) []byte {
 		return body
 	}
 	pin := []byte(`"id_slot":` + strconv.Itoa(slot))
-	// An empty object takes no comma after the new field.
 	if rest := bytes.TrimLeft(body[i+1:], " \t\r\n"); len(rest) > 0 && rest[0] != '}' {
 		pin = append(pin, ',')
 	}

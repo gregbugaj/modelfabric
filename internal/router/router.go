@@ -26,7 +26,6 @@ import (
 // short enough that the duration arithmetic behind it cannot overflow.
 const maxJITTTLSeconds = 7 * 24 * 60 * 60
 
-// maxMultipartBytes bounds a buffered upload (audio transcription and friends).
 const maxMultipartBytes = 256 << 20
 
 // HopHeader marks a request that has already been forwarded once. A node that
@@ -34,15 +33,9 @@ const maxMultipartBytes = 256 << 20
 // This is what keeps the mesh loop-free without any topology knowledge.
 const HopHeader = "X-Fabric-Hop"
 
-// TraceHeader carries the id that ties one client request together across the
-// nodes it touches. A request forwarded from one front door to another node is
-// recorded by both — twice in the merged Activity view — and without this there
-// is nothing to say the two rows are the same request.
-//
-// It is minted at the front door the client reached, and travels with the
-// forward. It is deliberately not taken from an arbitrary client, unlike the
-// W3C traceparent that rides beside it — see trace.go for why the two are
-// trusted differently.
+// TraceHeader correlates a request across peer hops and Activity records.
+// Only peer hops may supply it; external traceparent has separate trust rules
+// (see trace.go).
 const TraceHeader = "X-Fabric-Trace"
 
 // NodeHeader and EngineHeader name the machine and engine process that served
@@ -61,11 +54,7 @@ type Router struct {
 	aff *Placement // nil when prefix affinity is off
 	// queue, when set, holds a request here while no engine has a slot it
 	// should take. nil sends every request the moment it arrives.
-	queue *Queue
-	// routed counts, per node, the requests this router sent there and how
-	// many of those were a conversation arriving from another engine. A move
-	// is where re-reading comes from, and nothing else on the dashboard shows
-	// one: in the runs of 2026-10-05 it was worked out from trajectory files.
+	queue    *Queue
 	routedMu sync.Mutex
 	routed   map[string]*routedTo
 
@@ -83,17 +72,9 @@ type Router struct {
 	// or the model is unknown here), which keeps the plain 404.
 	JIT func(ctx context.Context, model string, ttlSeconds int) (attempted bool, err error)
 
-	// Stall bounds how long a request may make no progress at all before it is
-	// abandoned. Zero uses DefaultStall; negative disables it.
-	//
-	// This is a backstop against a request that holds a slot forever, which is
-	// not hypothetical: a client timed out without closing its connection, so
-	// it stopped reading while the engine kept writing. TCP backpressure then
-	// stalled the engine mid-generation, and every party sat still — the client
-	// waiting, the engine blocked on a write, and ModelFabric blocked forwarding it.
-	// The engine's only slot stayed occupied for ninety minutes, the node kept
-	// advertising itself as busy, and two idle machines went unused because a
-	// slot is the unit every router counts in.
+	// Stall bounds inactivity in upstream reads and client writes, preventing
+	// stalled connections from holding slots indefinitely. Zero uses DefaultStall;
+	// negative disables it.
 	Stall time.Duration
 
 	// MaxOutputTokens is filled into a generating request that states no limit
@@ -102,16 +83,11 @@ type Router struct {
 	MaxOutputTokens int
 }
 
-// DefaultStall is deliberately far longer than any request should need. It
-// bounds *silence*, not duration, and silence is normal while a prompt is being
-// prefilled: 60k tokens on the Apple Silicon node in this fleet is minutes
-// before the first token appears. Anything short enough to feel responsive here
-// would kill legitimate long prefills, which is a worse failure than the one it
-// prevents.
+// DefaultStall bounds silence, not total duration. Long prompts can take
+// minutes to prefill before producing their first response byte.
 const DefaultStall = 15 * time.Minute
 
-// stallErr names what happened, because the bare error is "context canceled",
-// which reads like a client that hung up — the one thing this is not.
+// stallErr distinguishes watchdog cancellation from client cancellation.
 func (r *Router) stallErr(c mesh.Candidate, why string) error {
 	r.log.Warn("abandoned a stalled request",
 		"target", c.Name, "node", c.Node, "after", r.stall(), "why", why)
@@ -139,7 +115,6 @@ func WithoutJIT(ctx context.Context) context.Context {
 	return context.WithValue(ctx, noJITKey{}, true)
 }
 
-// JITAllowed reports whether a request may trigger a JIT load.
 func JITAllowed(ctx context.Context) bool { return ctx.Value(noJITKey{}) == nil }
 
 // jitCandidates JIT-loads model when nothing serves it. It returns the new
@@ -152,7 +127,7 @@ func (r *Router) jitCandidates(w http.ResponseWriter, req *http.Request, path, m
 	}
 	// The TTL comes off the request body. It is stored as seconds and later
 	// multiplied by time.Second, so an unbounded value overflows the duration
-	// and can mean "never idle out" — or a negative one, "already expired".
+	// and can become zero (never expires) or negative (already expired).
 	if ttl < 0 {
 		ttl = 0
 	}
@@ -176,7 +151,6 @@ func (r *Router) jitCandidates(w http.ResponseWriter, req *http.Request, path, m
 	return nil, true
 }
 
-// Event describes one routed request.
 type Event struct {
 	Time     time.Time `json:"time"`
 	Path     string    `json:"path"`
@@ -192,27 +166,22 @@ type Event struct {
 	// it, zero when it went at once. It is part of Millis, not added to it.
 	QueuedMillis int64  `json:"queued_ms,omitempty"`
 	Error        string `json:"error,omitempty"`
-	// Trace ties this event to the other records of the same client request —
-	// the row at the front door and the row at the node that served it. Empty
-	// only for an event recorded before the id was minted.
+	// Trace correlates front-door and serving-node events for the same request.
+	// Empty only on records created before trace allocation.
 	Trace string `json:"trace,omitempty"`
-	// Via names whoever chose the engine when it was not this router —
-	// "llm-d" for a request ModelFabric proxied to its Envoy. Node and Engine are
-	// filled in where ModelFabric can map the upstream back to an engine it knows;
-	// where it cannot, they stay empty rather than being guessed at, and
-	// Upstream says what was dialled.
+	// Via names an external scheduler, such as "llm-d". Node and Engine remain
+	// empty if the upstream cannot be mapped to a known engine; Upstream records
+	// the address dialled.
 	Via string `json:"via,omitempty"`
 	// Upstream is the address the chooser reported dialling, when it named
 	// one. Kept even after Node and Engine resolve: it is the ground truth
 	// behind them, and the only thing left to go on when they do not.
 	Upstream string `json:"upstream,omitempty"`
-	// ReqBody and RespBody are the request and response as sent, truncated to
-	// the configured cap, and only when body logging is turned on. Empty
-	// otherwise — which is the default.
+	// ReqBody and RespBody hold capped payloads only when body capture is enabled;
+	// empty by default.
 	ReqBody  string `json:"req_body,omitempty"`
 	RespBody string `json:"resp_body,omitempty"`
-	// Truncated says the bodies above were cut at the cap, so nobody reads a
-	// clipped JSON document as a malformed one.
+	// Truncated distinguishes capped payloads from malformed complete JSON.
 	Truncated bool `json:"truncated,omitempty"`
 }
 
@@ -223,21 +192,10 @@ type BodyLog struct {
 	Max     int
 }
 
-// DefaultBodyCap is how much of a request or response body a captured event
-// keeps.
-//
-// 8KB cut a multimodal request off well before anything interesting: a chat
-// body carrying a base64 image runs to megabytes, and 8KB did not even reach
-// the end of the message list on an ordinary tool-calling exchange. 32KB holds
-// a realistic prompt and the reply to it.
-//
-// The cost is memory, because the ring is in memory: the backlog's default 200
-// events hold two bodies each, so about 13MB, and an operator who raises the
-// backlog to its 2000 maximum is asking for about 128MB. Capture is off by
-// default, so none of it is held until someone turns it on.
+// DefaultBodyCap limits each captured request or response body. At 32 KiB,
+// 200 events can retain about 13 MiB and 2000 about 128 MiB. Capture is opt-in.
 const DefaultBodyCap = 32 << 10
 
-// Cap is Max with its default applied.
 func (b BodyLog) Cap() int {
 	if b.Max <= 0 {
 		return DefaultBodyCap
@@ -269,13 +227,8 @@ func constrainedOutput(responseFormat, grammar string, jsonSchema json.RawMessag
 	return grammar != "" || len(bytes.TrimSpace(jsonSchema)) > 0
 }
 
-// carriesImage reports whether a request has an image in it.
-//
-// Content is a string on an ordinary text turn and an array of parts when it
-// is multimodal, so it is decoded loosely: anything that fails to parse as
-// parts is text, which is the safe reading — it only widens where the request
-// may go, and a text request reaching a vision engine works fine. The reverse
-// does not, which is why this exists.
+// carriesImage checks multimodal content parts. String content and values
+// that cannot be decoded as parts are treated as text.
 func carriesImage(messages []struct {
 	Content json.RawMessage `json:"content"`
 }) bool {
@@ -296,13 +249,8 @@ func carriesImage(messages []struct {
 	return false
 }
 
-// CarriesImage reports whether a buffered request body has an image in it, for
-// callers outside the router that have the bytes but not the decoded request —
-// the front door, which has to tell a scheduler in front of it that this one
-// needs an engine with a projector.
-//
-// A body it cannot parse is text, for the same reason as carriesImage: that
-// only widens where the request may go.
+// CarriesImage checks a buffered request body for image content. Unparseable
+// bodies are treated as text.
 func CarriesImage(body []byte) bool {
 	var probe struct {
 		Messages []struct {
@@ -339,8 +287,6 @@ func wrongKind(path, model string, cs []mesh.Candidate) string {
 	return fmt.Sprintf("%q is an embedding model: it serves /v1/embeddings and cannot generate text on %s", model, path)
 }
 
-// splitVision separates candidates that can serve an image from those that
-// cannot, naming the second group for the error message.
 func splitVision(in []mesh.Candidate) (kept []mesh.Candidate, dropped []string) {
 	for _, c := range in {
 		if c.NoVision {
@@ -362,8 +308,6 @@ func candidateName(c mesh.Candidate) string {
 	return name
 }
 
-// splitConstrained separates candidates that honour constrained output from
-// those that do not, naming the second group for the error message.
 func splitConstrained(in []mesh.Candidate) (kept []mesh.Candidate, dropped []string) {
 	for _, c := range in {
 		if c.NoConstrainedDecoding {
@@ -381,7 +325,6 @@ func (r *Router) emit(e Event) {
 	}
 }
 
-// bodyLog reads the live capture settings, or the zero value when none are set.
 func (r *Router) bodyLog() BodyLog {
 	if r.Bodies == nil {
 		return BodyLog{}
@@ -399,8 +342,6 @@ func (r *Router) EnablePrefixAffinity() {
 	r.aff = NewPlacement(nil)
 }
 
-// EngineGone tells placement that the named candidate's engine has stopped or
-// been replaced, so nothing is cached there any more (see Placement.Forget).
 func (r *Router) EngineGone(name string) {
 	if r.aff != nil {
 		r.aff.Forget(name)
@@ -433,8 +374,6 @@ func (r *Router) EnableQueue(grace, maxWait time.Duration) {
 
 type routedTo struct{ calls, moved int64 }
 
-// countRoute records one request sent to node; moved says its conversation
-// was last on a different engine.
 func (r *Router) countRoute(node string, moved bool) {
 	r.routedMu.Lock()
 	defer r.routedMu.Unlock()
@@ -465,7 +404,6 @@ func (r *Router) Routed() []mesh.RoutedTo {
 	return out
 }
 
-// Holding lists the requests this router is holding for a slot.
 func (r *Router) Holding() []mesh.HeldRequest {
 	if r.queue == nil {
 		return nil
@@ -478,7 +416,6 @@ func (r *Router) Holding() []mesh.HeldRequest {
 	return out
 }
 
-// Queued reports how many requests this router is holding for a slot.
 func (r *Router) Queued() int {
 	if r.queue == nil {
 		return 0
@@ -486,7 +423,6 @@ func (r *Router) Queued() int {
 	return r.queue.Waiting()
 }
 
-// Forward routes a JSON inference request and streams the upstream response.
 func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) {
 	// Minted before anything can fail, so even a rejected request is traceable
 	// and the client is told the id whatever the outcome.
@@ -578,10 +514,8 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 		candidates = kept
 	}
 
-	// The wrong kind of model for the endpoint. The engine's own answers were
-	// a 501 and a 500 ("the current context does not logits computation"),
-	// each retried on every candidate and returned as a 502 quoting a 502: it
-	// read as the mesh failing, when the request could never have worked.
+	// Reject model/endpoint mismatches before retries. Engines otherwise return
+	// 501 or 500, which forwarding misreported as mesh failures.
 	if msg := wrongKind(path, probe.Model, candidates); msg != "" {
 		r.emit(Event{Time: time.Now(), Path: path, Model: probe.Model, Trace: trace,
 			Status: http.StatusBadRequest, Error: msg})
@@ -589,11 +523,8 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 		return
 	}
 
-	// An engine loaded without its projector answers to a multimodal model's
-	// name and fails any request carrying an image — llama.cpp returns
-	// "failed to process mtmd chunk" for the whole request. Which machine is
-	// idle must not decide whether an image can be read, so the same rule as
-	// constrained output applies: take those engines out of the running.
+	// Engines loaded without a projector fail image requests despite serving
+	// the same model name. Exclude them before ranking candidates.
 	image := carriesImage(probe.Messages)
 	if image {
 		kept, dropped := splitVision(candidates)
@@ -641,11 +572,9 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 		defer func() { r.queue.Done(grant, used.prompt, used.completion) }()
 		onUsage = func(u usage) { used = u }
 		candidates, queuedFor, grant = r.queue.Admit(req.Context(), Ask{Blocks: choice.blocks, Bytes: len(body)}, func() ([]mesh.Candidate, string) {
-			// Read again each time, the first included: the queue holds its
-			// lock while it does, and needs the mesh as it is now. Through
-			// the same filters the first look went through. If the model has gone from
-			// every node in the meantime, the last order stands and the
-			// dispatch reports it.
+			// Refresh candidates under the queue lock to avoid stale load counts.
+			// Reapply the request filters; if every candidate disappeared, preserve
+			// the last order so dispatch reports the failure.
 			cs := r.m.Candidates(probe.Model, forwarded)
 			if constrained {
 				cs, _ = splitConstrained(cs)
@@ -743,16 +672,12 @@ type result struct {
 	node, engine string
 }
 
-// dispatch sends the request to one candidate.
 func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, c mesh.Candidate, body []byte, path string, prefilled func()) (result, error) {
 	return r.dispatchRaw(w, req, c, servedBody(c, body), path, "application/json", prefilled)
 }
 
-// servedBody rewrites the request's "model" to the id the chosen engine
-// answers to, for an engine that cannot be told to answer to ours (mlx-lm; see
-// mesh.Engine.Served). Everything else in the body is passed through
-// untouched, and a body we cannot parse is left alone — the engine's own error
-// is better than one invented here.
+// servedBody rewrites only "model" to the engine's served ID (see mesh.Engine.Served).
+// Unparseable bodies are passed through for the engine to reject.
 func servedBody(c mesh.Candidate, body []byte) []byte {
 	if c.ServedModel == "" {
 		return body
@@ -840,7 +765,7 @@ func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Ca
 	for k, vs := range resp.Header {
 		lower := strings.ToLower(k)
 		// Node and engine are decided below. The trace is already on the
-		// response, set at the front door — copying the peer's echo of it
+		// response, set at the front door; copying the peer's echo of it
 		// would send the same header twice.
 		if hopByHop[lower] || lower == strings.ToLower(NodeHeader) ||
 			lower == strings.ToLower(EngineHeader) || lower == strings.ToLower(TraceHeader) {
@@ -881,17 +806,13 @@ func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Ca
 				prefilled = nil
 			}
 			progress()
-			// A write deadline, because the blocked party in the incident this
-			// guards against was the write: the client had stopped reading, so
-			// w.Write never returned and no amount of watching the read side
-			// would have noticed. Set per chunk, so it bounds this write rather
-			// than the whole response.
+			// A client that stops reading can block Write while the read watchdog
+			// sees progress. Bound each write separately from the response duration.
 			if stall := r.stall(); stall > 0 {
 				_ = rc.SetWriteDeadline(time.Now().Add(stall))
 			}
 			written, werr := w.Write(buf[:n])
 			res.bytes += int64(written)
-			// Bounded by the cap: a long stream is clipped, not accumulated.
 			if bl := r.bodyLog(); bl.Enabled && len(res.body) < bl.Cap() {
 				res.body = append(res.body, buf[:n]...)
 			}
@@ -928,10 +849,8 @@ var hopByHop = map[string]bool{
 	"transfer-encoding": true, "upgrade": true, "content-length": true,
 }
 
-// clientCredentials are the caller's own secrets. An engine does not need
-// them — ModelFabric gives an engine its own key when one is required — and a peer
-// must never be handed the end user's credential just because it was chosen
-// to serve the request. They stop at this node.
+// clientCredentials must stop at this node. Engines receive configured engine
+// keys, and peers never receive the caller's secrets.
 var clientCredentials = map[string]bool{
 	"authorization": true, "cookie": true, "x-api-key": true, "api-key": true,
 }
@@ -956,11 +875,8 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	})
 }
 
-// ForwardMultipart routes a multipart request such as an audio transcription.
-//
-// The model arrives as a form field rather than a JSON key, so the body is
-// buffered, parsed for that one field, and then replayed verbatim upstream —
-// re-encoding it would risk changing boundaries or dropping file parts.
+// ForwardMultipart buffers multipart requests to read the model form field,
+// then replays the original bytes to preserve boundaries and file parts.
 func (r *Router) ForwardMultipart(w http.ResponseWriter, req *http.Request, path string) {
 	tc := TraceOf(req)
 	trace := tc.TraceID
@@ -1020,8 +936,6 @@ func (r *Router) ForwardMultipart(w http.ResponseWriter, req *http.Request, path
 	writeError(w, http.StatusBadGateway, fmt.Sprintf("all candidates for %q failed: %v", model, lastErr))
 }
 
-// multipartModel pulls the "model" field out of a multipart body without
-// disturbing it.
 func multipartModel(contentType string, body []byte) (string, error) {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {

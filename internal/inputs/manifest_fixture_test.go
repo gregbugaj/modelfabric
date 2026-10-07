@@ -11,7 +11,7 @@ import (
 // Snapshot enumeration is currently only needed to construct verification fixtures.
 // buildManifestFromDir walks root and manifests every file. Use it for a
 // Hugging Face snapshot, where tokenizer, processor and config files must all
-// be covered — not just the weights.
+// be covered; not just the weights.
 //
 // Symlinks are resolved rather than skipped. A Hugging Face snapshot is built
 // almost entirely from symlinks into the shared blob cache, so skipping them

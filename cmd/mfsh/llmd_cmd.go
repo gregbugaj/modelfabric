@@ -18,7 +18,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// llmdCmd groups llm-d integration commands.
 func llmdCmd(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
@@ -51,9 +50,6 @@ func llmdInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	// These are written into the Envoy bootstrap and the EPP's command line,
-	// where an out-of-range value produces a config that will not load — or,
-	// worse, one that loads with a port nobody expects.
 	for name, port := range map[string]int{"-listen": *listen, "-epp-port": *eppPort} {
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("%s must be a port between 1 and 65535 (got %d)", name, port)
@@ -275,8 +271,6 @@ func llmdManage(sub string, args []string) error {
 	}
 }
 
-// llmdInstall fetches the pinned EPP (from llm-d's image, over HTTPS — no
-// container runtime) and Envoy (its official release binary).
 func llmdInstall() error {
 	cfg := llmd.Config{Tools: filepath.Join(fabricHome(), "tools")}
 	if cfg.Installed() {

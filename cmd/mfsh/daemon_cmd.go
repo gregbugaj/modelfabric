@@ -20,10 +20,7 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/osproc"
 )
 
-// `mfsh up` / `mfsh down` manage a background node, so `mfsh status` on a fresh
-// shell has something to talk to. The pid file records the process birth time
-// alongside the pid for the same reason the supervisor does: a pid on its own
-// is not an identity once pids get reused.
+// `mfsh up` and `mfsh down` manage a background node. Its record includes process birth time to detect PID reuse.
 
 type daemonRecord struct {
 	PID     int    `json:"pid"`
@@ -36,15 +33,11 @@ func daemonRecordPath() string { return filepath.Join(defaultStateDir(), "node.j
 
 func readDaemonRecord() (*daemonRecord, error) { return readRecord(daemonRecordPath()) }
 
-// listenRecordPath is where a running node says which address it holds,
-// however it was started. node.json is `mfsh up`'s alone — `mfsh down` stops
-// what it names — so a foreground `mfsh serve` must not write there; without
-// a record of its own, a node on -port 3000 was invisible to every command.
+// listenRecordPath records foreground and background listeners separately from
+// node.json, which mfsh down uses to identify managed background nodes.
 func listenRecordPath() string { return filepath.Join(defaultStateDir(), "listen.json") }
 
-// writeListenRecord records this process as listening on listen, and returns
-// what removes the record again — only while it is still this process's, so a
-// node exiting late cannot delete the record of the one that replaced it.
+// writeListenRecord records the listener and returns cleanup that removes only this process's record.
 func writeListenRecord(listen string) (func(), error) {
 	pid := os.Getpid()
 	birth, err := osproc.BirthID(pid)
@@ -91,7 +84,6 @@ func readRecord(path string) (*daemonRecord, error) {
 	return &r, nil
 }
 
-// daemonAlive reports whether the recorded process is still the one we started.
 func daemonAlive(r *daemonRecord) bool {
 	if r == nil || r.PID <= 0 {
 		return false
@@ -104,11 +96,7 @@ func daemonAlive(r *daemonRecord) bool {
 }
 
 // ensureNode starts the local node if it is not already running.
-//
-// `lms ls` prints "Waking up LM Studio service..." and just works; making the
-// user read a dial error and then run a second command is the CLI doing less
-// than it could. Only the local default address is auto-started — a remote
-// -addr belongs to someone else and we must not try to manage it.
+// Only the local default address may be auto-started; remote nodes are not managed here.
 func ensureNode(addr string) error {
 	if addr != defaultAddr {
 		return nil
@@ -117,8 +105,6 @@ func ensureNode(addr string) error {
 		return nil
 	}
 	if r, err := readDaemonRecord(); err == nil && daemonAlive(r) {
-		// Recorded as running but not answering yet — it is probably still
-		// coming up, so give it a moment rather than starting a second one.
 		return waitHealthy(addr, 10*time.Second)
 	}
 	fmt.Fprintln(os.Stderr, "Waking up ModelFabric node...")
@@ -147,10 +133,7 @@ func upCmd(args []string) error {
 		*listen = addr
 	}
 
-	// Checking for a node and starting one is a read-modify-write on the
-	// daemon record and the port. Two `mfsh up` at once — or an auto-starting
-	// command racing one — could both see nothing running and both spawn, and
-	// the loser would then rewrite or remove the winner's record.
+	// Serialize startup so concurrent commands cannot spawn competing nodes or overwrite each other's records.
 	unlock, err := lockDaemonStart()
 	if err != nil {
 		return err
@@ -178,7 +161,6 @@ func upCmd(args []string) error {
 	return nil
 }
 
-// startNode spawns a detached node and waits for it to answer.
 func startNode(cfgPath, listen string, verbose bool) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -196,9 +178,7 @@ func startNode(cfgPath, listen string, verbose bool) error {
 	}
 	defer logFile.Close()
 
-	// The default path is left for serve to work out, not written into the
-	// node's command line: frozen there, a default from one build outlives
-	// it, and deploy.sh carries the node's flags into every restart.
+	// Let serve resolve the default config path so deploy.sh does not preserve an obsolete default in node flags.
 	argv := []string{"serve"}
 	if cfgPath != defaultConfigPath() {
 		argv = append(argv, "-config", cfgPath)
@@ -230,9 +210,7 @@ func startNode(cfgPath, listen string, verbose bool) error {
 		Listen: addr, Started: time.Now().UTC().Format(time.RFC3339),
 	}
 	b, _ := json.MarshalIndent(rec, "", "  ")
-	// The log directory is not always inside the state directory, so this can
-	// be the first thing written there: without the MkdirAll the record fails
-	// and `mfsh up` reports a start that did happen as a failure.
+	// The log directory may be outside the state directory and may not yet exist.
 	if err := os.MkdirAll(filepath.Dir(daemonRecordPath()), 0o755); err != nil {
 		return err
 	}
@@ -244,10 +222,6 @@ func startNode(cfgPath, listen string, verbose bool) error {
 
 	base := httpBase(addr)
 	if err := waitHealthy(base, 20*time.Second); err != nil {
-		// The record was written and the child released before startup was
-		// known to have worked. Leaving both behind meant a node that came up
-		// but never answered still looked "already running" to the next
-		// `mfsh up`, with nothing to stop.
 		if daemonAlive(&rec) {
 			if pr, ferr := os.FindProcess(rec.PID); ferr == nil {
 				_ = pr.Signal(syscall.SIGTERM)
@@ -257,9 +231,7 @@ func startNode(cfgPath, listen string, verbose bool) error {
 		return fmt.Errorf("node started (pid %d) but did not become healthy: %w\nit has been stopped; logs: %s",
 			rec.PID, err, logPath)
 	}
-	// Healthy is only ours if our process is still alive: one that exited
-	// (a port someone else holds, a bad config) leaves whatever else is
-	// listening there to answer. A bind failure takes a moment to surface.
+	// Verify the spawned process is alive; another listener can answer the health check after a bind failure.
 	time.Sleep(500 * time.Millisecond)
 	if !daemonAlive(&rec) {
 		_ = os.Remove(daemonRecordPath())
@@ -291,12 +263,9 @@ func lockDaemonStart() (func(), error) {
 	}, nil
 }
 
-// resolveListen is the address a node started with these flags listens on:
-// the flag, else the config's listen, else the default serve uses. Never "",
-// which callers turned into defaultAddr — the address of whatever node is
-// running now (listen.json). Another node sharing the state directory, on
-// 127.0.0.1:18700, then became where `mfsh up` thought this one belonged, and
-// it refused to start on :1234 because 18700 was taken.
+// resolveListen returns the flag address, configured address or serve default.
+// Never return an empty address: callers would substitute another running
+// node's address from defaultAddr and refuse to start this node.
 func resolveListen(cfgPath, listen string) string {
 	if listen != "" {
 		return listen
@@ -375,15 +344,11 @@ func httpBase(listen string) string {
 	return loopbackBase(listen)
 }
 
-// loopbackBase is listen as a URL this machine can dial.
 func loopbackBase(listen string) string {
 	if strings.HasPrefix(listen, "http://") || strings.HasPrefix(listen, "https://") {
 		return listen
 	}
-	// Every wildcard form is reachable on loopback, and the comment already
-	// claimed as much — but only the bare ":1234" was translated, so a health
-	// check against "0.0.0.0:1234" or "[::]:1234" dialled an address that
-	// cannot be connected to on some systems.
+	// Translate wildcard addresses to loopback; dialing 0.0.0.0 or [::] fails on some systems.
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
 		return "http://" + listen
@@ -409,10 +374,8 @@ func loadListen(cfgPath string) (string, error) {
 	return c.Listen, nil
 }
 
-// withPort is listen with its port replaced, as `lms server start --port`
-// does: the bind address stays whatever the config chose, so -port never
-// widens a loopback-only listener. Only the port in listen is changed —
-// mesh_port, which every node must agree on, is not.
+// withPort replaces only the listen port, preserving the configured bind address
+// so -port cannot widen a loopback listener. mesh_port remains unchanged.
 func withPort(listen string, port int) (string, error) {
 	if port < 1 || port > 65535 {
 		return "", fmt.Errorf("-port %d is not a port; use 1-65535", port)
@@ -428,8 +391,6 @@ func withPort(listen string, port int) (string, error) {
 	return net.JoinHostPort(host, fmt.Sprint(port)), nil
 }
 
-// pickAddr chooses the node the CLI talks to: MFSH_ADDR, else the address a
-// live local node recorded (see runningListen), else the config's listen.
 func pickAddr(env, running, cfgListen string) string {
 	switch {
 	case env != "":

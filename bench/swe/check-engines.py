@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Lists every engine in `mfsh endpoints` with its real context and runtime.
+"""List engines from mfsh endpoints with their runtime and actual context.
 
 Usage: mfsh endpoints | check-engines.py
-A two-node comparison is only fair if every engine has the same n_ctx and
-runtime; a stale binary on one node once gave it half the context.
+Verify these values before comparing runs; stale binaries can change context.
 """
 import json, re, sys, urllib.request
 
 text = sys.stdin.read()
 bad = 0
 for block in text.split("  - name: ")[1:]:
-    # A block without an address or port, and an engine that will not answer,
-    # both used to end this with a traceback part-way down the list — after
-    # some engines had printed, so it read like a partial success.
+    # Report missing endpoints and unreachable engines without aborting the remaining checks.
     addr = re.search(r'address: "([^"]+)"', block)
     port = re.search(r'port: "([^"]+)"', block)
     if not addr or not port:

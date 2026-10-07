@@ -79,15 +79,10 @@
       Doctor
     </a>
 
-    <!-- The same three scheduling profiles the Routing page offers, named for
-         the traffic they suit rather than the plugins they load. A preset is a
-         framing, not a fourth profile: each one says which it applies. -->
     <div class="rail-label">Workload</div>
     <div id="rail-presets"></div>
 
-    <!-- Not a fourth workload. Any of the profiles above can schedule a model
-         that takes images; this works around a llama.cpp defect in how it
-         chunks them, and applies whichever profile is running. -->
+    <!-- Vision load settings apply independently of the scheduling profile. -->
     <div class="rail-label">Engine</div>
     <div id="rail-engine"></div>
 
@@ -110,7 +105,6 @@
     <p class="page-sub" id="page-sub" hidden></p>
 
     <section data-view="overview">
-      <!-- The front door: the one address apps use, and what happens behind it. -->
       <section class="frontdoor" aria-label="Where apps connect">
         <div class="fd-eyebrow">Apps connect to</div>
         <div class="fd-address">
@@ -140,8 +134,6 @@
       </div>
     </section>
 
-    <!-- What the mesh serves, on its own surface. The engines behind those
-         models are a different object and keep their own. -->
     <section data-view="models" hidden>
       <div class="panel">
         <div class="panel-head">
@@ -155,8 +147,6 @@
         <div class="empty" id="models-empty" hidden></div>
       </div>
 
-      <!-- Engines are their own object: the processes behind the models above,
-           not another reading of them. Their own surface says so. -->
       <div class="panel">
         <div class="panel-head">Engines <span class="capacity" id="engines-capacity"></span><span class="hint">every engine process in the mesh</span></div>
         <table>
@@ -167,10 +157,7 @@
         <div class="held-list" id="engines-held" hidden></div>
       </div>
 
-      <!-- Rates say how fast an engine is; this says how much of the fleet's
-           work it was actually given, which is what a placement decision
-           produces. A fast engine handed nothing and a slow one buried both
-           look healthy on rates alone. -->
+      <!-- Totals reveal uneven work distribution that rates alone cannot show. -->
       <div class="panel">
         <div class="panel-head">Work done <span class="hint">tokens each engine has processed since it started</span></div>
         <table>
@@ -224,10 +211,6 @@
             <span class="mm-tools">
               <span class="seg seg-sm" id="mm-group" role="group" aria-label="Group models by"></span>
               <input class="input mm-search" id="mm-search" type="search" placeholder="Filter models…" aria-label="Filter models">
-              <!-- Beside the node tabs rather than on a model's row: a slot
-                   count is a fact about a machine, and the answer is only
-                   useful as the comparison across every node serving one
-                   model. -->
               <button class="btn" id="tn-open" type="button" title="Measure how many requests each node should serve at once">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-6M4 11V3M12 21v-9M12 8V3M20 21v-4M20 13V3"/><path d="M1 15h6M9 8h6M17 17h6"/></svg>
                 Tune slots
@@ -254,10 +237,7 @@
 
     </section>
     <section data-view="routing" hidden>
-      <!-- Two routing methods, side by side: ModelFabric's own router, which
-           places every model, and llm-d, which can take one model over and
-           schedule it its own way. Which one has each model is the first
-           thing the page says; each method's controls follow. -->
+      <!-- llm-d schedules one model; ModelFabric routes the rest. -->
       <div class="rg-methods" id="rg-methods"></div>
       <div class="panel" id="rg-models-panel">
         <div class="panel-head"><span>Who routes each model</span><span class="hint">right now, across the mesh</span></div>
@@ -271,9 +251,6 @@
       </div>
 
       <div class="empty" id="rt-na" hidden>llm-d is not available on this node: it runs on Linux. ModelFabric's router places every request here.</div>
-      <!-- One subject: llm-d — its state, and which profile it schedules with.
-           Each choice is a list of rows rather than a grid of cards, because it
-           is one pick out of several — cards inside a card said it louder. -->
       <div id="routing-body">
         <div class="panel">
           <div class="panel-head">
@@ -288,16 +265,7 @@
       </div>
     </section>
 
-    <!-- This machine and what it can run share a surface: the hardware is only
-         there to explain which builds fit. Installing new ones is a separate
-         act, so it keeps its own. -->
-    <!-- Benchmark: the standard suite, run on a node against its own engine,
-         reported with everything needed to repeat it. Tune slots sits beside
-         it: a different question (how many slots should this machine run),
-         asked of the same engines. -->
     <section data-view="bench" hidden>
-      <!-- Two tools, so two tabs that read as a choice at a glance: the
-           flyout's small underline tabs here went unnoticed. -->
       <div class="bn-tabs" role="tablist">
         <button class="bn-tab active" type="button" role="tab" data-bn-tab="bench" aria-selected="true">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 14l4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/></svg>
@@ -346,8 +314,7 @@
           <button class="btn primary" id="bn-tune-open" type="button">Tune slots…</button>
         </div>
       </div>
-      <!-- The cluster as one system: requests through this node's front door,
-           placed as an app's are. Nothing is reloaded. -->
+      <!-- Cluster requests exercise front-door routing without reloading engines. -->
       <div id="bn-cluster" hidden>
         <div class="panel bn-config">
           <div class="panel-head"><span>Configuration</span><span class="hint" id="bc-door">through this node's front door, to every node holding the model</span></div>
@@ -419,16 +386,8 @@
       </div>
     </section>
 
-    <!-- What the node did, and what it is doing. Two readings of the same
-         subject — one durable and one live — so they share a surface with a
-         rule between them rather than sitting in separate cards. -->
     <section data-view="activity" hidden>
       <div class="panel">
-        <!-- Three views of one node's activity, as tabs rather than three
-             stacked tables: each carries its own controls, and together they
-             made a page you had to scroll past two of to reach the third.
-             Tabs also give the live tap a natural on/off — it runs only while
-             its own tab is showing. -->
         <div class="panel-head">
           <div class="tabs" id="act-tabs" role="tablist">
             <button class="tab active" type="button" role="tab" data-tab="requests">Requests</button>
@@ -442,15 +401,11 @@
         <div class="meta-line">
           <span class="hint" id="act-scope-hint">every request this node answered.</span>
           <span class="grow"></span>
-          <!-- Requests are held per node, so the scope is a choice rather than
-               a given: this node streams live, the mesh is polled. -->
           <div class="seg" id="act-scope">
             <button class="seg-btn active" type="button" data-scope="node">This node</button>
             <button class="seg-btn" type="button" data-scope="mesh">Whole mesh</button>
           </div>
         </div>
-        <!-- Capture is a deliberate act, so the switch is in plain sight with
-             what it does written next to it, rather than buried in settings. -->
         <div class="meta-line" id="act-capture">
           <label class="act-toggle">
             <input type="checkbox" id="act-bodies">
@@ -467,8 +422,7 @@
               <option value="2000">2000</option>
             </select>
           </label>
-          <!-- In mesh scope each node keeps its own ring, so each gets its own
-               switch; this node's stays the one on the left. -->
+          <!-- Each node owns its capture ring and switch. -->
           <span class="act-peers" id="act-peers" hidden></span>
         </div>
         <table>
@@ -480,11 +434,8 @@
         <div class="empty" id="act-log-empty"></div>
         </div>
 
-        <!-- Live replies. Deliberately has no mesh scope: the tap sits on this
-             node's own front door, so unlike Requests it cannot be merged
-             across the mesh without shipping reply text between machines.
-             Runs only while this tab is open — opening it is the deliberate
-             act, leaving it stops the tap, and nothing is kept at either end. -->
+        <!-- Live replies are local-only to avoid transferring reply text across nodes.
+             Leaving the tab closes the tap; neither end retains the text. -->
         <div class="act-tab" data-tab="replies" hidden>
         <div class="meta-line">
           <span class="hint">what this node is generating right now, as it arrives — open another node&rsquo;s dashboard to watch that one</span>
@@ -498,9 +449,7 @@
           <span class="sep">·</span>
           <label class="hint"><input type="checkbox" id="tok-thinking" checked> Show thinking</label>
           <span class="sep">·</span>
-          <!-- A reasoning model writes thousands of tokens a minute and the
-               whole fleet can be answering at once. This bounds what the page
-               holds; the node keeps nothing either way. -->
+          <!-- Bound browser history; the node retains no streamed reply text. -->
           <label class="hint">Keep last
             <select id="tok-keep" title="How many replies this page holds">
               <option value="3">3</option>
@@ -532,13 +481,10 @@
         </div>
       </div>
 
-      <!-- One request, in full: how it was routed, and what was said on the
-           wire if capture was on when it happened. -->
+      <!-- Bodies are available only if capture was enabled for the request. -->
       <aside class="panel side-panel" id="act-side" hidden aria-label="Request details"></aside>
     </section>
 
-    <!-- Every check this node can make about itself, or about a peer. The
-         node runs them; this page only renders what it is told. -->
     <section data-view="doctor" hidden>
       <div class="panel">
         <div class="panel-head">
@@ -582,11 +528,8 @@
         </div>
       </div>
 </dialog>
-<!-- Slot tuning, opening over My Models the way Discover does: how many
-     requests a node should serve at once is part of managing what it runs.
-     Two stages in one dialog — what is about to happen, then what it found.
-     The first is not a formality: the sweep reloads each node's engine once
-     per slot count, so a fleet sweep takes every engine down in turn. -->
+<!-- Confirm before tuning: each slot-count measurement reloads the engine
+     and interrupts service. -->
 <dialog id="tn-dialog" aria-labelledby="tn-title">
   <div class="dlg-head">
     <div>
@@ -601,9 +544,7 @@
     <span class="dlg-actions" id="tn-actions"></span>
   </div>
 </dialog>
-<!-- A preset says what it is about to schedule before it does it. llm-d serves
-     one model at a time, so the model is a real question when it is off; when
-     it is already running this is a confirmation with the answer filled in. -->
+<!-- llm-d serves one model; preselect the active one for confirmation. -->
 <dialog id="wl-dialog">
   <form method="dialog" id="wl-form">
     <div class="dlg-head">
@@ -641,9 +582,6 @@
     </div>
   </form>
 </dialog>
-<!-- Server settings, in the flyout My Models and Activity use: tabs for
-     the server, access, tokens and on-demand loading. Built by
-     serversettings.js; saved to the config file the node runs from. -->
 <aside class="panel side-panel" id="ss-side" hidden aria-label="Server settings"></aside>
 <div id="notice" role="status" hidden></div>
 <script type="module" src="./app.js"></script>

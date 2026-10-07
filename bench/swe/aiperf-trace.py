@@ -1,37 +1,22 @@
 #!/usr/bin/env python3
-"""Turn a recorded SWE run into a trace NVIDIA AIPerf can replay.
+"""Convert a recorded SWE run into a trace NVIDIA AIPerf can replay.
 
 Usage:
   aiperf-trace.py RECORDED_RUN_DIR OUT.jsonl [--model M] [--max-prompt N]
                   [--max-output N] [--tasks N] [--turns N] [--exact-output]
 
-A live agent run is a poor instrument for comparing routers, because the
-workload depends on the router: the agent builds each prompt from the model's
-last answer, so every run is a different set of conversations. Across four
-runs of the same 20 tasks on 2026-10-05 and 06, one task took 33, 77, 83 and
-100 calls and whole runs ranged from 749 to 831. A router could not be told
-from the draw it was dealt.
+Replay fixes prompts, order and recorded delays across routers, avoiding
+workload differences caused by live agent responses. Each model-call line has:
 
-A replay sends the recorded requests instead: the same prompts, of the same
-sizes, in the same order, for every router. AIPerf already does that
-(mooncake-trace, multi-turn sessions: each turn waits for the one before and
-then the recorded delay), so this only writes its input. One line per model
-call:
+  session_id  task identifier, preserving conversation order
+  payload     recorded messages and tool definition, temperature 0,
+              max_tokens set to the recorded response length
+  delay       agent execution delay before this call, in milliseconds
 
-  session_id  the task, so a conversation's turns stay in order
-  payload     the request exactly as it is sent: the recorded messages, the
-              agent's one tool, max_tokens set to the recorded answer's
-              length, temperature 0
-  delay       milliseconds the agent's command took before this call
-
-With --exact-output each payload also carries ignore_eos, llama.cpp's "do not
-stop early", so an answer is the recorded length and not merely no longer.
-
-What a replay cannot say is whether a task was solved; routing does not change
-that. And one thing differs from a live run, for every router alike: after a
-turn the engine's slot holds the answer it just wrote, the next request
-carries the recorded answer, which is different text, so each turn reads the
-recorded answer as new prompt.
+--exact-output adds ignore_eos so generation reaches the recorded length.
+Replay does not measure task success. Each turn carries the recorded prior
+answer, which may differ from the newly generated answer cached by the
+engine and therefore requires additional prefill.
 """
 import argparse
 import glob
@@ -121,26 +106,15 @@ def main():
             if args.turns:
                 turns = turns[:args.turns]
             if args.max_prompt:
-                # A conversation longer than the smallest engine's context
-                # fails there and succeeds elsewhere, and a failure is fast:
-                # the router that sent it to the small engine would finish
-                # sooner for having failed. Ending every conversation at a
-                # size all engines can hold keeps the script the same work
-                # wherever it lands.
+                # Limit conversations to the smallest engine context so routing to a smaller engine cannot reduce runtime by failing early.
                 turns = [t for t in turns if t["prompt"] + t["out"] <= args.max_prompt]
             if not turns:
                 continue
             sessions += 1
             pause = 0.0
             for t in turns:
-                # Writing is most of a run's time and the part routing does
-                # not change: 440,000 tokens at 20 to 80 a second made one arm
-                # 40 minutes. Capping the answers leaves every prompt, and so
-                # everything about where a conversation is cached, as it was,
-                # and an arm takes minutes. What a capped run does not show is
-                # how a long read slows the engine's other writers, since
-                # there is little writing left to slow; use the full trace for
-                # numbers that are quoted.
+                # Capping answers reduces replay time while retaining prompts and cache state.
+                # It also reduces decode/prefill contention; use full traces for reported measurements.
                 out = min(t["out"], args.max_output) if args.max_output else t["out"]
                 payload = {"model": args.model, "messages": t["messages"], "tools": BASH_TOOL,
                            "max_tokens": out, "temperature": 0, "seed": 1}

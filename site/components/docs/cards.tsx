@@ -1,12 +1,6 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
-/*
- * A two-column list of links, used at the end of a page to say where to go
- * next. Deliberately not a grid of bordered tiles with icons: the sidebar
- * already carries the navigation, and this is a short hand-off, so it is a
- * ruled list with the destination's name and one line about it.
- */
 
 export function Cards({ children }: { children: ReactNode }) {
   return <div className="mfsh-cards mt-6 grid gap-x-8 gap-y-0 sm:grid-cols-2">{children}</div>;

@@ -35,7 +35,6 @@ func post(r *Router) *httptest.ResponseRecorder {
 	return rec
 }
 
-// A 5xx before anything reaches the client is retried on the next candidate.
 func TestRetriesServerErrorBeforeCommit(t *testing.T) {
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
@@ -92,8 +91,6 @@ func TestRouteEventsCarryNoContent(t *testing.T) {
 	if len(got) != 1 || got[0].Model != "m" || got[0].Status != 200 || got[0].BytesOut == 0 {
 		t.Fatalf("event = %+v", got)
 	}
-	// Bodies ride on the event only while capture is switched on, and here it
-	// is not.
 	if got[0].ReqBody != "" || got[0].RespBody != "" {
 		t.Fatalf("route events must not carry request or response content with capture off: %+v", got[0])
 	}
@@ -145,13 +142,12 @@ func TestAffinityFollowsInFlightPrefix(t *testing.T) {
 	}
 }
 
-// JIT: a request for a model nobody serves loads it, then routes to it.
 func TestJITLoadsThenRoutes(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}))
 	defer up.Close()
-	r := routerWith(t) // no engines at all
+	r := routerWith(t)
 	var gotTTL int
 	r.JIT = func(_ context.Context, model string, ttl int) (bool, error) {
 		gotTTL = ttl
@@ -195,7 +191,6 @@ func TestJITNotAttemptedOrForwardedKeeps404(t *testing.T) {
 	}
 }
 
-// A failed JIT load is a 503 naming the cause, not a misleading 404.
 func TestJITFailureIs503(t *testing.T) {
 	r := routerWith(t)
 	r.JIT = func(context.Context, string, int) (bool, error) { return true, errors.New("out of VRAM") }
@@ -205,7 +200,6 @@ func TestJITFailureIs503(t *testing.T) {
 	}
 }
 
-// Requests that arrived over the tailnet never trigger a load.
 func TestWithoutJITBlocksLoad(t *testing.T) {
 	r := routerWith(t)
 	calls := 0
@@ -220,9 +214,7 @@ func TestWithoutJITBlocksLoad(t *testing.T) {
 	}
 }
 
-// The caller's own credentials stopped at this node once: forwarding them sent
-// an end user's Authorization to whichever engine — or whichever machine in the
-// mesh — happened to be chosen to serve the request.
+// Forwarding must strip caller credentials before dispatch to engines or peers.
 func TestClientCredentialsAreNotForwarded(t *testing.T) {
 	src := http.Header{}
 	src.Set("Authorization", "Bearer user-secret")
@@ -253,8 +245,6 @@ func TestDefaultBodyCapHoldsARealisticPrompt(t *testing.T) {
 	if got := b.Cap(); got != DefaultBodyCap {
 		t.Errorf("an unset Max takes the default, got %d", got)
 	}
-	// Under the cap is kept whole; over it is cut and says so, so a truncated
-	// body is never read as the whole request.
 	body := make([]byte, 20<<10)
 	if s, cut := b.Clip(body); cut || len(s) != len(body) {
 		t.Errorf("20KB fits in 32KB: cut=%v len=%d", cut, len(s))
@@ -263,7 +253,6 @@ func TestDefaultBodyCapHoldsARealisticPrompt(t *testing.T) {
 	if s, cut := b.Clip(big); !cut || len(s) != DefaultBodyCap {
 		t.Errorf("40KB must be cut to the cap: cut=%v len=%d", cut, len(s))
 	}
-	// An explicit setting still wins: an operator who wants less gets less.
 	if got := (BodyLog{Enabled: true, Max: 4096}).Cap(); got != 4096 {
 		t.Errorf("an explicit Max stands, got %d", got)
 	}

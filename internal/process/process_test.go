@@ -18,12 +18,8 @@ import (
 	"time"
 )
 
-// These tests drive real subprocesses on purpose: a mocked process proves
-// nothing about OS ownership,
-// process groups or PID reuse.
-//
-// The synthetic child is this same test binary re-executed with MFSH_FAKE_MODE
-// set, which avoids a separate build step while still being a real process.
+// Use real subprocesses to test ownership, process groups, and PID reuse.
+// The child re-executes this test binary with MFSH_FAKE_MODE set.
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("MFSH_FAKE_MODE"); mode != "" {
@@ -33,15 +29,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeRuntime implements the synthetic child behaviours under test:
-// delayed readiness, exiting early, ignoring TERM, and forking a worker.
 func fakeRuntime(mode string) {
 	port := os.Getenv("MFSH_FAKE_PORT")
 	model := os.Getenv("MFSH_FAKE_MODEL")
 
 	switch mode {
 	case "exit-early":
-		// Exits successfully having never served anything.
 		os.Exit(0)
 
 	case "ignore-term":
@@ -76,8 +69,6 @@ func fakeRuntime(mode string) {
 	_ = srv.ListenAndServe()
 	select {}
 }
-
-// ---- helpers ----
 
 func freePort(t *testing.T) int {
 	t.Helper()
@@ -146,8 +137,6 @@ func fakeSpec(t *testing.T, mode string, port int, env ...string) LaunchSpec {
 	}
 }
 
-// ---- acceptance cases ----
-
 func TestStartsAndReachesReady(t *testing.T) {
 	l := newLauncher(t)
 	port := freePort(t)
@@ -165,7 +154,6 @@ func TestStartsAndReachesReady(t *testing.T) {
 	}
 }
 
-// "Shell exits successfully before server readiness -> Startup fails."
 func TestExitBeforeReadinessFailsLaunch(t *testing.T) {
 	l := newLauncher(t)
 	h, err := l.Start(context.Background(), fakeSpec(t, "exit-early", freePort(t)), "inst-1")
@@ -182,7 +170,6 @@ func TestExitBeforeReadinessFailsLaunch(t *testing.T) {
 // server untouched."
 func TestUnrelatedServerOnPortDoesNotSatisfyReadiness(t *testing.T) {
 	port := freePort(t)
-	// An unrelated server that answers, but serves a different model.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -206,7 +193,6 @@ func TestUnrelatedServerOnPortDoesNotSatisfyReadiness(t *testing.T) {
 		t.Fatal("an unrelated server on the port must not satisfy readiness")
 	}
 
-	// And the unrelated server must still be running.
 	if err := httpProbe(context.Background(), LaunchSpec{
 		Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Model: "somebody-elses-model",
 	}); err != nil {
@@ -231,7 +217,6 @@ func TestStopRefusesReusedPID(t *testing.T) {
 	if err := l.Stop(context.Background(), &stale, time.Second); err != nil {
 		t.Fatalf("Stop on a reused PID should be a safe no-op, got %v", err)
 	}
-	// The real process must be untouched.
 	if got := l.Inspect(context.Background(), h); got != StateReady {
 		t.Fatalf("real process was killed via a stale handle; state = %q", got)
 	}
@@ -275,14 +260,13 @@ func TestStopKillsForkedWorkers(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(-pgid, 0); err != nil {
-			return // group is gone
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("forked worker survived; the process group was not terminated")
 }
 
-// "Two starts for one deployment/generation -> At most one owned process."
 func TestSecondStartIsRefused(t *testing.T) {
 	l := newLauncher(t)
 	port := freePort(t)
@@ -321,7 +305,6 @@ func TestUnresolvedLaunchWindowBlocksRestart(t *testing.T) {
 	if _, err := l.Start(context.Background(), fakeSpec(t, "serve", freePort(t)), "inst-2"); !errors.Is(err, ErrOwnership) {
 		t.Fatalf("Start over an unresolved window = %v, want ErrOwnership", err)
 	}
-	// Only an explicit operator action clears it.
 	if err := l.ClearUnresolved("dep-serve"); err != nil {
 		t.Fatalf("ClearUnresolved: %v", err)
 	}
@@ -332,7 +315,6 @@ func TestUnresolvedLaunchWindowBlocksRestart(t *testing.T) {
 	l.Stop(context.Background(), h, 5*time.Second)
 }
 
-// "Invalid input digest -> No process is created."
 func TestInvalidArgvCreatesNoProcess(t *testing.T) {
 	l := newLauncher(t)
 	spec := fakeSpec(t, "serve", freePort(t))
@@ -367,7 +349,6 @@ func TestStopIsIdempotent(t *testing.T) {
 }
 
 func TestBirthIDDistinguishesProcesses(t *testing.T) {
-	// Our own PID has a stable birth ID.
 	a, err := birthID(os.Getpid())
 	if err != nil {
 		t.Fatalf("birthID: %v", err)
@@ -386,7 +367,7 @@ func TestBirthIDDistinguishesProcesses(t *testing.T) {
 
 // An adopted process is one we did not spawn, so there is no cmd.Wait to tell
 // us when it exits. Stop must poll /proc instead of waiting on a channel that
-// can never close — otherwise every unload after a crash reports a false
+// can never close; otherwise every unload after a crash reports a false
 // "survived SIGKILL" while actually having stopped the process.
 func TestStopWorksOnAdoptedProcess(t *testing.T) {
 	dir := t.TempDir()
@@ -422,14 +403,12 @@ func TestStopWorksOnAdoptedProcess(t *testing.T) {
 	}
 }
 
-// Recovery must not adopt a PID that now belongs to something else.
 func TestRecoverRejectsReusedPID(t *testing.T) {
 	dir := t.TempDir()
 	l, err := NewLauncher(dir, httpProbe)
 	if err != nil {
 		t.Fatalf("NewLauncher: %v", err)
 	}
-	// A record pointing at a live PID with the wrong birth time.
 	if err := l.writeRecord(record{
 		DeploymentID: "dep", Generation: 1, InstanceID: "inst-1",
 		PID: os.Getpid(), BirthID: "definitely-not-the-real-birth-time",
@@ -443,7 +422,7 @@ func TestRecoverRejectsReusedPID(t *testing.T) {
 	}
 }
 
-// An engine killed from outside — the OOM killer — must be reported, with the
+// An engine killed from outside; the OOM killer; must be reported, with the
 // signal, so the host can withdraw it instead of routing to a dead port.
 func TestWaitReportsExternalKill(t *testing.T) {
 	l := newLauncher(t)
@@ -481,7 +460,7 @@ func TestWaitEndsWithContext(t *testing.T) {
 }
 
 // Two deployment ids that sanitize to the same string shared one record file,
-// so one could overwrite the other's ownership record — and the launcher's
+// so one could overwrite the other's ownership record; and the launcher's
 // one-process-per-deployment guarantee rests on that record.
 func TestRecordPathsDoNotCollideAfterSanitizing(t *testing.T) {
 	l := &Launcher{stateDir: t.TempDir()}
@@ -489,11 +468,9 @@ func TestRecordPathsDoNotCollideAfterSanitizing(t *testing.T) {
 	if a == b {
 		t.Fatalf("two deployments share the record %s", a)
 	}
-	// The readable part survives, so the directory is still greppable.
 	if !strings.Contains(filepath.Base(a), "qwen_qwen3-0_6b") {
 		t.Errorf("record name lost the deployment id: %s", filepath.Base(a))
 	}
-	// A record written by an older build is still found.
 	legacy := l.legacyRecordPath("qwen/qwen3-0.6b")
 	if err := os.WriteFile(legacy, []byte(`{"deployment_id":"qwen/qwen3-0.6b","pid":1}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -506,7 +483,7 @@ func TestRecordPathsDoNotCollideAfterSanitizing(t *testing.T) {
 
 // One process per deployment is the launcher's core guarantee, and it rests on
 // the record. Only a *pending* record was refused, so a launcher that had not
-// recovered yet — a fresh one after a node restart — would start a second
+// recovered yet; a fresh one after a node restart; would start a second
 // engine beside a live one.
 func TestStartRefusesWhenTheRecordedProcessIsStillRunning(t *testing.T) {
 	dir := t.TempDir()
@@ -528,7 +505,6 @@ func TestStartRefusesWhenTheRecordedProcessIsStillRunning(t *testing.T) {
 		t.Fatalf("Start returned %v; want an ownership refusal", err)
 	}
 
-	// A record for a process that is gone is not an obstacle.
 	if err := l.writeRecord(record{DeploymentID: "gone", PID: 1 << 30, BirthID: "stale"}); err != nil {
 		t.Fatal(err)
 	}

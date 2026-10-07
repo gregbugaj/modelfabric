@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// Every terminal pastes a dropped file differently, and a shape that is not
-// recognised does not fail loudly — the path is sent to the model as a
-// question about a filename.
+// Unrecognized file-drop syntax sends the path to the model instead of attaching the image.
 func TestDroppedRecognisesWhatTerminalsPaste(t *testing.T) {
 	dir := t.TempDir()
 	plain := filepath.Join(dir, "shot.png")
@@ -36,9 +34,7 @@ func TestDroppedRecognisesWhatTerminalsPaste(t *testing.T) {
 		{"dropped then a question", plain + " what is this?", []string{plain}, "what is this?"},
 		{"two files", plain + " '" + spaced + "'", []string{plain, spaced}, ""},
 		{"no path at all", "just a message", nil, "just a message"},
-		// A dropped path is usually absolute, so it begins with a slash and
-		// was being dispatched as a slash command. The chat loop now looks for
-		// drops first; these two say why that order is safe.
+		// Absolute dropped paths must be recognized before slash-command dispatch.
 		{"a real command is not a path", "/help", nil, "/help"},
 		{"a command with an argument", "/reasoning on", nil, "/reasoning on"},
 		{"a path that does not exist", "/nope/missing.png", nil, "/nope/missing.png"},

@@ -1,8 +1,3 @@
-/* ---- Mesh: the architecture ---- */
-
-/* The diagram frames itself: the tailnet boundary is the container, and each
-   node is a card because a node is a real object. A panel border around all
-   of that is a third box saying nothing. */
 .mesh-panel { overflow: visible; background: none; border: none; border-radius: 0; }
 .mesh-toolbar {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;
@@ -67,7 +62,6 @@
   display: grid; grid-template-columns: minmax(0, 1.3fr) auto; gap: 1px 10px; align-items: center;
   padding: 4px 6px; border-radius: var(--r-md); font-size: 12.5px; background: hsl(var(--surface-inset) / 0.6);
 }
-/* name · address · slots · KV; the meta line spans beneath them all. */
 .mesh-row.engine { grid-template-columns: minmax(0, 1fr) auto auto auto; }
 .mesh-row.off { opacity: 0.5; }
 .mesh-row-name { display: flex; align-items: center; gap: 6px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -83,8 +77,6 @@
 .edge-llmd { stroke: hsl(280 60% 55%); stroke-dasharray: 2 3; stroke-width: 2.2; }
 .edge-preferred { stroke: hsl(var(--success-token)); stroke-width: 2.8; }
 .edge-entry { stroke: var(--text-muted); stroke-width: 1.4; }
-/* Reachable over the tailnet, with nothing routed there yet: quieter than a
-   path a request takes, so a loaded model's route still stands out. */
 .edge-peer { stroke: hsl(215 70% 55% / 0.75); stroke-width: 1.5; stroke-dasharray: 3 4; }
 .arrow-direct { fill: hsl(var(--brand-primary)); }
 .arrow-forwarded { fill: hsl(215 70% 50%); }
@@ -93,7 +85,6 @@
 .arrow-entry { fill: var(--text-muted); }
 .arrow-peer { fill: hsl(215 70% 55% / 0.75); }
 
-/* Role marks on "Requests entering at". */
 .seg-role { font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: var(--r-sm); line-height: 16px; }
 .seg-ico { color: hsl(142 60% 35%); }
 #mesh-from .seg-btn { gap: 6px; }

@@ -33,35 +33,24 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tokentap"
 )
 
-// Config for the supervisor.
 type Config struct {
-	ModelsRoot string
-	// LogDir receives each instance's engine output. Without it the engine's
-	// own diagnostics — load timings, VRAM decisions, warnings — are lost.
-	LogDir string
-	// DataDir holds per-model defaults and presets (~/.modelfabric).
-	DataDir string
-	// LMStudioRoot enables identity lookups against LM Studio's hub catalog.
+	ModelsRoot   string
+	LogDir       string
+	DataDir      string
 	LMStudioRoot string
-	// ExtraRoots are additional models directories, scanned after ModelsRoot.
-	ExtraRoots []string
+	ExtraRoots   []string
 	// EngineBind is the interface engines listen on. Loopback is the safe
 	// default; a mesh-wide scheduler such as llm-d's EPP needs a routable
 	// address instead, at which point tailnet ACLs are the only thing in front
 	// of the engines.
-	EngineBind string
-	// SelfAddr is this node's tailnet address, advertised with each instance.
-	SelfAddr string
-	PortMin  int
-	PortMax  int
-	// StartupTimeout bounds one load. A 27B GGUF off cold cache can take a
-	// while, so this is generous by default.
+	EngineBind     string
+	SelfAddr       string
+	PortMin        int
+	PortMax        int
 	StartupTimeout time.Duration
 	StopTimeout    time.Duration
 
-	// JIT loads a model from the catalog when a request names one no node is
-	// serving, as LM Studio's JIT loading does. Off by default: the spec treats
-	// JIT, idle TTL and eviction as explicit policies, never implicit ones.
+	// JIT loads a catalog model when no node serves it. Disabled by default.
 	JIT bool
 	// JITTTL is the idle time after which a JIT-loaded instance is unloaded;
 	// zero keeps it until unloaded by hand. A request's "ttl" overrides it.
@@ -77,20 +66,15 @@ type Config struct {
 	MaxOutputTokens int
 }
 
-// ShimInfo is what an engine's shim does, for Doctor and the dashboard: the
-// proxy ModelFabric runs in front of a llama.cpp engine is otherwise invisible,
-// and it is in the path of every request llm-d schedules.
 type ShimInfo struct {
 	Port int `json:"port"`
 	// KVGauge: it publishes the KV-cache use llama.cpp keeps in /slots as a
 	// metric, which llm-d's scheduler scrapes.
-	KVGauge bool `json:"kv_gauge"`
-	// LiveTokens: it carries replies to `mfsh log -tokens` and Activity.
+	KVGauge    bool `json:"kv_gauge"`
 	LiveTokens bool `json:"live_tokens"`
 	// OutputCeiling is filled into requests that set no limit; 0 is none.
-	OutputCeiling int `json:"output_ceiling"`
-	// PromptCache: the disk prompt cache places requests here.
-	PromptCache bool `json:"prompt_cache"`
+	OutputCeiling int  `json:"output_ceiling"`
+	PromptCache   bool `json:"prompt_cache"`
 }
 
 // Shim describes the instance's shim, or nil when it has none: engines that
@@ -133,14 +117,11 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Instance is one loaded model.
 type Instance struct {
 	ID    string `json:"id"`
 	Model string `json:"model"`
-	// Variant is the catalog's location-derived key for the exact weights this
-	// instance loaded. Two variants of one model — the same weights as GGUF
-	// and as MLX, or two quantizations — share Model, so this is what tells
-	// them apart. Empty on an instance from before the field existed.
+	// Variant identifies the exact catalog weights loaded. Model keys can be
+	// shared by different formats or quantizations. Empty on older instances.
 	Variant    string          `json:"variant,omitempty"`
 	Config     runtime.Applied `json:"config"`
 	Port       int             `json:"port"`
@@ -154,9 +135,8 @@ type Instance struct {
 	Origin string `json:"origin,omitempty"`
 	// TTLSeconds unloads the instance after this long without requests;
 	// zero means never.
-	TTLSeconds int `json:"ttl,omitempty"`
-	// LastUsed is when a request last started or finished on it.
-	LastUsed time.Time `json:"last_used,omitempty"`
+	TTLSeconds int       `json:"ttl,omitempty"`
+	LastUsed   time.Time `json:"last_used,omitempty"`
 
 	// ShimPort is where ModelFabric republishes this engine's metrics with a KV
 	// gauge it synthesizes (see internal/engineshim). Advertised to llm-d,
@@ -169,8 +149,6 @@ type Instance struct {
 }
 
 type Supervisor struct {
-	// memory is what has been read of each instance's RAM cache drops and
-	// process size, kept between the many calls that ask for instance state.
 	memory  memoryWatch
 	cfg     Config
 	rts     *runtime.Registry
@@ -183,10 +161,8 @@ type Supervisor struct {
 	instances map[string]*Instance // by instance ID
 	// tap is where shims publish the replies they carry, so the node running
 	// the model can show its own output. nil until the server sets it.
-	tap     *tokentap.Tap
-	byModel map[string]string // model key -> instance ID
-	// unloaded records models an operator intentionally stopped, so nothing
-	// reloads them behind their back.
+	tap        *tokentap.Tap
+	byModel    map[string]string // model key -> instance ID
 	unloaded   map[string]bool
 	generation map[string]int
 	reserved   map[int]bool // ports handed to loads still starting
@@ -207,16 +183,14 @@ type Supervisor struct {
 	stop chan struct{} // closed by Shutdown; ends the idle reaper
 }
 
-// SetRuntimeError records why no engine runtime is available.
 func (s *Supervisor) SetRuntimeError(err error) {
 	if err != nil {
 		s.runtimeErr = err.Error()
 	}
 }
 
-// SetPinStore wires the prepared-inputs store.
-// SetSlotCache turns on the disk tier for engines loaded from here on, and
-// for adopted ones that were launched with it.
+// SetSlotCache enables disk caching for future loads and adopted instances
+// launched with slot saving enabled.
 func (s *Supervisor) SetSlotCache(c SlotCache) {
 	s.slots = c
 	for _, inst := range s.Instances() {
@@ -224,8 +198,6 @@ func (s *Supervisor) SetSlotCache(c SlotCache) {
 	}
 }
 
-// attachSlots hands an engine to the disk cache when it was launched able to
-// save slots.
 func (s *Supervisor) attachSlots(inst *Instance) {
 	if s.slots == nil || inst.Config.SlotSavePath == "" || inst.Config.SlotSavePath != s.slots.Dir() {
 		// Launched without it, or pointed at a directory that is no longer
@@ -248,10 +220,8 @@ func (s *Supervisor) attachSlots(inst *Instance) {
 	}
 }
 
-// slotSig names what a saved slot is valid for. KV state computed by one set
-// of weights restores without complaint into another of the same shape (two
-// quantizations of one model) and then answers from the wrong numbers, so the
-// exact weights are part of it, as are the build and the KV types.
+// slotSig includes exact weights, engine build and KV types. Same-shaped
+// weights can accept each other's saved state but produce incorrect output.
 func slotSig(inst *Instance) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		inst.Model, inst.Variant, inst.Runtime, inst.Config.CacheTypeK, inst.Config.CacheTypeV,
@@ -415,7 +385,6 @@ func (s *Supervisor) recover() {
 	}
 }
 
-// ClearUnresolved settles an unresolved launch window for a model.
 func (s *Supervisor) ClearUnresolved(ref string) (string, error) {
 	model, err := s.Catalog().Resolve(ref)
 	if err != nil {
@@ -437,13 +406,10 @@ func portFromEndpoint(endpoint string) int {
 	return p
 }
 
-// Rescan re-indexes the models root.
 func (s *Supervisor) Rescan() error {
 	hub := catalog.LoadHub(s.cfg.LMStudioRoot)
 	for _, e := range hub.Entries() {
 		if e.SpecErr != nil {
-			// The model still loads, with engine defaults instead of the
-			// publisher's; say why rather than silently sampling differently.
 			s.log.Warn("model.yaml not used", "model", e.ID, "err", e.SpecErr)
 		}
 	}
@@ -463,23 +429,17 @@ func (s *Supervisor) Catalog() *catalog.Catalog {
 	return s.cat
 }
 
-// LoadRequest mirrors POST /api/v1/models/load.
 type LoadRequest struct {
 	Model   string `json:"model"`
 	Runtime string `json:"runtime,omitempty"`
-	// Format picks between variants of one model — the same weights held as
-	// both GGUF and MLX, say. Empty takes whichever the catalog made primary,
-	// which is what a single-format model always has.
+	// Format selects a weights variant; empty uses the catalog's primary variant.
 	Format string `json:"format,omitempty"`
 	// Settings are this load's own options, inline in the JSON (so
 	// context_length, gpu_layers, parallel, flash_attention stay where
 	// clients already send them). They override the model's defaults.
 	runtime.Settings
-	// Preset applies a saved preset's inference settings to this load.
 	Preset string `json:"preset,omitempty"`
-	// AddInstance starts another replica even when the model is already
-	// resident. Off by default, so a plain load never silently duplicates a
-	// multi-gigabyte model. Replicas are what an llm-d pool schedules across.
+	// AddInstance creates another replica. False reuses a resident instance.
 	AddInstance bool `json:"add_instance,omitempty"`
 	EchoConfig  bool `json:"echo_load_config,omitempty"`
 	// TTL unloads the instance after this many idle seconds; zero means never.
@@ -488,11 +448,8 @@ type LoadRequest struct {
 	origin string // "jit" when loaded on demand
 }
 
-// Load starts a model and returns the operation tracking it.
-//
-// The bool reports whether this call started new work; false means it joined a
-// compatible operation already in flight, per 05B: "retry joins the existing
-// compatible operation instead of launching another process."
+// Load starts a model and returns its operation. The bool is false when
+// joining a compatible operation already in flight.
 func (s *Supervisor) Load(req LoadRequest) (*ops.Operation, bool, error) {
 	if s.cfg.Entrypoint {
 		return nil, false, fmt.Errorf("this node is an entrypoint (role %q): it routes requests into the mesh and runs no models; load on a GPU node", "entrypoint")
@@ -504,7 +461,6 @@ func (s *Supervisor) Load(req LoadRequest) (*ops.Operation, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	// The weights format decides which engines can serve this model at all.
 	def, err := s.rts.SelectFor(req.Runtime, model.Format)
 	if err != nil {
 		return nil, false, err
@@ -523,8 +479,6 @@ func (s *Supervisor) Load(req LoadRequest) (*ops.Operation, bool, error) {
 	}
 	s.mu.RUnlock()
 	if already && !req.AddInstance {
-		// Already resident: report the existing instance rather than starting
-		// a second copy of a 19GB model.
 		op, _ := s.journal.Begin("load", model.Key, "resident:"+existingID)
 		s.journal.Succeed(op.ID, existingID)
 		settled, _ := s.journal.Get(op.ID)
@@ -565,7 +519,7 @@ func (s *Supervisor) Load(req LoadRequest) (*ops.Operation, bool, error) {
 		applied.SlotSavePath = s.slots.Dir()
 	}
 	// A replica is new work by definition, so it must never join another
-	// operation — two "add a replica" calls mean two replicas.
+	// operation - two "add a replica" calls mean two replicas.
 	dedupe := "load:" + model.Key + ":" + applied.Fingerprint()
 	if req.AddInstance {
 		dedupe += ":replica:" + newInstanceID()
@@ -598,10 +552,8 @@ func (s *Supervisor) runLoad(opID string, def *runtime.Definition, model catalog
 		s.journal.Fail(opID, err)
 	}
 
-	// This IS the launch-time validation the spec asks for ("materialize
-	// immutable prepared inputs and revalidate at launch"): prepare runs
-	// immediately before the spawn, so a second Revalidate here would only
-	// re-hash gigabytes to confirm what was measured microseconds earlier.
+	// prepare revalidates inputs immediately before spawn; repeating it here
+	// would rehash the same files.
 	s.journal.Progress(opID, "verifying model inputs")
 	if _, _, err := s.prepare(def, model); err != nil {
 		fail(err)
@@ -695,8 +647,6 @@ func (s *Supervisor) runLoad(opID string, def *runtime.Definition, model catalog
 		applyTraits(eng, runtime.EngineTraits(def.Engine), applied.VisionSkipped, applied.Embedding)
 		eng.MarkReady(model.Key)
 		eng.SetSlots(applied.Parallel)
-		// What was asked for. The mesh checks it against what the engine says
-		// and publishes both, because the two have differed silently before.
 		eng.SetAskedContext(applied.ContextLength)
 		s.mesh.RegisterEngine(eng)
 		s.mu.Lock()
@@ -711,11 +661,9 @@ func (s *Supervisor) runLoad(opID string, def *runtime.Definition, model catalog
 	go s.watch(inst)
 }
 
-// watch notices an engine that dies on its own — the kernel's OOM killer, a
-// CUDA fault — and withdraws it, so nothing keeps routing to a dead port.
-// An intentional unload removes the instance before stopping it, which is how
-// the two are told apart. There is no automatic restart: whatever killed the
-// engine would most likely kill the next one too.
+// watch withdraws engines that exit unexpectedly so requests stop reaching
+// dead ports. Intentional unloads remove the instance before stopping it.
+// Exited engines are not automatically restarted.
 func (s *Supervisor) watch(inst *Instance) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -733,7 +681,7 @@ func (s *Supervisor) watch(inst *Instance) {
 	s.mu.Lock()
 	if s.instances[inst.ID] != inst {
 		s.mu.Unlock()
-		return // unloaded on purpose
+		return
 	}
 	delete(s.instances, inst.ID)
 	if s.byModel[inst.Model] == inst.ID {
@@ -773,7 +721,6 @@ func (s *Supervisor) retainStuck(instanceID string, inst *Instance) {
 	}
 }
 
-// prepare verifies the model's files and the engine binary.
 func (s *Supervisor) prepare(def *runtime.Definition, model catalog.Model) (inputs.PreparedInputs, inputs.Manifests, error) {
 	files := []string{model.Path}
 	if model.Projector != "" {
@@ -806,18 +753,13 @@ func (s *Supervisor) prepare(def *runtime.Definition, model catalog.Model) (inpu
 	return prepared, manifests, prepared.Validate()
 }
 
-// Unload stops an instance by its exact ID.
-//
-// Per 05B the binding is to the observed instance: "A request for an old
-// instance cannot stop its replacement."
+// Unload stops an instance by exact ID; stale IDs cannot stop replacements.
 func (s *Supervisor) Unload(instanceID string) (*ops.Operation, error) {
 	return s.unload(instanceID, 0)
 }
 
-// unload stops an instance. With drain > 0 it first leaves routing and waits,
-// up to drain, for requests already accepted to finish — what policy-driven
-// unloads (idle TTL, eviction) need, since nobody asked for those requests to
-// be cut off.
+// unload removes an instance from routing and stops it. With drain > 0, it
+// first waits up to drain for accepted requests to finish.
 func (s *Supervisor) unload(instanceID string, drain time.Duration) (*ops.Operation, error) {
 	s.mu.Lock()
 	inst, ok := s.instances[instanceID]
@@ -828,7 +770,6 @@ func (s *Supervisor) unload(instanceID string, drain time.Duration) (*ops.Operat
 	delete(s.instances, instanceID)
 	if s.byModel[inst.Model] == instanceID {
 		delete(s.byModel, inst.Model)
-		// Another replica, if any, becomes the model's representative.
 		for id, other := range s.instances {
 			if other.Model == inst.Model {
 				s.byModel[inst.Model] = id
@@ -855,19 +796,14 @@ func (s *Supervisor) unload(instanceID string, drain time.Duration) (*ops.Operat
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	// After the drain and before the stop: the slots die with the process, and
-	// a conversation someone returns to tomorrow is the one worth the write.
+	// Save slots after draining and before stopping the process destroys them.
 	if s.slots != nil {
 		s.journal.Progress(op.ID, "saving prompt cache to disk")
 		s.slots.Detach(context.Background(), instanceID)
 	}
 	if err := s.lch.Stop(context.Background(), inst.handle, s.cfg.StopTimeout); err != nil {
-		// The engine was forgotten before the stop was known to have worked, so
-		// a failure here ("process survived SIGKILL") left a process alive,
-		// holding its VRAM, that `mfsh ps` no longer listed and no unload could
-		// reach. Put it back in the instance table so it is visible and can be
-		// retried. It stays out of byModel and out of the mesh: nothing should
-		// route to an engine that would not die.
+		// Retain failed stops for inspection and retry, but exclude them from
+		// byModel and the mesh so no requests route to them.
 		s.retainStuck(instanceID, inst)
 		s.log.Error("engine did not stop; it is still running and still listed",
 			"model", inst.Model, "instance", instanceID, "pid", inst.PID, "err", err)
@@ -881,7 +817,6 @@ func (s *Supervisor) unload(instanceID string, drain time.Duration) (*ops.Operat
 	return settled, nil
 }
 
-// Instances returns what is resident, ordered by model.
 func (s *Supervisor) Instances() []Instance {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -968,14 +903,9 @@ func (s *Supervisor) startShim(engine, endpoint string) (int, *engineshim.Shim) 
 		s.log.Warn("no metrics shim for this engine", "endpoint", endpoint, "err", err)
 		return 0, nil
 	}
-	// The shim is the only point at which the machine running the model is in
-	// the request path for what llm-d schedules, since Envoy dials this shim
-	// rather than ModelFabric. Without this a node shows nothing of the replies its
-	// own GPU is writing while llm-d owns the model.
+	// llm-d dials the shim directly, so token capture must also run here.
 	sh.Watch(s.tap)
-	// And the output ceiling, which has to be applied here because the shim is
-	// the last ModelFabric hop before the engine: llm-d dials it directly, skipping
-	// the router that applies the same rule.
+	// Apply output limits here because llm-d bypasses the router.
 	sh.SetMaxOutputTokens(s.cfg.MaxOutputTokens)
 	port, err := s.freePort()
 	if err != nil {
@@ -991,11 +921,8 @@ func (s *Supervisor) startShim(engine, endpoint string) (int, *engineshim.Shim) 
 		s.log.Warn("metrics shim did not start", "endpoint", endpoint, "err", err)
 		return 0, nil
 	}
-	// The reservation guarded the gap between choosing the port and binding
-	// it; the listener guards it from here, and freePort probes before
-	// handing a port out. Releasing now means tearing a shim down never has
-	// to touch the instance lock — which is what deadlocked every unload
-	// when this took the lock from inside one.
+	// The bound listener now reserves the port. Releasing the reservation
+	// avoids acquiring s.mu during shim teardown, which previously deadlocked.
 	s.releasePort(port)
 	s.log.Info("engine metrics shim up", "engine", endpoint, "port", port)
 	return port, sh
@@ -1035,9 +962,8 @@ func (s *Supervisor) engineOf(runtimeName string) string {
 	return ""
 }
 
-// advertisedAddr is where peers should dial this node's instances. When
-// engines are bound to loopback there is no honest answer but 127.0.0.1, and
-// callers are expected to notice that it is unreachable from elsewhere.
+// advertisedAddr returns the engine bind address. Loopback-bound engines
+// advertise 127.0.0.1 and are unreachable from peers.
 func (s *Supervisor) advertisedAddr() string {
 	if s.cfg.EngineBind == "127.0.0.1" || s.cfg.EngineBind == "localhost" {
 		return "127.0.0.1"
@@ -1051,7 +977,6 @@ func (s *Supervisor) advertisedAddr() string {
 	return "127.0.0.1"
 }
 
-// Runtimes exposes the registry for `mfsh runtime`.
 func (s *Supervisor) Runtimes() *runtime.Registry { return s.rts }
 
 func (s *Supervisor) Shutdown() {
@@ -1068,7 +993,7 @@ func (s *Supervisor) Shutdown() {
 }
 
 // freePort finds an unused port in the configured range by binding it. The
-// bind is released immediately, so there is a small race — the engine's own
+// bind is released immediately, so there is a small race - the engine's own
 // bind failure is the authoritative check.
 func (s *Supervisor) freePort() (int, error) {
 	s.mu.Lock()
@@ -1129,17 +1054,14 @@ func newInstanceID() string {
 	return "inst-" + hex.EncodeToString(b[:])
 }
 
-// Journal exposes the operation journal for the HTTP surface.
 func (s *Supervisor) Journal() *ops.Journal { return s.journal }
 
 // ModelsRoot is where this node keeps ModelFabric's own models: downloads land
 // here, never in LM Studio's tree.
 func (s *Supervisor) ModelsRoot() string { return s.cfg.ModelsRoot }
 
-// Entrypoint reports a node that runs no models (config role "entrypoint").
 func (s *Supervisor) Entrypoint() bool { return s.cfg.Entrypoint }
 
-// orElse is the first non-zero of the two.
 func orElse(v, fallback int) int {
 	if v != 0 {
 		return v

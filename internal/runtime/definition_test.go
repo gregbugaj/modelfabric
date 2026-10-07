@@ -27,7 +27,6 @@ func TestResolveRejectsNegativeParameters(t *testing.T) {
 			t.Errorf("a negative %s was accepted", c.name)
 		}
 	}
-	// A normal definition still resolves and gets its defaults.
 	d := &Definition{Name: "test", Entrypoint: bin}
 	if err := d.Resolve(); err != nil {
 		t.Fatal(err)
@@ -56,7 +55,6 @@ func TestDefinitionArgsCannotOverrideManagedFlags(t *testing.T) {
 			t.Errorf("definition args %v were accepted", args)
 		}
 	}
-	// Ordinary tuning flags are still allowed.
 	d := &Definition{Name: "test", Entrypoint: bin, Args: []string{"--threads", "8", "--flash-attn"}}
 	if err := d.Resolve(); err != nil {
 		t.Errorf("ordinary args were refused: %v", err)

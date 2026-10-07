@@ -2,14 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-/*
- * The dashboard, as a set of screenshots: one shown large, the rest as
- * thumbnails that swap it in. Clicking the large one opens it full size.
- *
- * The large frame has a fixed shape and shows the top of each screenshot.
- * They differ a lot in height (the Benchmark page is twice as tall as the
- * Mesh), and a frame that resized on every click made the page jump.
- */
+/* Keep the large frame fixed so screenshots of different heights
+ * do not shift the page when selected. */
 
 export type GalleryShot = { src: string; label: string; alt: string };
 

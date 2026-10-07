@@ -15,8 +15,6 @@ func peekOf(t *testing.T, body string) (peeked, string) {
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	p := peekRequest(r)
-	// Whatever was peeked, the request must still yield the whole body: ModelFabric
-	// is a proxy, and a body it has half-consumed is a request it has broken.
 	rest, err := io.ReadAll(r.Body)
 	if err != nil {
 		t.Fatalf("reading the body back: %v", err)
@@ -24,10 +22,8 @@ func peekOf(t *testing.T, body string) (peeked, string) {
 	return p, string(rest)
 }
 
-// The defect this fixes: a body over the old 64KiB cap was given up on, the
-// model read as empty, llmdTarget("") declined it, and the request went to
-// ModelFabric's own router with nothing said — so llm-d never saw a long agent
-// conversation, which is the workload it exists for.
+// Bodies above the former 64 KiB cap produced an empty model, causing
+// llmdTarget to decline requests intended for the scheduler.
 func TestTheModelIsReadFromABodyOfAnySize(t *testing.T) {
 	for _, n := range []int{0, 1 << 10, 60 << 10, 70 << 10, 300 << 10, bodyPeekMax + 1} {
 		body := fmt.Sprintf(`{"model":"qwen/qwen3.8-27b","messages":[{"role":"user","content":%q}]}`,
@@ -40,7 +36,6 @@ func TestTheModelIsReadFromABodyOfAnySize(t *testing.T) {
 			t.Errorf("%d-byte filler: the body did not survive the peek (%d bytes back, want %d)",
 				n, len(rest), len(body))
 		}
-		// Only a body ModelFabric held entirely may be rewritten.
 		if want := len(body) <= bodyPeekMax; p.Whole != want {
 			t.Errorf("%d-byte filler: Whole=%v, want %v (body %d, cap %d)",
 				n, p.Whole, want, len(body), bodyPeekMax)
@@ -59,8 +54,6 @@ func TestTheOldCapNoLongerDecidesAnything(t *testing.T) {
 	}
 }
 
-// A body with the model last, which nothing guarantees against: JSON has no
-// field order, and a client that serialises messages first is within its rights.
 func TestTheModelIsFoundWhereverItIs(t *testing.T) {
 	body := `{"messages":[{"role":"user","content":"hello"}],"stream":false,"model":"m"}`
 	if p, _ := peekOf(t, body); p.Model != "m" {
@@ -68,8 +61,6 @@ func TestTheModelIsFoundWhereverItIs(t *testing.T) {
 	}
 }
 
-// "model" occurs inside conversations — a request asking about one, a tool call
-// naming one — and the request's own field is the root object's.
 func TestAModelNamedInsideTheConversationIsNotTheRequestsModel(t *testing.T) {
 	for _, body := range []string{
 		`{"messages":[{"role":"user","content":"what does \"model\": \"gpt-4\" mean?"}],"model":"m"}`,
@@ -101,8 +92,6 @@ func TestThePrefixScanOnlyReadsTheRootObject(t *testing.T) {
 	}
 }
 
-// And when the root's own field is past the prefix, nothing is returned — a
-// nested one must not stand in for it.
 func TestADecoyNeverStandsInForAModelBeyondThePrefix(t *testing.T) {
 	filler := strings.Repeat("z", bodyPeekMax+1)
 	body := fmt.Sprintf(
@@ -116,8 +105,6 @@ func TestADecoyNeverStandsInForAModelBeyondThePrefix(t *testing.T) {
 	}
 }
 
-// Truncation in the middle of the field being looked for reads as not found,
-// rather than as half a model id.
 func TestATruncatedModelIsNotAModel(t *testing.T) {
 	for _, buf := range []string{
 		`{"messages":[],"mod`,
@@ -131,7 +118,6 @@ func TestATruncatedModelIsNotAModel(t *testing.T) {
 	}
 }
 
-// A field that is present and not a string is not a model either.
 func TestANonStringModelIsRefused(t *testing.T) {
 	for _, buf := range []string{`{"model":7}`, `{"model":null}`, `{"model":{"name":"m"}}`, `{"model":["m"]}`} {
 		if got, ok := topLevelString([]byte(buf), "model"); ok {
@@ -140,9 +126,8 @@ func TestANonStringModelIsRefused(t *testing.T) {
 	}
 }
 
-// Not JSON, or not a JSON body at all: the peek reports nothing and hands the
-// body on untouched. An audio upload is multipart, and buffering one to look for
-// a field it does not have is the thing the old cap was protecting against.
+// Invalid JSON and non-JSON bodies pass through unchanged. Multipart audio
+// uploads must not be buffered for JSON field extraction.
 func TestANonJSONBodyIsLeftAlone(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1/audio/transcriptions", strings.NewReader("--boundary\r\n"))
 	r.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
@@ -161,11 +146,8 @@ func TestANonJSONBodyIsLeftAlone(t *testing.T) {
 	}
 }
 
-// Image detection has to work past the cap too, or the vision profile ModelFabric
-// sends to llm-d is never sent for a real image — an image request is usually
-// larger than any prefix worth holding. Past the cap it is deliberately the
-// loose direction: a text request on an engine that can read images works, and
-// the reverse fails inside llama.cpp.
+// Image detection must work on prefixes. False positives can route text to
+// a vision engine; false negatives send images to engines without projectors.
 func TestAnImageIsDetectedPastTheCap(t *testing.T) {
 	big := strings.Repeat("A", bodyPeekMax+1) // a data URI the size of a real photo
 	body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":[`+
@@ -180,9 +162,6 @@ func TestAnImageIsDetectedPastTheCap(t *testing.T) {
 	}
 }
 
-// And a long text conversation is not an image, or every request would be
-// confined to the engines holding a projector. Past the cap, so this is the loose
-// path rather than the precise one.
 func TestALongTextConversationIsNotAnImage(t *testing.T) {
 	body := fmt.Sprintf(`{"model":"m","messages":[{"role":"user","content":%q}]}`,
 		strings.Repeat("the quick brown fox ", (bodyPeekMax/20)+1))

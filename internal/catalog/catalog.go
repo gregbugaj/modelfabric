@@ -1,11 +1,5 @@
-// Package catalog indexes prepared models on disk.
-//
-// It answers "what could be loaded here", which is the `models` half of the
-// LM Studio-compatible list response. Loaded instances are the supervisor's
-// business, not the catalog's.
-//
-// Only declared model roots are scanned, so discovery does not walk unrelated
-// credentials or user directories. Nothing is downloaded.
+// Package catalog indexes prepared models in declared model roots.
+// It lists available files; the supervisor tracks loaded instances.
 package catalog
 
 import (
@@ -19,7 +13,6 @@ import (
 	"strings"
 )
 
-// Model is one loadable model, shaped for the /api/v1/models response.
 type Model struct {
 	Key          string `json:"key"`
 	Type         string `json:"type"` // "llm" | "embedding"
@@ -31,7 +24,7 @@ type Model struct {
 	// names none, and the settings form then takes a typed level instead of
 	// offering choices it cannot vouch for.
 	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
-	Format           string   `json:"format"` // "gguf"
+	Format           string   `json:"format"`
 	Quantization     string   `json:"quantization,omitempty"`
 	ParamsString     string   `json:"params_string,omitempty"`
 	SizeBytes        int64    `json:"size_bytes"`
@@ -80,18 +73,15 @@ type Catalog struct {
 	aliases map[string]string
 	// variants holds shadowed files, addressable by their path key.
 	variants map[string]Model
-	// hub is LM Studio's catalog, used to resolve authoritative model ids.
-	hub *Hub
+	hub      *Hub
 }
 
 // quantPattern matches the quantization suffix llama.cpp conventionally puts
 // last in a GGUF filename: Q4_K_M, Q8_0, IQ3_XXS, BF16, F16.
 var quantPattern = regexp.MustCompile(`(?i)(IQ\d+_[A-Z0-9_]+|Q\d+_[A-Z0-9_]+|Q\d+_\d+|BF16|F16|F32)$`)
 
-// paramsPattern matches a parameter count such as 27B or 4B.
 var paramsPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*([BM])\b`)
 
-// Scan indexes every GGUF under root.
 func Scan(root string) (*Catalog, error) { return ScanRoots(root) }
 
 // ScanRoots indexes several models directories in precedence order.
@@ -102,8 +92,6 @@ func Scan(root string) (*Catalog, error) { return ScanRoots(root) }
 // can still route for its peers.
 func ScanRoots(roots ...string) (*Catalog, error) { return ScanRootsWithHub(nil, roots...) }
 
-// ScanRootsWithHub indexes several roots, resolving identity through a hub
-// catalog when one is available.
 func ScanRootsWithHub(hub *Hub, roots ...string) (*Catalog, error) {
 	c := &Catalog{
 		models:   map[string]Model{},
@@ -171,7 +159,7 @@ func (c *Catalog) scanOne(root string) error {
 			projectors[dir] = append(projectors[dir], path)
 			return nil
 		}
-		// A sharded GGUF is one logical model; index only the first shard —
+		// A sharded GGUF is one logical model; index only the first shard ;
 		// but remember the other shards' bytes, or the catalog reports a
 		// 60 GB model as the 12 GB of its first piece, and that number is
 		// what the disk summary and placement decisions use.
@@ -192,7 +180,7 @@ func (c *Catalog) scanOne(root string) error {
 	for _, path := range weights {
 		m, err := describe(absRoot, path)
 		if err != nil {
-			continue // unreadable file; skip rather than fail the scan
+			continue
 		}
 		c.identify(&m)
 		if p, ok := projectorFor(projectors[filepath.Dir(path)], path); ok {
@@ -216,7 +204,7 @@ func (c *Catalog) scanOne(root string) error {
 	for _, dir := range mlxDirs {
 		m, err := describeMLX(absRoot, dir)
 		if err != nil {
-			continue // unreadable directory; skip rather than fail the scan
+			continue
 		}
 		c.identify(&m)
 		m.Source = root
@@ -225,8 +213,6 @@ func (c *Catalog) scanOne(root string) error {
 	return nil
 }
 
-// identify replaces path-derived identity with the hub catalog's, which states
-// a model's identity where the model's own metadata only implies it.
 func (c *Catalog) identify(m *Model) {
 	e, ok := c.hub.LookupPath(m.PathKey)
 	if !ok {
@@ -253,7 +239,7 @@ func (c *Catalog) identify(m *Model) {
 // add indexes a model, keeping the first of several that claim one identity.
 func (c *Catalog) add(m Model) {
 	if existing, taken := c.models[m.Key]; taken {
-		// Two models claiming one hub id are quantization variants — or the
+		// Two models claiming one hub id are quantization variants; or the
 		// same weights in two formats, GGUF and MLX. Keep the first and record
 		// the rest, which stay addressable by their path key.
 		existing.Variants++
@@ -270,7 +256,7 @@ func (c *Catalog) add(m Model) {
 
 // projectorFor picks the projector that belongs to one model file. With a
 // single projector in the directory it is that one; with several, the name
-// has to say which — attaching the wrong projector makes a model answer as if
+// has to say which; attaching the wrong projector makes a model answer as if
 // it could see something it cannot.
 func projectorFor(candidates []string, model string) (string, bool) {
 	switch len(candidates) {
@@ -333,8 +319,6 @@ func describe(absRoot, path string) (Model, error) {
 	}
 	rel = filepath.ToSlash(rel)
 
-	// The path inside the models root, without its extension, is always unique
-	// and always available.
 	pathKey := strings.TrimSuffix(rel, filepath.Ext(rel))
 	key := pathKey
 	name := filepath.Base(pathKey)
@@ -364,8 +348,7 @@ func describe(absRoot, path string) (Model, error) {
 		m.Type = "embedding"
 	}
 
-	// The header beats the filename wherever it has an answer. A file can be
-	// renamed to anything; the metadata is what the engine will actually load.
+	// Prefer GGUF metadata over filenames, which can be renamed.
 	if meta, err := readGGUF(path); err == nil {
 		// Prefer the identifier the model declares about itself. Tools are
 		// configured with "qwen/qwen3.8-27b", not with wherever the file sits,
@@ -429,10 +412,6 @@ func (c *Catalog) Models() []Model {
 	return out
 }
 
-// NewFromModels builds a catalog over a fixed set of models, keyed as Lookup
-// will find them. It scans nothing, which is what callers outside this package
-// need when the models are already known — a test that must answer "does this
-// model carry a projector" without a filesystem behind it.
 func NewFromModels(models map[string]Model) *Catalog {
 	c := &Catalog{models: map[string]Model{}, aliases: map[string]string{}, variants: map[string]Model{}}
 	for k, m := range models {
@@ -441,23 +420,13 @@ func NewFromModels(models map[string]Model) *Catalog {
 	return c
 }
 
-// Lookup finds a model by key.
 func (c *Catalog) Lookup(key string) (Model, bool) {
 	m, ok := c.models[key]
 	return m, ok
 }
 
-// Resolve finds a model by key, or by unambiguous suffix so operators can type
-// "Qwen3.8-27B-Q4_K_M" instead of the full path. An ambiguous suffix is an
-// error rather than an arbitrary pick.
-// VariantsOf returns every model sharing one canonical key: the primary
-// first, then the shadowed ones. A model with a single file returns just
-// itself, so callers need no special case.
-//
-// Two variants are the same model in two shapes — the same weights as GGUF and
-// as MLX, or two quantizations — and which one a machine should run is a
-// choice ModelFabric cannot make for you: only one of them may have an engine
-// installed, and only one of them may honour constrained output.
+// VariantsOf returns primary and shadowed variants sharing a canonical key,
+// sorted by path key. Formats and quantizations can require different engines.
 func (c *Catalog) VariantsOf(key string) []Model {
 	var out []Model
 	if m, ok := c.models[key]; ok {
@@ -472,9 +441,8 @@ func (c *Catalog) VariantsOf(key string) []Model {
 	return out
 }
 
-// ResolveFormat resolves ref and then narrows to the variant in the requested
-// weights format. An empty format means "whichever is primary", which is what
-// every caller did before variants could be chosen.
+// ResolveFormat selects a variant in the requested weights format.
+// An empty format returns the primary variant.
 func (c *Catalog) ResolveFormat(ref, format string) (Model, error) {
 	m, err := c.Resolve(ref)
 	if err != nil {
@@ -497,6 +465,7 @@ func (c *Catalog) ResolveFormat(ref, format string) (Model, error) {
 		m.Key, format, strings.Join(slices.Compact(have), ", "))
 }
 
+// Resolve finds a model by key, alias, or unambiguous suffix.
 func (c *Catalog) Resolve(ref string) (Model, error) {
 	if m, ok := c.models[ref]; ok {
 		return m, nil

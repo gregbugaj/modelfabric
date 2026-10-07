@@ -9,25 +9,12 @@ import (
 	"sync/atomic"
 )
 
-// Browsers, and the pages in them.
-//
-// "Loopback-only" keeps other machines out; it does not keep out a web page,
-// because the page runs in a browser on this machine. Any site could POST to
-// 127.0.0.1:1234/api/v1/... with a text/plain body — a "simple" request,
-// which browsers send without asking first — and the management API, which
-// decodes JSON whatever the content type, did what it said. Measured: a page
-// from https://evil.example created a token named "planted-by-a-website".
-// The same request to /v1 ran a model, and llama-server echoes the caller's
-// origin with Allow-Credentials, so the page could read the reply too.
-//
-// Two checks close it, for requests that come from a browser at all (they
-// carry Origin or Sec-Fetch-Site; curl, the CLI and peers send neither):
-//
-//   - A request that changes something must come from this node's own pages,
-//     or, for inference only, from an origin the operator allowed (CORS).
-//   - Anything but inference must be addressed to this machine by a name it
-//     answers to. Without that, DNS rebinding — evil.example re-pointed at
-//     127.0.0.1 — makes the attacker's page same-origin, and Origin matches.
+// Loopback alone does not block browser attacks: cross-origin text/plain
+// POSTs can reach JSON handlers without preflight. Browser mutations therefore
+// require the node's own origin or an allowed inference CORS origin.
+// Management requests also require a local Host name to prevent DNS rebinding
+// from making an attacker-controlled domain appear same-origin.
+// These checks apply to requests carrying Origin or Sec-Fetch-Site.
 
 // fromBrowser reports a request a browser made: every current browser sends
 // Sec-Fetch-Site, and Origin on anything cross-origin or unsafe.
@@ -35,7 +22,6 @@ func fromBrowser(r *http.Request) bool {
 	return r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != ""
 }
 
-// crossSite reports a browser request made by a page from another origin.
 func crossSite(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
@@ -54,17 +40,13 @@ func unsafeMethod(m string) bool {
 	return m != http.MethodGet && m != http.MethodHead && m != http.MethodOptions
 }
 
-// apiPath is the OpenAI- and LM Studio-shaped surface apps call: what CORS
-// may open, and the only thing a web app on another origin has any business
-// reaching.
 func apiPath(r *http.Request) bool {
 	// /api/v1/chat is the one app route among the management ones.
 	return strings.HasPrefix(r.URL.Path, "/v1/") || strings.HasPrefix(r.URL.Path, "/api/v0/") || r.URL.Path == "/api/v1/chat"
 }
 
-// localName reports whether host (a Host header) names this machine: an IP
-// literal, localhost, or the machine's own hostname. A domain anyone else
-// controls is not one, whatever it resolves to today.
+// localName accepts an IP literal, localhost or this machine's hostname.
+// Other domains are rejected regardless of their DNS resolution.
 func localName(host string) bool {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
@@ -111,8 +93,8 @@ func (s *Server) SetCORS(origins []string) {
 	s.cors.Store(&cp)
 }
 
-// guardBrowser refuses what a page from elsewhere must not do, and answers a
-// CORS preflight for an allowed one. It reports whether it wrote a response.
+// guardBrowser enforces browser-origin policy and answers allowed CORS
+// preflights. It reports whether it wrote a response.
 func (s *Server) guardBrowser(w http.ResponseWriter, r *http.Request) bool {
 	if !fromBrowser(r) {
 		return false
@@ -162,10 +144,9 @@ func setCORS(h http.Header, origin string) {
 	h.Set("Access-Control-Expose-Headers", "X-Fabric-Node, X-Fabric-Engine, X-Fabric-Via, X-Fabric-Trace")
 }
 
-// corsWriter makes ModelFabric the only one deciding CORS: an engine's own
-// headers are dropped as the response starts — llama-server echoes any origin
-// with credentials allowed — and ModelFabric's are set when the origin is
-// allowed. Flush and Unwrap keep streaming working through it.
+// corsWriter replaces engine CORS headers with this node's policy; llama-server
+// otherwise reflects arbitrary origins with credentials allowed. Flush and
+// Unwrap preserve streaming.
 type corsWriter struct {
 	http.ResponseWriter
 	origin  string // set only when allowed
@@ -207,7 +188,6 @@ func (c *corsWriter) Flush() {
 
 func (c *corsWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
 
-// browserSafe wraps a listener's handler with guardBrowser and corsWriter.
 func (s *Server) browserSafe(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.guardBrowser(w, r) {

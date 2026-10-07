@@ -16,7 +16,7 @@ import (
 type fakeLlama struct {
 	mu       sync.Mutex
 	lastSeen string
-	prompts  []int // prompt tokens per chat request
+	prompts  []int
 }
 
 func words(s string) []string { return strings.Fields(s) }
@@ -120,8 +120,6 @@ func TestCachedTokensDoNotCountAsRead(t *testing.T) {
 	}
 }
 
-// The run reloads the engine for each phase; whatever happens, it must put the
-// node back as it found it.
 func TestEngineIsRestored(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -165,8 +163,6 @@ func TestPhasesLoadWhatTheyNeed(t *testing.T) {
 	}
 }
 
-// The text report is what gets pasted into an issue: it must say how to run
-// it again, with every setting written out.
 func TestTextSaysHowToRepeatIt(t *testing.T) {
 	_, e := setup(t)
 	rep, err := Run(context.Background(), e, nil, Config{Model: "m", PP: []int{256}, Batch: []int{2}}, nil)
@@ -191,7 +187,6 @@ func TestCorpusIsFixed(t *testing.T) {
 		if len(c.SHA256) != 64 || c.Text(10) == "" {
 			t.Fatalf("%s: sha %q", name, c.SHA256)
 		}
-		// Longer than the snapshot: it wraps, so the 64K test has enough text.
 		if got := len(c.Text(len(c.text) * 3)); got != len(c.text)*3 {
 			t.Fatalf("%s: wrapped text is %d bytes", name, got)
 		}

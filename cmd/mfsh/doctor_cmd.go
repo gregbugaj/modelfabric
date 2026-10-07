@@ -14,14 +14,7 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/runtime"
 )
 
-// `mfsh doctor` checks everything ModelFabric depends on and says what to do about
-// anything wrong, like `claude doctor`. It never starts the node or changes
-// anything: a diagnosis must work on exactly the broken state it is asked
-// about, and must not "fix" it by accident.
-//
-// The checks themselves live in internal/doctor so the node can serve the
-// same report. What is left here is what a terminal needs: the flags, and how
-// to colour the answer.
+// `mfsh doctor` renders internal/doctor checks without starting or changing the node.
 
 func doctorCmd(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
@@ -41,8 +34,7 @@ func doctorCmd(args []string) error {
 		LogDir:       logDir(),
 		NodeLogPath:  nodeLogPath(),
 		RuntimesRoot: runtimesRoot,
-		// Discovery logs what it skipped and why, which is noise in a report
-		// whose own job is to say what is wrong.
+		// Suppress discovery logs because the report includes its own diagnostics.
 		Runtimes: func(cfg config.Config) []*runtime.Definition {
 			return discoverRuntimes(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		},
@@ -77,7 +69,6 @@ func printChecks(checks []doctor.Check) error {
 			mark, fail = red("✗"), fail+1
 		}
 		fmt.Printf("  %s %s  %s\n", mark, padVisible(c.Name, 18), c.Detail)
-		// A fix is shown only where something needs doing.
 		if c.Fix != "" && (c.Status == doctor.StatusWarn || c.Status == doctor.StatusFail) {
 			fmt.Printf("    %s %s\n", dim("→"), c.Fix)
 		}

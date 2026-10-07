@@ -1,5 +1,3 @@
-# ModelFabric has very few dependencies on purpose, so these updates should be rare
-# and worth reading when they arrive.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -8,8 +6,6 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
-  # Pinned actions drift into deprecation quietly; this is how you find out
-  # before a release fails.
   - package-ecosystem: github-actions
     directory: /
     schedule:

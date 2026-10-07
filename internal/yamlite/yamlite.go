@@ -1,12 +1,5 @@
-// Package yamlite parses the subset of YAML that model.yaml files use.
-//
-// ModelFabric has no dependencies, and a general YAML parser would be the first.
-// model.yaml (modelyaml.org) is machine-written in plain block style: nested
-// mappings, sequences, and scalars. That subset is small enough to parse
-// exactly, and anything outside it — anchors, aliases, tags, flow collections
-// with content, multiple documents — is an error rather than a guess. A caller
-// that gets an error ignores the file; it never gets a wrong reading of it.
-//
+// Package yamlite parses the block-style YAML subset used by model.yaml
+// without adding a general YAML dependency. Unsupported syntax returns an error.
 // Values decode to map[string]any, []any, string, bool, int64, float64 and nil.
 package yamlite
 
@@ -28,7 +21,6 @@ type parser struct {
 	pos   int
 }
 
-// Parse decodes one YAML document.
 func Parse(data []byte) (any, error) {
 	p := &parser{}
 	for i, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
@@ -67,7 +59,6 @@ func (p *parser) skipBlank() {
 	}
 }
 
-// peek returns the next non-blank line.
 func (p *parser) peek() (line, bool) {
 	p.skipBlank()
 	if p.pos >= len(p.lines) {
@@ -92,7 +83,6 @@ func (p *parser) node(ind int) (any, error) {
 	} else if isKey {
 		return p.mapping(ind)
 	}
-	// A bare scalar standing alone as a node.
 	p.pos++
 	return scalar(l.text, l.num)
 }
@@ -236,8 +226,6 @@ func (p *parser) blockScalar(ind int, header string, num int) (any, error) {
 	} else {
 		var b strings.Builder
 		for i, ln := range body {
-			// A blank line becomes a newline; adjacent text lines join with
-			// a space.
 			switch {
 			case ln == "":
 				b.WriteByte('\n')
@@ -370,7 +358,7 @@ func scalar(s string, num int) (any, error) {
 	return s, nil
 }
 
-// flowSeq handles a flat [a, b, "c"] of scalars — enough for short lists.
+// flowSeq handles a flat [a, b, "c"] of scalars; enough for short lists.
 func flowSeq(inner string, num int) ([]any, error) {
 	out := []any{}
 	for _, part := range splitFlow(inner) {

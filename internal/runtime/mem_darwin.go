@@ -22,7 +22,7 @@ func readMemTotal() int64 {
 // sysctlUint reads a numeric sysctl.
 //
 // syscall.Sysctl hands the raw little-endian value back as a string and trims
-// what it takes to be a C string's trailing NULs — which are the value's
+// what it takes to be a C string's trailing NULs - which are the value's
 // high-order bytes, so the result is usually shorter than the integer's width.
 // A few OIDs do return text, so a decimal string is accepted too.
 func sysctlUint(name string) (uint64, bool) {

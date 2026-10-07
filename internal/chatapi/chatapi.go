@@ -1,11 +1,6 @@
-// Package chatapi is LM Studio's native chat endpoint, POST /api/v1/chat:
-// one request in, a list of output items back, with the conversation kept so
-// the next request can continue it, and with MCP servers' tools run for the
-// model here rather than by the caller.
-//
-// It is a layer over the OpenAI-compatible endpoint, not a second path to the
-// engines: every model call it makes goes through the node's own front door,
-// so it is routed, scheduled, counted and logged like any app's request.
+// Package chatapi implements POST /api/v1/chat with conversation continuation
+// and MCP tool execution. Model calls use the local inference front door
+// for routing, scheduling, and accounting.
 package chatapi
 
 import (
@@ -32,7 +27,6 @@ const maxRounds = 16
 // page of HTML returned by a browser tool once filled a context on its own.
 const maxToolOutput = 64 << 10
 
-// Request is the body of POST /api/v1/chat.
 type Request struct {
 	Model              string            `json:"model"`
 	Input              json.RawMessage   `json:"input"`
@@ -51,7 +45,6 @@ type Request struct {
 	PreviousResponseID string            `json:"previous_response_id"`
 }
 
-// Item is one entry of a response's output.
 type Item struct {
 	Type      string          `json:"type"` // message | reasoning | tool_call | invalid_tool_call
 	Content   string          `json:"content,omitempty"`
@@ -63,14 +56,12 @@ type Item struct {
 	Metadata  *Invalid        `json:"metadata,omitempty"`
 }
 
-// Provider says which integration a tool came from.
 type Provider struct {
 	Type        string `json:"type"` // ephemeral_mcp | plugin
 	ServerLabel string `json:"server_label,omitempty"`
 	PluginID    string `json:"plugin_id,omitempty"`
 }
 
-// Invalid describes a tool call that could not be run.
 type Invalid struct {
 	Type      string    `json:"type"`
 	ToolName  string    `json:"tool_name"`
@@ -97,7 +88,6 @@ type Response struct {
 	ResponseID      string `json:"response_id,omitempty"`
 }
 
-// Error is a refusal with the HTTP status it deserves.
 type Error struct {
 	Status int
 	Msg    string
@@ -109,7 +99,6 @@ func bad(format string, a ...any) *Error {
 	return &Error{Status: http.StatusBadRequest, Msg: fmt.Sprintf(format, a...)}
 }
 
-// Runner answers chat requests.
 type Runner struct {
 	// Infer sends one /v1/chat/completions body through the front door and
 	// returns its event stream and the node that is serving it.
@@ -277,8 +266,6 @@ func (r *Runner) Run(ctx context.Context, req Request, emit Emit) (resp Response
 
 func round3(v float64) float64 { return float64(int(v*1000+0.5)) / 1000 }
 
-// userMessage turns input into the user's chat message: plain text, or a
-// list of text and image parts.
 func userMessage(raw json.RawMessage) (map[string]any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, bad("input is missing: send the user's message as \"input\"")
@@ -309,7 +296,6 @@ func userMessage(raw json.RawMessage) (map[string]any, error) {
 	return map[string]any{"role": "user", "content": out}, nil
 }
 
-// tools opens a session with each integration and gathers what it offers.
 func (r *Runner) tools(ctx context.Context, integrations []json.RawMessage) (map[string]tool, func(), error) {
 	var clients []mcp.Client
 	closeAll := func() {
@@ -382,9 +368,8 @@ func (r *Runner) tools(ctx context.Context, integrations []json.RawMessage) (map
 		for _, a := range in.AllowedTools {
 			allowed[a] = true
 		}
-		// allowed_tools naming a tool the server does not have used to leave
-		// the model with no tools and no word of it: Hugging Face renamed
-		// model_search, and the model answered that it had no way to look.
+		// Report allowed_tools entries absent from the server; otherwise a renamed
+		// tool silently leaves the model without the requested capability.
 		offered := map[string]bool{}
 		for _, d := range defs {
 			offered[d.Name] = true
@@ -421,7 +406,6 @@ func or(s, def string) string {
 	return s
 }
 
-// body is one /v1/chat/completions request for the conversation so far.
 func (r *Runner) body(req Request, messages []map[string]any, tools map[string]tool) []byte {
 	b := map[string]any{
 		"model":          req.Model,
@@ -493,8 +477,6 @@ func (t turn) wire() []map[string]any {
 	return out
 }
 
-// readTurn reads one model reply from its event stream, passing text on as
-// it arrives.
 func readTurn(stream io.Reader, emit Emit, first func()) (turn, error) {
 	var t turn
 	state := "" // which of reasoning / message is open in the stream

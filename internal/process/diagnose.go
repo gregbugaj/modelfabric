@@ -8,23 +8,14 @@ import (
 	"strings"
 )
 
-// Reading an engine's own last words.
-//
-// "engine exited before readiness (exit status 1)" is true and useless: the
-// reason is always in the instance log, one line above the exit, and it has
-// twice cost real debugging time to go and find it. So the launch error says
-// what the engine said, and the log stays there for everything else.
-//
-// The patterns are deliberately few. Each one is a failure that has actually
-// happened here, matched on text the engine prints itself; anything not
-// recognised leaves the error exactly as it was rather than guessing.
+// Recognize known failure messages from the engine log and include them in
+// launch errors. Unrecognized log output leaves the original error unchanged.
 
 // diagnoseTail is how much of the log to read. The reason sits in the last
 // handful of lines, and a model load can print megabytes of tensor detail
 // before it.
 const diagnoseTail = 16 << 10
 
-// diagnosis is one recognised failure: what happened, and what to do about it.
 type diagnosis struct {
 	reason string
 	hint   string
@@ -96,7 +87,7 @@ func diagnose(logPath string) *diagnosis {
 }
 
 // explain adds the engine's own reason to a launch error, leaving the original
-// message in place — the exit status still matters when someone reports it.
+// message in place; the exit status still matters when someone reports it.
 func explain(err error, logPath string) error {
 	d := diagnose(logPath)
 	if d == nil {

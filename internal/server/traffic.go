@@ -11,14 +11,9 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// Traffic log: what `mfsh log` streams and the dashboard's Activity page shows.
-//
-// Routing metadata always; request and response bodies only when someone turns
-// capture on. Bodies live in this ring and nowhere else — the oldest are
-// dropped as new ones arrive, and nothing is written to disk unless file
-// logging is separately enabled. A prompt is likely to be exactly the material
-// someone runs a local model to keep private, so capture is a deliberate act
-// with a visible switch, not a default.
+// Traffic events feed the CLI log and dashboard Activity page. Routing
+// metadata is always recorded; body capture is opt-in and held in a bounded
+// memory ring. Disk logging requires separate configuration.
 
 const (
 	trafficBacklogDefault = 200
@@ -72,7 +67,6 @@ func (s *Server) Capture(bodies bool, maxBytes, keep int, file string) error {
 	return nil
 }
 
-// settings reports the live capture settings.
 func (t *traffic) settings() (bodies bool, keep, max int, toFile bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -135,12 +129,8 @@ func (t *traffic) publish(e router.Event) {
 	}
 }
 
-// recent returns the ring newest first, at most limit events.
-//
-// Bodies only when asked for. A dashboard showing the whole mesh polls every
-// node on a timer to fill a table that displays no bodies at all; shipping
-// every prompt across the tailnet to render it would be careless. They are
-// fetched for the one request someone actually opens.
+// recent returns at most limit events, newest first. Bodies are included only
+// when requested, avoiding prompt transfer for metadata-only mesh views.
 func (t *traffic) recent(limit int, bodies bool) []router.Event {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -148,7 +138,6 @@ func (t *traffic) recent(limit int, bodies bool) []router.Event {
 		limit = len(t.ring)
 	}
 	out := make([]router.Event, 0, limit)
-	// The ring is oldest-first; walk back from the end.
 	for i := len(t.ring) - 1; i >= len(t.ring)-limit; i-- {
 		e := t.ring[i]
 		if !bodies {
@@ -179,12 +168,8 @@ func (s *Server) handleTrafficStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	// Flush the header now. Without this the response sits in net/http's
-	// buffer until the first event or the 15s keepalive, so a client that
-	// connects to an idle node sees nothing at all — no status line, no
-	// headers — and cannot tell a working stream from a hung one. EventSource
-	// never fires `open`, and `mfsh log` prints its banner against a
-	// connection it has not actually confirmed.
+	// Flush immediately so idle clients receive headers before the first event
+	// or keepalive, and EventSource can fire open.
 	_ = rc.Flush()
 
 	ch, backlog, cancel := s.traffic.subscribe()
@@ -224,8 +209,8 @@ func (s *Server) handleTrafficStream(w http.ResponseWriter, r *http.Request) {
 }
 
 // trafficRecent is one node's answer when another node's dashboard asks what
-// it has served. Node names the machine that took the requests in — the front
-// door they came through — which is not the same as Event.Node, the machine
+// it has served. Node names the machine that took the requests in - the front
+// door they came through - which is not the same as Event.Node, the machine
 // that ran the model.
 type trafficRecent struct {
 	Node    string         `json:"node"`
@@ -247,9 +232,7 @@ func (s *Server) handleTrafficRecent(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, trafficBacklogMax)
 	}
-	// Bodies exist in the ring only while capture is on — turning it off
-	// clears them — so this asks for nothing that the node's own operator has
-	// not already chosen to keep.
+	// Capture-off clears stored bodies, so snapshots cannot return them.
 	bodies := r.URL.Query().Get("bodies") == "1"
 	on, _, _, _ := s.traffic.settings()
 	writeJSON(w, http.StatusOK, trafficRecent{
@@ -257,7 +240,6 @@ func (s *Server) handleTrafficRecent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// trafficSettings is the dashboard's view of body capture.
 type trafficSettings struct {
 	Bodies   bool `json:"bodies"`
 	Keep     int  `json:"keep"`
@@ -268,13 +250,8 @@ type trafficSettings struct {
 	KeepMax int `json:"keep_max"`
 }
 
-// handleTrafficSettings reads and writes the live capture settings.
-//
-// A management route, so over the tailnet it reaches only a same-owner device
-// — the same rule that lets you load a model on another of your machines.
-// That is deliberate: a dashboard showing the whole mesh needs a switch per
-// node, and the alternative is walking to each machine. Set mesh_admin to
-// "off" on a node that should answer to nobody but its own loopback.
+// handleTrafficSettings manages live capture. Peer access requires the same
+// Tailscale owner; mesh_admin=off restricts access to loopback.
 func (s *Server) handleTrafficSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var in struct {

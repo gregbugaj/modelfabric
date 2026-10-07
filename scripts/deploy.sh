@@ -1,37 +1,24 @@
 #!/bin/sh
-# Stage this build onto the other machines in the mesh.
+# Stage and verify builds on mesh peers. Restarts require -restart.
+# Renaming the binary preserves the running executable inode on Linux and macOS.
 #
-# Copies and verifies. By default it restarts nothing: replacing the file under
-# a running node is safe on Linux and macOS — the kernel keeps the open inode —
-# so each node picks the new build up at its next restart, on your schedule
-# rather than in the middle of somebody's request.
+#   scripts/deploy.sh                  all visible live peers
+#   scripts/deploy.sh NODE...          selected peers
+#   scripts/deploy.sh -restart         restart nodes sequentially
+#   scripts/deploy.sh -restart -force  include nodes with loaded models
 #
-#   scripts/deploy.sh                 every alive peer this node can see
-#   scripts/deploy.sh minion helion   only these
-#   scripts/deploy.sh -restart        and restart each node after staging it
-#   scripts/deploy.sh -restart -force restart even nodes with models loaded
-#
-# -restart goes one node at a time and waits for each to answer again before
-# the next, so the mesh never loses every node at once. A node with a model
-# loaded is skipped unless -force is given: a restart unloads its models, and
-# a 27B takes ~20s to load again. After the restart it checks that the node is
-# running the binary it just staged, because a restart that brought back the
-# old build has happened here before and looked like success.
-#
-# Nodes are addressed by the tailnet address the mesh reports, not by machine
-# name: a name can resolve somewhere else entirely. A node that will not answer
-# is reported and skipped, never guessed at — a partial rollout you know about
-# beats a silent one.
+# Wait for each restarted node and verify its build before continuing. Skip
+# loaded nodes unless forced; restarting unloads models. Use mesh tailnet
+# addresses where available and report unreachable nodes.
 #
 # Environment:
-#   MFSH_REMOTE_BIN   where to place it (default ~/.local/bin/mfsh)
-#   SSH_OPTS          extra ssh/scp options
+#   MFSH_REMOTE_BIN  destination (default ~/.local/bin/mfsh)
+#   SSH_OPTS         additional ssh/scp options
 set -eu
 
 DIST=${DIST:-dist}
 REMOTE_BIN=${MFSH_REMOTE_BIN:-.local/bin/mfsh}
-# accept-new, not "no": an address first seen today is recorded, while a host
-# key that has *changed* still stops the copy, which is the case worth stopping.
+# accept-new records new host keys but rejects changed keys.
 SSH_OPTS=${SSH_OPTS:-"-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"}
 SELF=$(hostname -s 2>/dev/null || hostname)
 
@@ -51,15 +38,11 @@ done
 [ "$FORCE" = 0 ] || [ "$RESTART" = 1 ] || die "-force only means something with -restart"
 PORT=${MFSH_PORT:-1234}
 
-# ssh writes "Warning: Permanently added ..." to stderr on a first contact, so
-# stderr is kept out of command output rather than merged into it: folded in,
-# that warning became the machine's operating system.
+# Keep SSH stderr separate; first-contact host-key warnings must not enter parsed uname output.
 errf=$(mktemp "${TMPDIR:-/tmp}/mfsh-deploy.XXXXXX")
 trap 'rm -f "$errf"' EXIT INT TERM
 
-# ssh_why explains an ssh failure. Tailscale SSH in "check" mode prints a login
-# link and then waits, and ssh reports that as a timeout; reading only the last
-# line said "port 22 timed out" about a machine that was up and answering.
+# ssh_why includes Tailscale SSH check-mode login links that precede the final timeout message.
 ssh_why() {
   link=$(grep -o 'https://login.tailscale.com/[^ ]*' "$errf" | head -1)
   if [ -n "$link" ]; then
@@ -71,12 +54,8 @@ ssh_why() {
 
 [ -d "$DIST" ] || die "no $DIST directory; run 'make dist' first"
 
-# The mesh as the local node currently sees it: name, tailnet address, alive.
-#
-# Nodes are addressed by their tailnet address rather than their name. A bare
-# machine name can resolve to something else entirely — helion's resolved to a
-# LAN IPv6 address that refused the key, while its tailnet address answered
-# straight away — and the mesh already knows the address that works.
+# Read node names, tailnet addresses and liveness from the mesh. Prefer
+# tailnet addresses because hostnames can resolve to unrelated interfaces.
 mesh=""
 if command -v python3 >/dev/null 2>&1; then
   mesh=$(curl -fsS --max-time 5 "http://127.0.0.1:1234/z/mesh" 2>/dev/null | python3 -c '
@@ -96,8 +75,6 @@ addr_of() {
   echo "$mesh" | awk -v n="$1" '$1 == n { print $2; exit }'
 }
 
-# Which machines. Asking the local node keeps this honest about what the mesh
-# actually is right now, rather than a list in a file that drifts.
 nodes=$*
 if [ -z "$nodes" ]; then
   [ -n "$mesh" ] || die "could not read the mesh; name the nodes explicitly, e.g. $0 minion"
@@ -108,12 +85,9 @@ fi
 
 staged=0 skipped=0 restarted=0 failed=0
 
-# with_timeout runs a command and kills it after $1 seconds. Tailscale SSH in
-# check mode prints a login link and then waits, and ConnectTimeout does not
-# cover that: the connection is up, so ssh waited on every node in turn and a
-# three-node deploy sat silent for minutes before failing. `timeout` is not on
-# a stock Mac, so this is plain sh. The watcher's output goes to /dev/null, or
-# a $(...) around it would wait for the sleep to finish.
+# with_timeout bounds the whole command in seconds, including SSH check-mode
+# waits after connection. Use POSIX sh because macOS lacks timeout. Redirect
+# watcher output so command substitution does not wait for its sleep.
 with_timeout() {
   secs=$1
   shift
@@ -127,7 +101,6 @@ with_timeout() {
   return $rc
 }
 
-# restart_node restarts one node and checks it came back on the staged build.
 # The node's own loopback API is asked over ssh, so this works whatever the
 # node's tailnet listener allows.
 restart_node() {
@@ -139,8 +112,7 @@ restart_node() {
     if [ -n \"\$state\" ] && ! echo \"\$state\" | grep -Eq '\"engines\":(null|\\[\\])' && [ '$FORCE' = 0 ]; then
       echo BUSY; exit 0
     fi
-    # A unit from before the rename starts the old llmz binary, and systemd
-    # would start it again after anything here stopped it.
+    # Reject the legacy unit because systemd would restart the old binary.
     if systemctl --user is-active --quiet llmz 2>/dev/null; then
       echo \"FAILED it runs under the old llmz.service unit; on that machine run: systemctl --user disable --now llmz && ~/$REMOTE_BIN service install -enable\"; exit 1
     fi
@@ -154,12 +126,9 @@ restart_node() {
       upargs=
       pid=\$(curl -fsS --max-time 3 \$api/z/version 2>/dev/null | sed -n 's/.*\"pid\":\\([0-9]*\\).*/\\1/p')
       \"\$bin\" down >/dev/null 2>&1 </dev/null || true
-      # A node started by hand with 'mfsh serve' is not one 'mfsh down' stops,
-      # and 'mfsh up' then refuses the busy port. That is how minion ran, and
-      # the first -restart left it on the old build. Restart it through
-      # 'mfsh up' with the same flags, and refuse before stopping anything if
-      # it was started with a flag 'up' cannot carry: a node left down is
-      # worse than one left on the old build.
+      # Manual serve processes are not managed by mfsh down. Preserve supported
+      # flags when restarting through mfsh up; reject unsupported flags before
+      # stopping the process to avoid leaving the node down.
       if curl -fsS --max-time 2 \$api/healthz >/dev/null 2>&1; then
         [ -n \"\$pid\" ] || { echo FAILED a node answers on \$api but did not report its pid; exit 1; }
         cmd=\$(ps -o args= -p \"\$pid\" 2>/dev/null)
@@ -169,9 +138,8 @@ restart_node() {
         while [ \$# -gt 0 ]; do
           case \"\$1\" in
             -config | --config) [ \$# -ge 2 ] || { echo FAILED \$1 has no value; exit 1; }
-              # Carried forward only if it is there: the new build refuses a
-              # named config that is missing, and one started on a path that
-              # never existed (a capitalised ModelFabric directory where the real one is modelfabric) would stay down.
+              # Require the explicit config path to exist before stopping the node;
+              # the replacement process rejects missing named configs.
               [ -f \"\$2\" ] || { echo \"FAILED pid \$pid runs with -config \$2, which does not exist on this node; restart it yourself with the right path\"; exit 1; }
               upargs=\"\$upargs \$1 \$2\"; shift 2 ;;
             -config=* | --config=*) [ -f \"\${1#*=}\" ] || { echo \"FAILED pid \$pid runs with \$1, which does not exist on this node; restart it yourself with the right path\"; exit 1; }
@@ -245,8 +213,7 @@ for node in $nodes; do
     target="$node"
   fi
 
-  # uname over ssh rather than the node's HTTP API: it answers even when mfsh
-  # is down, which is exactly when you may be redeploying.
+  # Use uname over SSH so deployment can identify hosts while mfsh is down.
   if ! uname_out=$(with_timeout ${SSH_PROBE_SECS:-30} ssh $SSH_OPTS "$target" 'uname -sm' 2>"$errf" </dev/null); then
     echo "  $where: SKIPPED — ssh failed: $(ssh_why "$target")"
     skipped=$((skipped + 1))
@@ -279,8 +246,6 @@ for node in $nodes; do
     continue
   fi
 
-  # Verified on the node, against the hash computed here: a copy that arrived
-  # wrong must not be renamed over a working binary.
   out=$(ssh $SSH_OPTS "$target" "
     got=\$( (sha256sum '$tmp' 2>/dev/null || shasum -a 256 '$tmp') | cut -d' ' -f1)
     if [ \"\$got\" != '$want' ]; then rm -f '$tmp'; echo \"MISMATCH \$got\"; exit 1; fi

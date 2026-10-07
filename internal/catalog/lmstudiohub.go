@@ -7,29 +7,11 @@ import (
 	"strings"
 )
 
-// LM Studio's hub catalog.
-//
-// An install keeps an entry per known model under
-// ~/.lmstudio/hub/models/<owner>/<name>/, and its manifest.json is the
-// authoritative statement of that model's identity:
-//
-//	{"type":"model","owner":"qwen","name":"qwen3.8-27b",
-//	 "dependencies":[{"purpose":"baseModel",
-//	   "sources":[{"type":"huggingface","user":"lmstudio-community",
-//	               "repo":"Qwen3.8-27B-GGUF"}]}]}
-//
-// The source user/repo pair is exactly the directory layout under
-// ~/.lmstudio/models, which is what lets a file on disk be matched back to the
-// name tools are configured with. Reading it beats deriving the name from GGUF
-// metadata: a model whose basename or size_label is missing or oddly formatted
-// still gets its real identity.
-//
-// The sibling model.yaml (an open standard, modelyaml.org) carries the rest —
-// capabilities, recommended sampling, a memory floor, template variables. See
-// modelyaml.go. Identity always comes from manifest.json; a model.yaml that
-// fails to parse costs the recommendations, never the model.
+// LM Studio stores model identity in ~/.lmstudio/hub/models/<owner>/<name>/manifest.json.
+// Its Hugging Face source user/repo identifies the directory under ~/.lmstudio/models,
+// including models whose GGUF metadata lacks a basename or size label.
+// Sibling model.yaml supplies recommendations; parse errors there do not remove identity.
 
-// HubEntry is one catalog entry.
 type HubEntry struct {
 	ID    string   // "qwen/qwen3.8-27b"
 	Owner string   // "qwen"
@@ -56,7 +38,6 @@ type hubManifest struct {
 	} `json:"dependencies"`
 }
 
-// Hub indexes a hub catalog for lookup by source repository.
 type Hub struct {
 	byRepo map[string]HubEntry // lowercased "user/repo" -> entry
 	byID   map[string]HubEntry // lowercased "owner/name" -> entry
@@ -140,7 +121,6 @@ func readHubEntry(dir string) (HubEntry, bool) {
 	return e, true
 }
 
-// Len reports how many source repositories are indexed.
 func (h *Hub) Len() int {
 	if h == nil {
 		return 0
@@ -163,7 +143,6 @@ func (h *Hub) LookupPath(relPath string) (HubEntry, bool) {
 	return e, ok
 }
 
-// Lookup finds a catalog entry by hub id ("qwen/qwen3.8-27b").
 func (h *Hub) Lookup(id string) (HubEntry, bool) {
 	if h == nil {
 		return HubEntry{}, false
@@ -172,7 +151,6 @@ func (h *Hub) Lookup(id string) (HubEntry, bool) {
 	return e, ok
 }
 
-// Entries lists every catalog entry.
 func (h *Hub) Entries() []HubEntry {
 	if h == nil {
 		return nil

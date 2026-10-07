@@ -1,24 +1,13 @@
 #!/usr/bin/env python3
-"""Builds the homepage's per-machine speed table from `mfsh bench` reports.
+"""Build the homepage's per-machine speed table from mfsh bench reports.
 
 Usage:
   bench/fleet/build.py REPORT.json... [--out site/data/fleet-bench.json]
 
-Pass one single-node report per machine, from one sitting:
-
-  mfsh bench -model qwen/qwen3.8-27b -node xpredator
-  mfsh bench -model qwen/qwen3.8-27b -node minion
-  mfsh bench -model qwen/qwen3.8-27b -node helion
-
-Reports live in ~/.local/share/modelfabric/bench/. The homepage renders
-whatever this writes and nothing else, so the table cannot drift from the
-measurements, the same rule bench/swe/report/build.py follows for the SWE page.
-
-It refuses reports that do not belong in one table: a different model or
-quantization, a different ModelFabric build, the same machine twice, or a
-fleet (cluster) report. The saved reports when this was written mixed a 0.6B
-on two machines with a 27B on the third; a table built from those would have
-compared nothing.
+Supply one single-node report per machine from the same benchmark session.
+Reports are stored in ~/.local/share/modelfabric/bench/.
+Reject mixed models, quantizations or ModelFabric builds, duplicate machines,
+and cluster reports. The homepage renders the generated measurements.
 """
 import argparse, json, re, sys
 
@@ -32,9 +21,6 @@ def die(msg):
 
 
 def gpu_of(machine, runtime):
-    # What the report says, never a guess. Linux reports carry the GPU name;
-    # a Mac report carries none, but darwin/arm64 is Apple silicon and the
-    # runtime says Metal.
     if machine.get("gpu"):
         return machine["gpu"].replace("NVIDIA ", "").replace("GeForce ", "")
     if machine.get("platform") == "darwin/arm64":
@@ -92,7 +78,6 @@ def main():
         "measured": max(r["measured"] for r in rows),
         "sizes": SIZES,
         "command": f"mfsh bench -model {first['_model']} -node <machine>",
-        # Fastest prefill first: the order a reader compares machines in.
         "nodes": sorted(
             ({k: v for k, v in r.items() if not k.startswith("_")} for r in rows),
             key=lambda n: -max((s["pp_tps"] for s in n["sizes"].values()), default=0),

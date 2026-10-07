@@ -9,16 +9,8 @@ import { presets } from "./settings-presets.js";
 import { buildRouting } from "./ui-model.js";
 import { openVisionDialog } from "./vision.js";
 
-/* ---------- Workload presets: the scheduling profiles, by the traffic they suit ---------- */
-
-// Three names for three profiles llm-d already offers, chosen because the
-// technical names describe the mechanism and most people arrive knowing only
-// the workload. A preset applies a profile; it is not a fourth one, and each
-// says which it uses so the Routing page stays the whole truth.
-//
-// The mapping follows llm-d's own division into foundations and workloads:
-// Optimized Baseline is the foundation guide, and the fan-out profile's
-// well-lit path is workloads/agentic-serving.md.
+// Workload names map to existing llm-d profiles. The baseline follows
+// its foundation guide; fan-out follows workloads/agentic-serving.md.
 const WORKLOADS = [
   {
     id: "chat",
@@ -40,15 +32,9 @@ const WORKLOADS = [
   },
 ];
 
-// Not a workload. Every profile above can schedule a model that takes images;
-// this is about what one image costs the engine. An image request is serialised
-// on the vision encoder and its KV is per slot, so the shape is one slot with
-// room for a large prompt, set where the engine is launched and holding under
-// whichever profile is scheduling.
-//
-// It used to turn speculative decoding off too, against llama.cpp's "failed to
-// process mtmd chunk". Current builds draft an image prompt correctly, so a
-// vision load keeps its MTP head.
+// Vision settings apply to engine loads independently of scheduling
+// profiles. Image encoding is serialized and KV is per slot, so use
+// one slot with room for a large prompt. Preserve MTP on current builds.
 const ENGINE_SETTINGS = [
   {
     id: "vision",
@@ -58,11 +44,8 @@ const ENGINE_SETTINGS = [
   },
 ];
 
-// buildRouting keeps its own titleOf as a closure, so the rail needs one of
-// its own rather than a second spelling of the titles.
-// The workload a model is being scheduled with, or null. llm-d serves one
-// model at a time, so at most one model in the list ever has one — which is
-// itself worth seeing on this page.
+// Reuse profile titles for the rail. llm-d schedules one model at a
+// time, so at most one model has an active workload.
 export function workloadFor(modelKey) {
   const llmd = routingView?.llmd;
   if (!llmd?.running || !llmd.model || llmd.model !== modelKey) return null;
@@ -89,10 +72,7 @@ export function renderPresets() {
   renderRailGroup($("rail-engine"), ENGINE_SETTINGS);
 }
 
-// meshScheduler is whichever node is running llm-d for the mesh, or null.
-// Preferred over routingView, which only ever knew about this node: with an
-// entrypoint the scheduler runs on a machine with no GPUs and the rail showed
-// nothing ticked while a benchmark ran entirely through it.
+// Use the mesh scheduler, not local routingView: llm-d may run on a peer.
 export function meshScheduler() {
   const s = meshView?.scheduler;
   if (s) return s;
@@ -105,10 +85,6 @@ export function meshScheduler() {
 
 function renderRailGroup(rail, items) {
   if (!rail) return;
-  // The routing view model, derived the same way the Routing page derives it,
-  // so the two cannot disagree about which profile is live. Reading llm-d's
-  // state from anywhere else once had the rail saying "needs llm-d" while
-  // llm-d was running.
   const sched = meshScheduler();
   const running = sched !== null;
   rail.replaceChildren();
@@ -128,24 +104,14 @@ function renderRailGroup(rail, items) {
     icon.innerHTML = WORKLOAD_ICONS[w.id];
     b.append(icon);
 
-    // Just the name. A badge beside it pushed "Agentic coding" into an
-    // ellipsis, and the name is the whole point of a friendlier preset. That a
-    // profile is experimental is said in full, in amber, in the dialog — which
-    // opens before anything is applied, so nothing can be started without it.
     b.append(el("span", "rail-preset-title", w.title));
 
-    // A mark at the end, not a filled row: the links above use a fill to say
-    // "this is the page you are on", and one of these being *chosen* is a
-    // different fact. Which profile it applies is in the dialog, one click
-    // away, rather than on a second line here.
     const mark = el("span", "rail-preset-mark");
     if (presetBusy === w.id) {
       b.classList.add("pending");
       mark.append(el("span", "spinner"));
     } else if (w.kind === "load") {
-      // Never ticked: this one is a setting to open, not a profile that is
-      // either running or not. A tick here would claim vision models are
-      // "off" whenever another workload was chosen, which they never are.
+      // Vision opens load settings; it is not an active scheduling profile.
       mark.classList.add("unchosen");
     } else if (running && sched.profile === w.profile) {
       b.classList.add("active");
@@ -162,9 +128,6 @@ function renderRailGroup(rail, items) {
       tick.innerHTML = '<path d="M20 6 9 17l-5-5"/>';
       mark.append(tick);
     } else {
-      // An empty slot on the others, so the group reads as a set of options
-      // with one chosen — rather than three more links, two of which happen
-      // to be unlit.
       mark.classList.add("unchosen");
     }
     b.append(mark);
@@ -191,8 +154,6 @@ function renderRailGroup(rail, items) {
       note.title = "llm-d schedules one model at a time; choose it on the Routing page.";
       rail.append(note);
     } else if (running && !sched.isSelf) {
-      // Which machine is scheduling, because it is not this one and every
-      // other reading on this page is.
       const note = el("div", "rail-preset-note", `on ${sched.node}`);
       note.title = `llm-d is running on ${sched.node}, scheduling ${sched.model} across ${sched.engines} engine${sched.engines === 1 ? "" : "s"}. Choosing a workload here changes it there.`;
       rail.append(note);
@@ -201,11 +162,9 @@ function renderRailGroup(rail, items) {
 }
 
 let presetBusy = "";
-export let routingView = null; // what the Routing page renders; the rail reads it too
+export let routingView = null;
 
-// Clicking a preset opens the dialog rather than acting at once: it restarts
-// llm-d's scheduler, and what it is about to schedule — which model, which
-// profile — should be on screen before that happens, not only after.
+// Applying restarts llm-d; confirm the model and profile in the dialog first.
 function applyWorkload(w) {
   const llmd = routingView?.llmd;
   if (!llmd?.installed) {
@@ -220,9 +179,6 @@ export let wlChoice = { workload: null, model: "" };
 
 function openWorkloadDialog(w) {
   const llmd = routingView?.llmd;
-  // Already serving? That model is the answer, and the dialog is a
-  // confirmation. Otherwise the first model with an engine is a reasonable
-  // default and the list is right there.
   const models = routingView?.models ?? [];
   wlChoice = { workload: w, model: llmd?.model || models[0] || "" };
   $("wl-advanced").hidden = false;
@@ -257,8 +213,6 @@ function renderWorkloadDialog() {
   }
 
   const group = el("div", "wl-group");
-  // llm-d schedules one model at a time, which is the one thing ModelFabric cannot
-  // decide for you. Everything else the preset already answers.
   group.append(el("div", "wl-group-title",
     llmd?.running ? "Scheduling" : "Schedule which model?"));
   if (!models.length) {
@@ -290,26 +244,19 @@ function renderWorkloadDialog() {
   start.textContent = same ? "Already set" : (llmd?.running ? "Switch" : "Start");
 }
 
-// Which machines hold this model, for the model list. Read from the mesh view
-// rather than asked for again.
 export function nodesServing(model) {
   const nodes = (meshView?.models ?? []).find((m) => m.id === model)?.nodes ?? [];
   return nodes.length ? `on ${nodes.join(", ")}` : "";
 }
 
-// Applying a preset restarts llm-d's scheduler. That is the same act as
-// picking the profile on the Routing page, so it goes through the same call
-// rather than a second path that could drift.
 export async function startWorkload() {
   const w = wlChoice.workload;
   const model = wlChoice.model;
   if (!w || !model) return;
   presetBusy = w.id;
   renderPresets();
-  // The node already scheduling is the one to change. Posting to this node
-  // instead would start a second llm-d here while the one actually in the
-  // request path kept its old profile — the rail would then show the new
-  // workload and nothing would be routing by it.
+  // Apply on the node already scheduling. Posting locally could start
+  // a second scheduler while leaving the active request path unchanged.
   const sched = meshScheduler();
   const target = sched && !sched.isSelf ? sched.node : "";
   const where = target ? ` on ${target}` : "";
@@ -326,18 +273,8 @@ export async function startWorkload() {
   }
 }
 
-
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and routingView is written by the poll
-// loop and read here.
 export function setRoutingView(v) { routingView = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and wlChoice is written by the poll
-// loop and read here.
 export function setWlChoice(v) { wlChoice = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and presetBusy is written by the poll
-// loop and read here.
 export function setPresetBusy(v) { presetBusy = v; }

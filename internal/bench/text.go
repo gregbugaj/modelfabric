@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-// Text is the report as plain text, to paste into an issue or a chat: the
-// tables, then everything a reader needs to run it again. The CLI prints it
-// and the dashboard's copy button copies it, so the two never disagree.
 func (r Report) Text() string {
 	var b strings.Builder
 	line := strings.Repeat("=", 78)
@@ -152,7 +149,6 @@ func Compare(reps []Report) string {
 	return b.String()
 }
 
-// Text is the cluster report as plain text, as the CLI prints it.
 func (r ClusterReport) Text() string {
 	var b strings.Builder
 	line := strings.Repeat("=", 78)

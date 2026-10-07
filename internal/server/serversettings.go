@@ -16,22 +16,15 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/config"
 )
 
-// The dashboard's Server settings: the node's own listeners, authentication,
-// CORS and on-demand loading, as LM Studio's Server Settings shows them.
-//
-// They live in config.json, which a person also edits by hand, so saving
-// writes only the keys that changed (config.Update) and keeps the rest. Two
-// apply at once — whether loopback asks for a key, and CORS — because the
-// node reads them per request. Everything else is read once at startup, and
-// the page says so rather than pretend: a saved value the running node is not
-// using is reported as waiting for a restart.
+// Server settings persist through config.Update, preserving unchanged keys.
+// Loopback authentication and CORS apply immediately because requests read them;
+// startup-only settings remain pending until restart.
 
 // ServerSettings is what the dialog shows and edits. MeshPort is read-only:
 // every node must agree on it, so it is not one machine's to change.
 type ServerSettings struct {
-	Listen        string `json:"listen"`
-	RequireAPIKey bool   `json:"require_api_key"`
-	// The two MCP switches for /api/v1/chat (chat.go).
+	Listen             string   `json:"listen"`
+	RequireAPIKey      bool     `json:"require_api_key"`
 	MCPAllowEphemeral  bool     `json:"mcp_allow_ephemeral"`
 	MCPAllowConfigured bool     `json:"mcp_allow_configured"`
 	PublicListen       string   `json:"public_listen"`
@@ -43,12 +36,9 @@ type ServerSettings struct {
 	WebUI              bool     `json:"web_ui"`
 	EngineBind         string   `json:"engine_bind"`
 	MeshPort           int      `json:"mesh_port"`
-	// Role is "entrypoint" for a node that runs no models. Read-only here:
-	// it decides what the node is, not how it is set up.
+	// Role is read-only; "entrypoint" means this node runs no models.
 	Role string `json:"role"`
 
-	// The router: how ModelFabric places every request llm-d does not
-	// schedule. Shown on the Routing page, beside llm-d's own controls.
 	RateWeightedRouting bool    `json:"rate_weighted_routing"`
 	PrefixAffinity      bool    `json:"prefix_affinity"`
 	LocalBias           float64 `json:"local_bias"`
@@ -58,7 +48,6 @@ type ServerSettings struct {
 	CacheDiskDir string `json:"cache_disk_dir"`
 }
 
-// liveSettings apply without a restart.
 var liveSettings = map[string]bool{"require_api_key": true, "cors_origins": true,
 	"mcp_allow_ephemeral": true, "mcp_allow_configured": true}
 
@@ -108,8 +97,7 @@ func (s *Server) SetConfig(path string, running config.Config) {
 }
 
 type settingsView struct {
-	ConfigFile string `json:"config_file"`
-	// ConfigShown is ConfigFile with the home directory as ~, for display.
+	ConfigFile  string         `json:"config_file"`
 	ConfigShown string         `json:"config_shown"`
 	Saved       ServerSettings `json:"saved"`
 	Running     ServerSettings `json:"running"`
@@ -181,7 +169,6 @@ func (s *Server) hasConfigFile(w http.ResponseWriter) bool {
 	return true
 }
 
-// handlePutServerSettings saves the keys the body names and nothing else.
 func (s *Server) handlePutServerSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.hasConfigFile(w) {
 		return
@@ -236,10 +223,8 @@ func (s *Server) handlePutServerSettings(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, v)
 }
 
-// settingsToConfig turns a partial body into config keys, checking each the
-// way the node will when it starts. Empty values become nil — the key is
-// removed and the default applies — so a cleared field does not leave
-// "public_listen": "" behind to puzzle the next person reading the file.
+// settingsToConfig validates partial settings using startup rules. Empty
+// values remove keys so their defaults apply.
 func settingsToConfig(body map[string]json.RawMessage) (map[string]any, error) {
 	set := map[string]any{}
 	for k, raw := range body {
@@ -270,9 +255,7 @@ func settingsToConfig(body map[string]json.RawMessage) (map[string]any, error) {
 			if err := json.Unmarshal(raw, &v); err != nil || v < 0 {
 				return nil, errors.New("max_output_tokens: a number of tokens, or 0 for no ceiling")
 			}
-			// Written even when 0: here 0 means "no ceiling", while an absent
-			// key means the 16384 default. Removing it would turn a choice
-			// to have no ceiling back into the default one.
+			// Persist 0 as "no ceiling"; removing the key restores the 16384 default.
 			set[k] = v
 		case "cache_disk_mib":
 			var v int
@@ -329,10 +312,8 @@ func checkString(k, v string) error {
 	case "public_listen":
 		return checkHostPort(k, v, true)
 	case "engine_bind":
-		// Loopback or the tailnet, and nothing typed: the tailnet address is
-		// Tailscale's to assign, and the tailnet is how this system
-		// distributes work. An address set by hand in config.json still
-		// works; it is just not something this page writes.
+		// The form selects loopback or Tailscale's assigned address. Custom
+		// addresses remain configurable directly in config.json.
 		if v != "" && v != config.EngineBindTailnet {
 			return fmt.Errorf("engine_bind: %q; use \"\" for this machine only or %q for this node's tailnet address", v, config.EngineBindTailnet)
 		}
@@ -361,8 +342,6 @@ func checkHostPort(k, v string, emptyOK bool) error {
 	return nil
 }
 
-// zeroIsUnset turns a zero into "remove the key", where zero and absent mean
-// the same thing.
 func zeroIsUnset[T int | float64](v T) any {
 	if v == 0 {
 		return nil

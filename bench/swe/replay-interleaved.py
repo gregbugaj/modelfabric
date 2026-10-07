@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Replay SWE trajectories against one engine, interleaving conversations.
+"""Replay SWE trajectories against one engine with interleaved conversations.
 
 Usage: replay-interleaved.py ENGINE_URL SECONDS RUN_DIR
-Four workers interleave different conversations so slots keep switching,
-which exercises llama-server's prompt-cache save/restore. Note: this does NOT
-reproduce context-checkpoint growth (slots keep resetting); use
-replay-sequential.py for that.
+Four workers switch conversations between slots to exercise prompt-cache
+save and restore. Slot resets prevent context-checkpoint growth; use
+replay-sequential.py to test that behavior.
 """
 import glob, json, random, sys, threading, time, urllib.request
 

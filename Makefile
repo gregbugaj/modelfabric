@@ -10,23 +10,11 @@ all: build
 
 ## build: compile the node binary (stages the UI first, then embeds it)
 #
-# Depends on ui so the embedded dashboard is always the one in web/. It used to
-# embed "whatever is in $(UI_OUT)", which was survivable while the UI was four
-# files and is not now: the dashboard is twenty ES modules and nineteen
-# stylesheets, so a build that skipped staging would embed a tree missing
-# whichever file was just added, and the browser would ask for it, receive the
-# SPA's index.html and fail on "expected a JavaScript module".
+# Stage web/ before embedding; missing modules receive the SPA fallback and fail JavaScript parsing.
 build: ui
 	go build -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/mfsh
 
 ## ui: stage the web UI into the embed directory (no bundler, no node_modules)
-#
-# Copied by glob rather than by name. The dashboard is a set of ES modules and
-# a stylesheet that @imports its own parts, so naming four files here meant a
-# new module was simply not staged: the browser asked for it, got the SPA's
-# index.html, and failed on "expected a JavaScript module". The stale-file
-# delete matters for the same reason in reverse — a removed module left behind
-# in the embed directory keeps working until someone wonders why.
 ui: check-ui
 	@mkdir -p $(UI_OUT)/css
 	@rm -f $(UI_OUT)/*.js $(UI_OUT)/*.css $(UI_OUT)/css/*.css
@@ -37,10 +25,8 @@ ui: check-ui
 
 NODE ?= node
 
-# check-ui: parse the scripts before they are embedded. Staging a file with a
-# syntax error yields a blank dashboard and a console message nobody is looking
-# at, which has cost real debugging time; node parses these in milliseconds.
-# Skipped, with a warning, when no node is on PATH — go build must not need it.
+# check-ui parses scripts before embedding to catch syntax errors that blank the dashboard.
+# Skip with a warning if Node is unavailable; Go builds must not require it.
 check-ui:
 	@if command -v $(NODE) >/dev/null 2>&1; then \
 		for f in $(UI_DIR)/*.js; do \
@@ -62,7 +48,7 @@ test:
 vet:
 	go vet ./...
 
-## check: everything CI runs, in the same order. Green here is green there.
+## check: run the CI checks in order
 check: build vet test check-ui test-ui
 	@unformatted="$$(gofmt -l internal cmd)"; \
 	if [ -n "$$unformatted" ]; then \

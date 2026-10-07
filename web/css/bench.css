@@ -1,7 +1,3 @@
-/* ---- Benchmark page ---- */
-
-/* Page tabs, not the flyout's: two tools on one page have to read as a
-   choice, and the small underline tabs went unnoticed. */
 .bn-tabs { display: flex; gap: 10px; margin: 0 0 16px; flex-wrap: wrap; }
 .bn-tab {
   display: flex; align-items: center; gap: 12px; min-width: 260px;
@@ -51,16 +47,14 @@
 
 .bn-tune-text { font-size: 13px; color: var(--text-2); padding: 12px 16px 4px; margin: 0; max-width: 72ch; line-height: 1.5; }
 .bn-tune .btn { margin: 10px 16px 16px; }
-/* .btn's display outranks the hidden attribute: Stop stayed on screen after
-   the run had finished. */
+/* .btn display overrides the hidden attribute without this rule. */
 #bn-run[hidden], #bn-stop[hidden], #bc-run[hidden], #bc-stop[hidden] { display: none; }
 .bn-pre {
   margin: 0; padding: 12px 16px; max-height: 420px; overflow: auto;
   font-family: var(--mono); font-size: 11.5px; line-height: 1.45;
   background: hsl(var(--surface-inset)); border-top: 1px solid var(--border-soft);
 }
-/* A summary is a panel head, whose space-between pushed a lone title to the
-   right edge. */
+/* Override the panel head alignment for a lone summary title. */
 .bn-metrics summary.panel-head { justify-content: flex-start; gap: 6px; }
 
 .bc-holders { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px 0; font-size: 12.5px; color: var(--text-2); }

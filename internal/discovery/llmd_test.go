@@ -31,14 +31,13 @@ func TestRenderMatchesLLMDSchema(t *testing.T) {
 			t.Fatalf("output missing %q:\n%s", want, got)
 		}
 	}
-	// Sorted by name, so the file is stable across writes.
 	if strings.Index(got, "inst-a") > strings.Index(got, "inst-b") {
 		t.Fatalf("endpoints are not sorted by name:\n%s", got)
 	}
 }
 
 // The file-discovery plugin is IPv4-only, and a tailnet advertises both
-// families — so an IPv6 address must be rejected rather than written out.
+// families; so an IPv6 address must be rejected rather than written out.
 func TestRenderRejectsIPv6(t *testing.T) {
 	_, err := Render([]Endpoint{{Name: "a", Address: "fd7a:115c:a1e0::e339:e108", Port: 8000}})
 	if err == nil || !strings.Contains(err.Error(), "IPv4 only") {
@@ -102,7 +101,6 @@ func TestWriteFileSkipsUnchangedContent(t *testing.T) {
 	if changed, _ := WriteFile(path, eps); !changed {
 		t.Fatal("a new endpoint must be reported as a change")
 	}
-	// No temp file left behind by the atomic rename.
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Fatal("temp file was not cleaned up by the rename")
 	}

@@ -15,8 +15,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// streamingEngine answers any request with an event stream, and records whether
-// the request asked for one.
 func streamingEngine(t *testing.T, asked *bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,17 +51,10 @@ func routerFixture(t *testing.T, engine *httptest.Server) *Server {
 	return s
 }
 
-// The point of the whole file: a caller that sends "stream": false must still
-// produce something to watch. ModelFabric asks the engine for a stream, the tap reads
-// it as it passes, and the caller gets the single body it asked for.
-//
-// ModelFabric has to do this itself: a client like aider — which sends stream:false — would otherwise leave a live
-// view showing nothing for the length of the generation.
 func TestRouterUpgradesNonStreamingWhileSomeoneIsWatching(t *testing.T) {
 	var askedForStream bool
 	s := routerFixture(t, streamingEngine(t, &askedForStream))
 
-	// Somebody watching, which is what turns the upgrade on.
 	events, stop := s.tokens.Subscribe(16)
 	defer stop()
 
@@ -79,7 +70,6 @@ func TestRouterUpgradesNonStreamingWhileSomeoneIsWatching(t *testing.T) {
 	if !askedForStream {
 		t.Error("the engine was not asked for a stream, so there was nothing to watch")
 	}
-	// The caller asked for one JSON body and must get exactly that.
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("Content-Type %q, want application/json: the caller did not ask for a stream", ct)
 	}
@@ -95,7 +85,6 @@ func TestRouterUpgradesNonStreamingWhileSomeoneIsWatching(t *testing.T) {
 		t.Errorf("content = %q, want the reassembled %q", msg["content"], "hi there")
 	}
 
-	// And the tap saw it arrive, rather than one finished body at the end.
 	deadline := time.After(2 * time.Second)
 	var text strings.Builder
 	for text.Len() < len("hi there") {
@@ -111,9 +100,6 @@ func TestRouterUpgradesNonStreamingWhileSomeoneIsWatching(t *testing.T) {
 	}
 }
 
-// With nobody watching, nothing is buffered and the request is passed through as
-// sent. A path that behaves differently when observed is one whose bugs only
-// appear when observed, so this trade is made in exactly one place and stated.
 func TestNoUpgradeWhenNobodyIsWatching(t *testing.T) {
 	var askedForStream bool
 	s := routerFixture(t, streamingEngine(t, &askedForStream))

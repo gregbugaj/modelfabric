@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// The dashboard showed 0 in flight on an engine whose KV cache was visibly
-// climbing, through a whole 8000-word request. ModelFabric's counter only sees what
-// its own router dispatched, and under llm-d nothing does: Envoy dials the
-// engine directly. So the engine's own count is used where it is the larger.
+// Router counters omit llm-d traffic because Envoy dials engines directly.
+// Engine-observed counts must therefore contribute to in-flight reporting.
 func TestEngineReportedInflightWins(t *testing.T) {
 	e := NewEngine("i1", "http://127.0.0.1:1")
 	if got := e.Inflight(); got != 0 {
@@ -35,21 +33,14 @@ func TestRouterCountStandsWithoutTheEngine(t *testing.T) {
 	if got := e.Inflight(); got != 3 {
 		t.Errorf("unpolled, the router's own count stands: got %d", got)
 	}
-	// Rewritten 2026-10-05. This used to expect 1 here: "once the engine
-	// answers it wins". Three dispatched and one slot busy is two requests
-	// queued for that slot, and reporting 1 hid them. A one-slot node with
-	// four queued behind its running request published "1 in flight" and was
-	// chosen as the least loaded engine in the mesh for a whole benchmark run.
+	// Busy slots omit queued requests. Preserve the local dispatch count
+	// when it exceeds the engine's reported running count.
 	e.SetObservedInflight(1)
 	if got := e.Inflight(); got != 3 {
 		t.Errorf("one running and two queued is three in flight: got %d", got)
 	}
 }
 
-// The node's own engines report through EngineState, peers through
-// InstanceState. Both must ask the same way, or the Serving page shows a
-// peer's true load beside a flat 0 for the machine you are sitting at — which
-// is exactly what it did.
 func TestSnapshotUsesTheEngineCount(t *testing.T) {
 	e := NewEngine("i1", "http://127.0.0.1:1")
 	e.MarkReady("m")
@@ -57,7 +48,6 @@ func TestSnapshotUsesTheEngineCount(t *testing.T) {
 	if got := e.snapshot().Inflight; got != 2 {
 		t.Errorf("EngineState should carry the engine's own count, got %d", got)
 	}
-	// And without one, the router's count still shows.
 	e2 := NewEngine("i2", "http://127.0.0.1:2")
 	e2.MarkReady("m")
 	e2.inflight.Store(4)
@@ -66,17 +56,11 @@ func TestSnapshotUsesTheEngineCount(t *testing.T) {
 	}
 }
 
-// The instant says what an engine is doing; the average says how work was
-// shared. On a mixed fleet only the second answers the question worth asking:
-// an even share of requests to an engine a ninth as fast is not an even share
-// of work. The dashboard could only average while the page was open, so the
-// node keeps it too.
 func TestLoadAverage(t *testing.T) {
 	e := NewEngine("i1", "http://127.0.0.1:1")
 	if _, ok := e.LoadAvg(); ok {
 		t.Error("an engine with no samples has no average")
 	}
-	// Two readings of a two-minute window is not an average.
 	e.SetObservedInflight(2)
 	e.SetObservedInflight(2)
 	if _, ok := e.LoadAvg(); ok {
@@ -91,7 +75,6 @@ func TestLoadAverage(t *testing.T) {
 	if v, _ := e.LoadAvg(); v != 1.5 {
 		t.Errorf("2,2,2,0 averages 1.5: got %v", v)
 	}
-	// And it is published, so a peer reads it without asking twice.
 	if got := e.snapshot().LoadAvg; got != 1.5 {
 		t.Errorf("EngineState should carry it: got %v", got)
 	}
@@ -112,10 +95,8 @@ func TestLoadAverageForgetsOldSamples(t *testing.T) {
 	}
 }
 
-// One rate was doing two jobs. Routing needs a settled figure — llm-d
-// schedules by it — but waiting for 20,000 prompt tokens meant a visibly busy
-// engine showed a dash for minutes. So it is reported early and marked, and
-// only trusted late.
+// Report preliminary rates before the 20,000-token threshold, but mark them
+// untrusted until there is enough data for scheduling.
 func TestPrefillRateIsReportedEarlyAndTrustedLate(t *testing.T) {
 	e := NewEngine("i1", "http://127.0.0.1:1")
 	e.SetRates(EngineRates{PrefillTokS: 262, Trusted: false})
@@ -137,19 +118,14 @@ func TestPrefillRateIsReportedEarlyAndTrustedLate(t *testing.T) {
 	}
 }
 
-// A peer's load used to be its last report plus every request sent since, with
-// nothing taken off until the next poll, two seconds away. An agent asks again
-// 0.2s after its answer, so the request it had just finished was still counted
-// against the engine it was coming back to. In the 2026-10-05 SWE run that
-// made a two-slot node with one neighbour busy read as full, and 109 of 142
-// moves left a home that had a slot free.
+// Regression: finished peer requests must leave the load count immediately,
+// or a follow-up sees its own previous request occupying the home slot.
 func TestPeerLoadCountsARequestInAndOut(t *testing.T) {
 	eng := func(inflight int64) []EngineState {
 		return []EngineState{{Name: "gpu", Healthy: true, Models: []string{"qwen"}, EngineStats: EngineStats{Inflight: inflight}, Slots: 2}}
 	}
 	for _, tc := range []struct {
-		name string
-		// do drives one peer; poll(n) is the peer reporting n in flight.
+		name     string
 		do       func(m *Mesh, poll func(int64))
 		want     int64
 		wantFull bool
@@ -205,12 +181,8 @@ func TestPeerLoadCountsARequestInAndOut(t *testing.T) {
 	}
 }
 
-// With the router queue on, 74 of 184 requests going back to their own engine
-// were held first, a median of four seconds on the two-slot 5090 (2026-10-06).
-// The engine's busy-slot reading is up to a poll old, and "the larger of that
-// and the router's count" kept a request that had finished in the total until
-// the next poll: one stale request on a two-slot engine, and the conversation
-// that had just left its slot was told the slot was taken.
+// Regression: stale busy-slot polls must not retain completed local requests
+// and delay their follow-up turns in the router queue.
 func TestAFinishedRequestLeavesTheCountAtOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -256,10 +228,8 @@ func TestAFinishedRequestLeavesTheCountAtOnce(t *testing.T) {
 	}
 }
 
-// A reloaded engine keeps nothing it had cached, and the router has to be told
-// so. In the replay benchmark of 2026-10-06 one run started 49 seconds after
-// another, with every engine reloaded between them, and the entry node placed
-// the second run by where the first had put the same conversations.
+// Engine reloads invalidate cached-prefix placement; stale entries previously
+// routed repeated benchmark conversations using caches that no longer existed.
 func TestAnEngineThatStopsIsReported(t *testing.T) {
 	inst := func(ids ...string) []InstanceState {
 		var out []InstanceState

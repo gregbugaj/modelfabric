@@ -1,4 +1,3 @@
-// Package config loads ModelFabric node configuration.
 package config
 
 import (
@@ -30,13 +29,10 @@ type Config struct {
 	Node string `json:"node"`
 
 	// Role is "entrypoint" for a node that runs no models and only takes
-	// requests into the mesh — a cloud VM as the public front door to GPUs at
+	// requests into the mesh; a cloud VM as the public front door to GPUs at
 	// home. Empty is a normal node.
 	Role string `json:"role,omitempty"`
 
-	// Listen is the local OpenAI-compatible address apps point at: the front
-	// door. Inference is routed from here, or handed to llm-d for the one model
-	// it schedules.
 	Listen string `json:"listen"`
 
 	// RequireAPIKey makes Listen check the node's API key (OpenAI-style
@@ -77,49 +73,30 @@ type Config struct {
 	// agree on it, since discovery works by probing rather than a registry.
 	MeshPort int `json:"mesh_port"`
 
-	// Engines are the local inference servers this node exposes to the mesh.
 	Engines []Engine `json:"engines"`
 
 	// Tag optionally restricts discovery to peers carrying this Tailscale tag
 	// (e.g. "tag:modelfabric"). Empty means probe every online peer.
 	Tag string `json:"tag"`
 
-	// PollInterval is how often peers and local engines are re-checked.
 	PollInterval string `json:"poll_interval"`
 
-	// ProbeTimeout bounds a single peer or engine state check.
 	ProbeTimeout string `json:"probe_timeout"`
 
 	// DeadAfter is how long a peer may fail probes before it leaves the mesh.
 	DeadAfter string `json:"dead_after"`
 
-	// RequestStall is how long an in-flight request may make no progress at all
-	// — no byte read from the engine, none written to the caller — before it is
-	// abandoned and its slot released. "off" holds requests indefinitely, which
-	// is what ModelFabric did before this existed and is almost never what you want:
-	// a client that timed out without closing its connection stopped reading,
-	// backpressure stalled the engine mid-generation, and one slot stayed
-	// occupied for ninety minutes while two idle nodes went unused.
-	//
-	// It bounds silence, not duration. Silence is normal during prefill — a 60k
-	// prompt on an Apple Silicon node is minutes before the first token — so
-	// the default is generous on purpose.
+	// RequestStall bounds inactivity in upstream reads and client writes.
+	// "off" disables it. The default allows long prefills while bounding
+	// stalled connections that would otherwise hold engine slots indefinitely.
 	RequestStall string `json:"request_stall"`
 
-	// MaxOutputTokens is the output ceiling ModelFabric fills into a request that
-	// names none of its own. A request with no limit is asking for the context
-	// window, which no client means and no shared GPU should grant: measured
-	// here, one such request generated ~130,000 tokens of a 131,072 window over
-	// ninety minutes for an answer already abandoned. Zero restores the old
-	// unbounded behaviour. A request that states its own limit is never
-	// overridden.
+	// MaxOutputTokens supplies an output ceiling only when the request has none.
+	// Zero disables the default ceiling. Explicit client limits take precedence.
 	MaxOutputTokens int `json:"max_output_tokens"`
 
-	// RateWeightedRouting compares candidates by how long each would take to
-	// reach a new request rather than by how many requests it already has. Nil
-	// means on. Off restores comparison by queue depth alone, which treats a
-	// slot on a 300 tok/s engine as equal to one on a 2,200 tok/s engine — see
-	// internal/mesh/cost.go for what that cost on this fleet.
+	// RateWeightedRouting compares estimated service delay using prefill rates.
+	// Nil enables it; false compares queue depth alone. See internal/mesh/cost.go.
 	RateWeightedRouting *bool `json:"rate_weighted_routing,omitempty"`
 
 	// LocalBias favors local engines over peers when load is otherwise equal.
@@ -145,7 +122,6 @@ type Config struct {
 	// PATH and then pinned by content.
 	LlamaServer string `json:"llama_server"`
 
-	// PortMin/PortMax bound the ports assigned to loaded instances.
 	PortMin int `json:"port_min"`
 	PortMax int `json:"port_max"`
 
@@ -155,17 +131,11 @@ type Config struct {
 	Parallel       int  `json:"parallel"`
 	FlashAttention bool `json:"flash_attention"`
 
-	// StartupTimeout bounds one model load.
 	StartupTimeout string `json:"startup_timeout"`
 
-	// EngineBind is the interface loaded engines listen on. Loopback, the
-	// default, keeps them private to this machine. "tailnet" binds them to
-	// this node's Tailscale address, looked up at each start, for when
-	// something off-box must reach them directly, such as llm-d's EPP —
-	// tailnet ACLs then become the only thing in front of them. An explicit
-	// address still works, but the tailnet's own is Tailscale's to assign:
-	// typed in, a config could not be shared between nodes, and a node given
-	// a new address would fail every load.
+	// EngineBind defaults to loopback. "tailnet" resolves this node's current
+	// Tailscale address at each start; engine access then relies on tailnet ACLs.
+	// Other explicit addresses are used as configured.
 	EngineBind string `json:"engine_bind"`
 
 	// LLMDEndpointsFile, when set, is kept up to date with the mesh's model
@@ -182,11 +152,8 @@ type Config struct {
 	// usual load-based choice applies.
 	PreferredNode string `json:"preferred_node,omitempty"`
 
-	// DefaultRuntime names the runtime used when a load does not pick one.
 	DefaultRuntime string `json:"default_runtime,omitempty"`
 
-	// DisableLMStudioRuntimes turns off discovery of installed LM Studio
-	// engine packages.
 	DisableLMStudioRuntimes bool `json:"disable_lmstudio_runtimes,omitempty"`
 
 	// DisableLMStudioModels turns off use of an LM Studio install's models
@@ -197,32 +164,23 @@ type Config struct {
 	// that last served it, so its KV cache is reused. Nil means on.
 	PrefixAffinity *bool `json:"prefix_affinity,omitempty"`
 
-	// Placement selects how the router chooses among engines serving a model,
-	// when prefix affinity is on. Empty is the default: stay with the
-	// engine holding the prompt, balance by tokens waiting to be read, and
-	// keep a conversation off an engine that already has one living in every
-	// slot (the room rule). "no-room-rule" is the default without that last
-	// part, for measuring what it is worth. "home-slot" is the earlier rule:
-	// the engine holding the prompt while it has a free slot, otherwise the
-	// fewest requests in flight.
+	// Placement selects the prefix-affinity policy. Empty uses prompt affinity,
+	// prefill backlog, and conversation residency. "no-room-rule" omits the
+	// residency check. "home-slot" prefers the cached engine with a free slot,
+	// then the fewest requests in flight.
 	Placement string `json:"placement,omitempty"`
 
-	// QueueWait turns on the router's queue and is the longest a request is
-	// held in it: when no engine has a slot the request should take, it waits
-	// on this node for one, where otherwise it is sent at once to wait inside
-	// an engine. Empty or "0" is off. After this long the request is placed
-	// as if there were no queue, so nothing is refused for having waited.
+	// QueueWait enables router-side waiting for a suitable slot and sets its
+	// maximum duration. Empty or "0" disables it. Expiry dispatches using
+	// placement order rather than rejecting the request.
 	QueueWait string `json:"queue_wait,omitempty"`
 	// QueueGrace is how long a slot must have stayed free before a waiting
 	// request that is not its conversation may take it. Empty means 2s, which
 	// 92 to 96% of an agent's follow-up calls arrive within.
 	QueueGrace string `json:"queue_grace,omitempty"`
 
-	// CacheDiskMiB turns on the disk tier of the prompt cache and caps it:
-	// a conversation's KV state is saved when its slot is taken or its engine
-	// unloaded, and restored when the conversation returns. Zero, the default,
-	// is off, because the saved state contains the conversation and nothing
-	// else here writes prompts to disk unasked. llama.cpp engines only.
+	// CacheDiskMiB caps persisted llama.cpp KV state in MiB. Zero disables it.
+	// Snapshots contain conversation tokens, so disk caching requires opt-in.
 	CacheDiskMiB int `json:"cache_disk_mib,omitempty"`
 	// CacheDiskDir is where it is kept; empty means a "slots" directory under
 	// the node's state directory.
@@ -241,39 +199,26 @@ type Config struct {
 	// Manually loaded models are never evicted.
 	JITAutoEvict *bool `json:"jit_auto_evict,omitempty"`
 
-	// ExtraModelRoots are additional directories to scan for models.
 	ExtraModelRoots []string `json:"extra_model_roots,omitempty"`
 
-	// LogBodies starts the node with request and response capture already on,
-	// so the dashboard's Activity page and `mfsh log` show what was sent and
-	// returned. It can also be switched at runtime from the dashboard; this is
-	// just the starting state.
-	//
-	// Bodies live in the in-memory ring and are dropped as it rolls over.
-	// Nothing reaches disk unless LogBodiesFile is set.
+	// LogBodies enables in-memory request and response capture at startup.
+	// It can be toggled at runtime. Disk persistence requires LogBodiesFile.
 	LogBodies bool `json:"log_bodies,omitempty"`
 	// LogBodiesMax caps how much of each body is kept, in bytes (default 32768).
 	LogBodiesMax int `json:"log_bodies_max,omitempty"`
 	// LogBodiesKeep is how many requests the ring holds (default 200, max
 	// 2000). The dashboard can change it while the node runs.
 	LogBodiesKeep int `json:"log_bodies_keep,omitempty"`
-	// LogBodiesFile, when set, also appends every captured request to this
-	// file as one JSON object per line. Unlike the ring, a file forgets
-	// nothing — which is the point, and the reason it is config rather than a
-	// button. Written 0600.
+	// LogBodiesFile appends captured requests as JSON lines with mode 0600.
+	// Persistence requires configuration; the dashboard toggle controls capture only.
 	LogBodiesFile string `json:"log_bodies_file,omitempty"`
 
-	// VerifyFull re-hashes every pinned model file on every load instead of
-	// trusting the size+mtime fast path. Off by default: re-hashing 16GB costs
-	// seconds, and size+mtime catches the failures that actually happen
-	// (corruption, truncation, a partial re-download, a swapped file). Turn it
-	// on where an attacker who can preserve both is in scope.
+	// VerifyFull re-hashes pinned model files on each load. Otherwise verification
+	// uses size and mtime, which cannot detect edits preserving both values.
 	VerifyFull bool `json:"verify_full,omitempty"`
 }
 
-// Stall resolves RequestStall. A negative result means "hold indefinitely",
-// which is what the router takes as disabled — spelled "off" in the config,
-// because a bare 0 in a timeout field reads as a mistake rather than a choice.
+// Stall returns the inactivity timeout, or a negative value when set to "off".
 func (c Config) Stall() time.Duration {
 	if strings.EqualFold(strings.TrimSpace(c.RequestStall), "off") {
 		return -1
@@ -281,7 +226,6 @@ func (c Config) Stall() time.Duration {
 	return dur(c.RequestStall, 15*time.Minute)
 }
 
-// LoadTimeouts resolves supervisor durations.
 func (c Config) LoadTimeouts() (startup, stop time.Duration) {
 	return dur(c.StartupTimeout, 10*time.Minute), 20 * time.Second
 }
@@ -326,9 +270,6 @@ func Load(path string) (Config, error) {
 
 func parse(b []byte, path string) (Config, error) {
 	c := Default()
-	// An empty or whitespace-only file is an absent config, not a broken one:
-	// `touch config.json` is a normal thing to do, and it used to stop the
-	// node with a parse error.
 	if len(bytes.TrimSpace(b)) == 0 {
 		b = []byte("{}")
 	}
@@ -366,12 +307,9 @@ func (c Config) Durations() (poll, probe, dead time.Duration) {
 		dur(c.DeadAfter, 15*time.Second)
 }
 
-// JITPolicy returns the idle TTL and auto-evict setting for JIT loads.
 func (c Config) JITPolicy() (ttl time.Duration, autoEvict bool, err error) {
 	autoEvict = c.JITAutoEvict == nil || *c.JITAutoEvict
-	// Trimmed once, here: the switch below compared a trimmed value while the
-	// duration parse used the original, so " 15m " matched no case and then
-	// failed to parse.
+	// Normalize once so keyword matching and duration parsing use the same value.
 	raw := strings.TrimSpace(c.JITTTL)
 	switch raw {
 	case "":
@@ -397,10 +335,8 @@ func dur(s string, def time.Duration) time.Duration {
 	return d
 }
 
-// RoleEntrypoint is a node that runs no models and routes into the mesh.
 const RoleEntrypoint = "entrypoint"
 
-// Entrypoint reports whether this node only routes (see Role).
 func (c Config) Entrypoint() bool { return c.Role == RoleEntrypoint }
 
 // WebUIEnabled reports whether the dashboard is served (default on).
@@ -426,14 +362,9 @@ func ValidateCORSOrigins(origins []string) error {
 	return nil
 }
 
-// Update changes the named keys of the config file at path and leaves every
-// other key exactly as it was written, including ones this build does not
-// know. A nil value removes the key, so the default applies. The result is
-// validated as Load would before anything is written; the previous file is
-// kept beside it as path+".bak", and the new one replaces it in one rename.
-//
-// Keys come out sorted: the file is JSON, so there are no comments to lose,
-// but the order a person wrote them in is not kept.
+// Update changes named keys, preserving unknown keys and removing nil values.
+// It validates before writing, saves the previous file as path+".bak", and
+// replaces it atomically. Output keys are sorted.
 func Update(path string, set map[string]any) (Config, error) {
 	raw := map[string]json.RawMessage{}
 	old, err := os.ReadFile(path)
@@ -504,7 +435,7 @@ func Update(path string, set map[string]any) (Config, error) {
 
 // checkPublicPort refuses a public listener on the port the front door or the
 // mesh already holds. On every interface (the dashboard's "Serve on Network")
-// it would collide with both — the mesh listener is tailnet-IP:mesh_port — and
+// it would collide with both; the mesh listener is tailnet-IP:mesh_port; and
 // the node would fail to bind at the next start instead of when it was saved.
 func (c Config) checkPublicPort() error {
 	if c.PublicListen == "" {
@@ -527,12 +458,8 @@ func (c Config) checkPublicPort() error {
 // address", resolved when the node starts.
 const EngineBindTailnet = "tailnet"
 
-// BindsTailnet reports whether engine_bind means this node's tailnet address:
-// "tailnet", or any address in Tailscale's ranges. The second is how the
-// setting used to be written, from advice that said to put the node's
-// tailnet IP there. Tailscale assigns that address and can change it, and a
-// tailnet address that is not this node's cannot be bound at all, so a
-// literal one is read as what it always meant: the tailnet.
+// BindsTailnet accepts "tailnet" and legacy literal addresses in Tailscale
+// ranges. Both resolve to this node's current address, which may change.
 func (c Config) BindsTailnet() bool {
 	return c.EngineBind == EngineBindTailnet || IsTailnetAddr(c.EngineBind)
 }
@@ -551,11 +478,8 @@ func IsTailnetAddr(h string) bool {
 		ip[2] == 0x11 && ip[3] == 0x5c && ip[4] == 0xa1 && ip[5] == 0xe0
 }
 
-// ResolveEngineBind is the address engines bind to, given this node's tailnet
-// address (empty when Tailscale gave it none). Anything that means the tailnet
-// is Tailscale's current address for this node, whatever was written. With no
-// tailnet address it says so and falls back to loopback: narrower than asked,
-// never wider, and the node still serves this machine.
+// ResolveEngineBind resolves tailnet settings to this node's current address.
+// If unavailable, it reports the error and falls back to loopback.
 func (c Config) ResolveEngineBind(selfAddr string) (bind string, warning string) {
 	if !c.BindsTailnet() {
 		return c.EngineBind, ""

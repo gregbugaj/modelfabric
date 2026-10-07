@@ -36,7 +36,7 @@ func TestShardedModelReportsEveryShardsBytes(t *testing.T) {
 }
 
 // Only one projector per directory was kept, so with two multimodal models in
-// one directory whichever was walked last was attached to both — and a model
+// one directory whichever was walked last was attached to both; and a model
 // answers as if it can see with a projector that is not its own.
 func TestProjectorIsMatchedToItsModel(t *testing.T) {
 	one, ok := projectorFor([]string{"/m/mmproj-f16.gguf"}, "/m/qwen-vl-Q4_K_M.gguf")
@@ -48,7 +48,6 @@ func TestProjectorIsMatchedToItsModel(t *testing.T) {
 	if !ok || got != "/m/gemma-vision.mmproj-f16.gguf" {
 		t.Errorf("picked %q for gemma-vision, want its own projector", got)
 	}
-	// When nothing names the model, guessing is worse than saying no.
 	if got, ok := projectorFor(pair, "/m/llama-3-Q4_K_M.gguf"); ok {
 		t.Errorf("attached an unrelated projector %q", got)
 	}

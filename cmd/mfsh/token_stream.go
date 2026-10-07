@@ -14,20 +14,10 @@ import (
 	"time"
 )
 
-// `mfsh log -tokens`: the reply text as it is generated.
-//
-// `mfsh log` prints one line when a request finishes, which says nothing
-// during the ninety seconds it takes to write an answer — a slow engine and a
-// stuck one look identical until the row appears. This shows the tokens
-// arriving.
-//
-// Deliberately this node only. The tap sits on this node's front door, so it
-// sees the traffic this node is serving or proxying and nothing a peer is
-// doing on its own. Watching the whole mesh would mean shipping reply text
-// between machines, which is not something to do by default for a view that
-// exists to be glanced at.
+// `mfsh log -tokens` shows replies as they are generated.
+// The tap observes only requests served or proxied by this node; it does not
+// collect peer reply text across the network.
 
-// tokenEvent mirrors internal/server.TokenEvent.
 type tokenEvent struct {
 	Time   time.Time `json:"time"`
 	Trace  string    `json:"trace"`
@@ -39,13 +29,8 @@ type tokenEvent struct {
 	AtOnce bool      `json:"at_once"`
 }
 
-// tokenStreamCmd follows live replies. With text it prints what is generated;
-// otherwise one updating line per request, which is what you want when four
-// agents are answering at once.
 func tokenStreamCmd(addr string, text, asJSON bool) error {
-	// A live stream is served only on the node's own loopback listener, so a
-	// remote -addr would either be refused by the peer listener or, worse,
-	// quietly follow the wrong node.
+	// Live streams are loopback-only; reject remote addresses to avoid following the wrong node.
 	if err := mustBeLocalBecause(addr, "the live token stream",
 		"is served only on that node's own loopback listener", "log -tokens"); err != nil {
 		return err
@@ -109,9 +94,7 @@ type tokenPrinter struct {
 	text bool
 	json bool
 	seen map[string]*tokenLine
-	// last is the trace whose text was printed most recently. With several
-	// requests in flight the output would otherwise be an unattributable
-	// braid, so a header is printed whenever the speaker changes.
+	// Track the last printed trace so interleaved requests receive identifying headers.
 	last string
 }
 
@@ -144,9 +127,6 @@ func (p *tokenPrinter) on(e tokenEvent) {
 		}
 		how := ""
 		if e.AtOnce {
-			// Not a live view and must not read as one: the caller did not ask
-			// for streaming, so the engine wrote the whole reply before
-			// sending any of it.
 			how = dim(" · not streamed")
 		}
 		fmt.Printf("%s  %s %s  %s  %s  %s%s\n",
@@ -158,8 +138,7 @@ func (p *tokenPrinter) on(e tokenEvent) {
 	}
 
 	if !p.text {
-		// Counting mode: one line per request, only when the rate is worth
-		// reprinting. Every delta would be hundreds of lines a second.
+		// Throttle counting output; printing every delta can produce hundreds of lines per second.
 		if e.Deltas%25 != 0 {
 			return
 		}
@@ -177,9 +156,6 @@ func (p *tokenPrinter) on(e tokenEvent) {
 		return
 	}
 
-	// Text mode. A header whenever the speaker or the kind changes, so
-	// interleaved requests stay readable and thinking is never mistaken for
-	// the answer.
 	if p.last != e.Trace || l.lastKind != e.Kind {
 		if p.last != "" {
 			fmt.Println()

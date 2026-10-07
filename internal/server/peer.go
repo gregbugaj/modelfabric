@@ -12,20 +12,12 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// PeerHandler is what other nodes see on the tailnet mesh port.
-//
-// Peers need exactly two things from a node: to probe it (/z/state) and to
-// forward inference to it (/v1/...). Everything else — loading and unloading
-// models, changing the runtime or preferred node, the dashboard — stays on
-// loopback, where only this machine can reach it. Tailnet membership is not
-// the same as being trusted to reconfigure someone else's GPU.
-//
-// Read-only mesh views are included because they carry no content and are
-// what an operator on another node, or an llm-d EPP, needs to see.
+// PeerHandler exposes probes, inference and read-only mesh state on the
+// tailnet port. Management and metrics additionally require same-owner access;
+// tailnet membership alone does not authorize reconfiguration.
 func (s *Server) PeerHandler() http.Handler {
 	full := s.Handler()
-	// A same-owner device's browser is exactly who a cross-site page would
-	// be riding on, so this listener refuses those pages as loopback does.
+	// Same-owner browsers still need cross-site request protection.
 	return s.browserSafe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if peerAllowed(r.Method, r.URL.Path) {
 			// Inference is allowed; loading a model on demand is not. JIT
@@ -33,13 +25,8 @@ func (s *Server) PeerHandler() http.Handler {
 			full.ServeHTTP(w, r.WithContext(router.WithoutJIT(r.Context())))
 			return
 		}
-		// Management from another node — its dashboard managing this one —
-		// only for a device with the same owner, as Tailscale identifies it.
-		// Never the proxy onward: one hop, from the node the operator is on.
-		// /metrics is the same trust boundary as management: it names models
-		// and shows how much traffic each node took, which is not something
-		// every tailnet member should read. A scraper on one of your own
-		// machines passes; anyone else does not.
+		// Management and metrics require the same Tailscale owner. Never expose
+		// onward proxying here; remote management is limited to one hop.
 		if strings.HasPrefix(r.URL.Path, "/api/v1/") && !strings.HasPrefix(r.URL.Path, "/api/v1/nodes/") ||
 			r.URL.Path == "/metrics" {
 			if ok, why := s.sameOwner(r); ok {
@@ -58,10 +45,7 @@ func (s *Server) PeerHandler() http.Handler {
 // sameOwner reports whether the tailnet device making r belongs to this
 // node's owner (see tsid). why explains a refusal.
 func (s *Server) sameOwner(r *http.Request) (ok bool, why string) {
-	// Only the values ModelFabric defines open this up. Matching "off" alone meant a
-	// typo — "of", "OFF", or a value from a future version — fell through to
-	// same-owner management, so a setting meant to close a door could leave it
-	// open. Unknown values are refused and named, not guessed at.
+	// Accept only recognized mesh_admin values; typos must not enable access.
 	switch s.meshAdmin {
 	case "", "same-owner":
 		// the default: devices Tailscale reports as this node's owner
@@ -102,10 +86,8 @@ func ownerName(id tsid.Identity) string {
 // ("same-owner", the default, or "off").
 func (s *Server) SetMeshAdmin(ids *tsid.Resolver, policy string) { s.ids, s.meshAdmin = ids, policy }
 
-// handleNodeProxy lets this node's dashboard manage another node:
-// /api/v1/nodes/{node}/<path> is that node's /api/v1/<path> — for example
-// /api/v1/nodes/minion/models/download. It is on the loopback handler only;
-// the peer decides, by owner, whether to accept.
+// handleNodeProxy maps /api/v1/nodes/{node}/<path> to that node's /api/v1/<path>.
+// It is loopback-only; the peer applies its same-owner check.
 func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 	node, rest := r.PathValue("node"), "/api/v1/"+r.PathValue("rest")
 	if node == s.m.State().Node {

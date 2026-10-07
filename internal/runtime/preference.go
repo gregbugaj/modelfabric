@@ -7,15 +7,11 @@ import (
 	"strings"
 )
 
-// Default runtime selection.
-//
-// Sorting by name and taking the first picks the oldest CPU build, which on a
-// GPU machine is the worst available choice. Selection instead prefers an
-// accelerator the host actually has, then the newest version.
+// Default runtime selection prefers a supported accelerator, then the newest
+// version. Name ordering can select an older CPU build on a GPU host.
 
-// accelerators reports which backends this machine can plausibly run, in
-// descending preference. Detection is deliberately cheap and conservative: a
-// backend we cannot confirm is simply not preferred, never excluded.
+// accelerators lists detected backends in preference order. Undetected
+// backends remain eligible but are not preferred.
 func accelerators() []string {
 	var out []string
 	if hasNVIDIA() {
@@ -27,7 +23,6 @@ func accelerators() []string {
 	if hasMetal() {
 		out = append(out, "metal")
 	}
-	// Vulkan is a reasonable GPU fallback but beaten by a vendor backend.
 	if hasNVIDIA() || hasROCm() || hasVulkanICD() {
 		out = append(out, "vulkan")
 	}
@@ -50,8 +45,6 @@ func hasROCm() bool {
 }
 
 func hasMetal() bool {
-	// Metal exists only on Apple hardware; GOOS is the honest check and the
-	// build-time constant keeps this free on Linux.
 	return runtimeGOOS() == "darwin"
 }
 
@@ -65,12 +58,10 @@ func hasVulkanICD() bool {
 	return len(matches) > 0
 }
 
-// score ranks a runtime for automatic selection: higher is better.
 func score(d *Definition, prefs []string) (int, []int) {
 	backendRank := 0
 	for i, a := range prefs {
 		if strings.EqualFold(d.Backend, a) {
-			// Earlier in the preference list scores higher.
 			backendRank = len(prefs) - i
 			break
 		}
@@ -78,8 +69,7 @@ func score(d *Definition, prefs []string) (int, []int) {
 	return backendRank, versionParts(d.Version)
 }
 
-// versionParts splits "2.41.0" into comparable integers. Non-numeric segments
-// sort as 0, so an odd version never panics or wins by accident.
+// versionParts splits versions into integers; nonnumeric segments sort as 0.
 func versionParts(v string) []int {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
 	if v == "" {
@@ -125,24 +115,19 @@ func compareVersions(a, b []int) int {
 	return 0
 }
 
-// newer compares two runtimes of equal backend rank. The llama.cpp build is
-// the common currency when both are known; packager versions (LM Studio's
-// 2.41.0, upstream's b11040) are not comparable with each other.
+// newer compares runtimes of equal backend rank using upstream llama.cpp
+// builds when known; version numbers from different packagers are incomparable.
 func newer(a *Definition, aVer []int, b *Definition, bVer []int) bool {
 	if a.LlamaBuild > 0 && b.LlamaBuild > 0 {
 		return a.LlamaBuild > b.LlamaBuild
 	}
-	// Only one side knows its llama.cpp build: the versions being compared are
-	// then from different packagers (LM Studio's 2.41.0 against upstream's
-	// b11040), which the comment above says are not comparable. Prefer the one
-	// that states a build rather than ranking numbers that do not relate.
+	// Prefer a known upstream build over an incomparable packager version.
 	if a.LlamaBuild > 0 != (b.LlamaBuild > 0) {
 		return a.LlamaBuild > 0
 	}
 	return compareVersions(aVer, bVer) > 0
 }
 
-// best picks the preferred runtime from defs.
 func best(defs []*Definition) *Definition {
 	if len(defs) == 0 {
 		return nil

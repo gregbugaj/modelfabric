@@ -60,7 +60,7 @@ func TestCheckCPUAndMissingGPU(t *testing.T) {
 }
 
 // Automatic selection must never pick a runtime known not to run here, and
-// prefers a known fit over an unknown one — even when the unknown is newer.
+// prefers a known fit over an unknown one - even when the unknown is newer.
 func TestDefaultSkipsIncompatibleAndPrefersKnownFit(t *testing.T) {
 	good := cudaDef("good", []string{"12.0"}, 12040)
 	good.Version = "2.33.0"
@@ -82,9 +82,8 @@ func TestCUDAVersionCode(t *testing.T) {
 	}
 }
 
-// The engine's own device probe is evidence of fit for upstream builds, which
-// do not declare GPU architectures. One probed entry cannot stand for two
-// cards, and a GPU with no name is not evidence of anything.
+// Each surveyed GPU requires a distinct, named install-time probe entry;
+// upstream packages do not declare supported GPU architectures.
 func TestProbedDevicesMustCoverEachGPU(t *testing.T) {
 	two := []GPU{{Name: "NVIDIA GeForce RTX 4090"}, {Name: "NVIDIA GeForce RTX 4090"}}
 	if probedAll([]string{"NVIDIA GeForce RTX 4090"}, two) {

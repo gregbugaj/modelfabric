@@ -1,12 +1,5 @@
 #!/bin/bash
-# Refuses to run when a node has saved defaults for the model under test.
-#
-# Saved defaults sit under the run's own arguments and silently change what is
-# measured. -context and -parallel are passed at load and win, but nothing in
-# LOAD_ARGS names reasoning_effort or the sampler, so a node carrying those
-# serves different work from its neighbours — and the run reports one fleet
-# while measuring another. That is how pilot-invalid-minion32k happened, with
-# a stale binary rather than a saved setting but the same shape.
+# Reject saved model defaults that could change unpinned settings such as reasoning effort or sampling across nodes.
 set -uo pipefail
 source "$(dirname "$0")/env.sh"
 

@@ -9,12 +9,8 @@ import { fieldInput, openPresetEditor, openPresetManager, presets, refreshPreset
 import { PRESET_FIELDS, SETTINGS_SCHEMA, buildCatalog, filterCatalog, formatBytes, groupByModel, inheritedValue, parseSettingsForm, presetDrift, relativeTime, settingsToForm } from "./ui-model.js";
 import { profileTitle, routingView, workloadFor } from "./workload-presets.js";
 
-/* ---------- My Models: every node's models, LM Studio's model manager ---------- */
-
-// Another node's API goes through this node, which forwards it over the
-// tailnet; that node accepts it only from its owner's devices.
-// path is this node's API path (/api/v1/…); another node's is
-// /api/v1/nodes/<node>/…, the rest relative to its /api/v1.
+// Peer API calls use /api/v1/nodes/<node>/... and require the same owner.
+// The path argument is the local /api/v1/... path.
 export function nodeAPI(node, path) {
   return node === selfNode ? path : `/api/v1/nodes/${encodeURIComponent(node)}${path.replace(/^\/api\/v1/, "")}`;
 }
@@ -35,28 +31,25 @@ export const mm = {
 };
 const mmPending = new Set(); // row ids with an action in flight
 
-// The panel's pin state and width are a per-browser convenience, so a storage
-// that refuses (private windows, blocked site data) must not break the panel.
+// Unavailable browser storage must not prevent the panel from opening.
 export function readSidePref(key) {
   try { return localStorage.getItem(key); } catch { return null; }
 }
 export function writeSidePref(key, value) {
-  try { localStorage.setItem(key, value); } catch { /* not worth reporting */ }
+  try { localStorage.setItem(key, value); } catch { /* Browser storage is optional. */ }
 }
 
 export async function fetchJSON(url, opts) {
   const resp = await fetch(url, { cache: "no-store", ...opts });
   const text = await resp.text();
   let data = {};
-  try { data = text ? JSON.parse(text) : {}; } catch { /* keep the text */ }
+  try { data = text ? JSON.parse(text) : {}; } catch { /* Preserve the response text if it is not JSON. */ }
   if (!resp.ok) throw new Error(data?.error?.message || text || `HTTP ${resp.status}`);
   return data;
 }
 
-// Peers are asked only while the page is open: each answer crosses the tailnet.
-// node -> that peer's /api/v1/events, narrowed to what My Models reads. The
-// stream goes through this node's /api/v1/nodes proxy, so the peer is asked
-// once and answers only when something changed, instead of twice per tick.
+// Subscribe to peer events only while My Models is open. The local node
+// proxies each stream, avoiding repeated peer requests on every tick.
 const peerFeeds = new Map();
 
 function openPeerFeed(node) {
@@ -69,10 +62,8 @@ function openPeerFeed(node) {
   }
   f.es.onerror = () => {
     f.data.clear();
-    // When this leaves the stream CLOSED, the peer answered but not with a
-    // stream: a build older than the feed, or one refusing this owner. The
-    // closed feed stays in the map, so the peer is polled as before, and gets
-    // another chance only after it leaves the mesh and comes back.
+    // A CLOSED stream means an old or refusing peer. Keep its entry so
+    // polling takes over; retry the stream only after it rejoins the mesh.
   };
   peerFeeds.set(node, f);
 }
@@ -91,7 +82,7 @@ export async function refreshPeerModels(peers) {
     if (!document.hidden && !peerFeeds.has(node)) openPeerFeed(node);
     const f = peerFeeds.get(node);
     if (f?.data.size === 2) {
-      // null is the feed's word for "that GET did not answer 200".
+      // The feed uses null for a GET that did not return 200.
       const api = f.data.get("models");
       mm.nodes.set(node, api
         ? { api, operations: f.data.get("operations")?.operations ?? [] }
@@ -110,7 +101,6 @@ export async function refreshPeerModels(peers) {
   }));
 }
 
-// node -> platform, so a model's nodes read as the machines they are.
 const nodePlatforms = new Map();
 
 export function renderMyModels() {
@@ -137,9 +127,6 @@ export function renderMyModels() {
   warn.hidden = unreachable.length === 0;
   warn.replaceChildren(...unreachable.map((u) => el("div", null, `${u.node}: ${u.error}`)));
 
-  // Group by: model answers "where does this model live", node answers "what
-  // is on this machine". A mesh needs both; a single-machine tool only ever
-  // needed the second.
   const groupSeg = $("mm-group");
   groupSeg.replaceChildren();
   for (const [value, label] of [["model", "By model"], ["node", "By node"]]) {
@@ -187,7 +174,6 @@ export function renderMyModels() {
   renderSide(sel);
 }
 
-// Capability icons, as LM Studio shows them: vision, tool use, reasoning.
 const CAP_ICONS = {
   vision: ["Vision", '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>'],
   tool_use: ["Tool use", '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-.5-.5-2.5 2.5-2.5Z"/>'],
@@ -197,9 +183,8 @@ const CAP_ICONS = {
 export function capBadges(caps, withText = false) {
   const wrap = el("span", "caps");
   for (const c of caps) {
-    // Capabilities come from catalog and peer data, so a newer node can name
-    // one this build has no icon for. Destructuring undefined threw and took
-    // the whole table down with it.
+    // Newer peers can report unknown capabilities; guard lookup failures
+    // so one missing icon cannot break the table.
     const known = CAP_ICONS[c];
     if (!known) continue;
     const [label, path] = known;
@@ -212,7 +197,6 @@ export function capBadges(caps, withText = false) {
   return wrap;
 }
 
-// One model across the mesh: its identity, and where it is loaded.
 function modelGroupRow(g, span) {
   const tr = el("tr", "mm-group-row");
   const td = el("td");
@@ -263,11 +247,8 @@ function modelRow(r, grouped) {
     state.append(s);
   } else if (r.loaded) {
     state.append(el("span", "pill fit-yes", "loaded"));
-    // Beside "loaded", not on the model's name: it describes this instance on
-    // this node, and grouping by model drops the name cell entirely — which is
-    // where it first went, invisible in the default view. Across nodes this is
-    // the comparison worth having, since the same model can run with the
-    // publisher's xhigh here and a capped allowance there.
+    // Place instance settings beside "loaded": they differ by node, and
+    // the model-name cell is absent when rows are grouped by model.
     const think = thinkingState(r);
     if (think) {
       const chip = el("span", "chip think" + (think.on ? "" : " off"), think.text);
@@ -291,8 +272,7 @@ function modelRow(r, grouped) {
   const plat = grouped && p ? platformTag(p.platform, p.osVersion, 14) : null;
   if (plat) nodeCell.append(plat);
   nodeCell.append(document.createTextNode(r.node));
-  // Under a model group the identity columns would repeat the header, so the
-  // row carries only what differs between nodes.
+  // Model groups already show identity; child rows show only node differences.
   if (grouped) {
     tr.classList.add("mm-sub-row");
     tr.append(nodeCell, quant, el("td", "num", formatBytes(r.sizeBytes)),
@@ -306,8 +286,6 @@ function modelRow(r, grouped) {
   return tr;
 }
 
-// Closing returns focus to the row that opened the panel, so keyboard use does
-// not jump back to the top of the table.
 export function closeSide() {
   const id = mm.selected;
   mm.selected = "";
@@ -316,8 +294,7 @@ export function closeSide() {
   if (row) row.focus({ preventScroll: true });
 }
 
-// Drag the panel's inner edge. A scrim under the pointer keeps the drag from
-// landing on the table, and the width is remembered.
+// A scrim captures the drag so it cannot activate the underlying table.
 export function startSideResize(e, sideId = "mm-side", state = mm, prefKey = "mfsh.side.width") {
   const side = $(sideId);
   if (state.pinned || e.button !== 0) return;
@@ -341,8 +318,6 @@ export function startSideResize(e, sideId = "mm-side", state = mm, prefKey = "mf
   window.addEventListener("pointerup", up);
 }
 
-/* The side panel: Info, Load and Inference, as in LM Studio. */
-
 function renderSide(r) {
   const side = $("mm-side");
   side.hidden = !r;
@@ -362,9 +337,6 @@ function renderSide(r) {
   side.append(head);
   updateSideHead(r);
 
-  // Underline tabs rather than a segmented control: in the panel's own
-  // surface the segments had almost no contrast, and three words in a row do
-  // not read as "there are two more pages here".
   const tabs = el("div", "side-tabs");
   tabs.setAttribute("role", "tablist");
   for (const [id, label] of [["info", "Info"], ["load", "Load"], ["inference", "Inference"]]) {
@@ -408,8 +380,6 @@ function updateSideHead(r) {
   sub.append(el("span", r.self ? "node self" : "node", r.node));
   if (r.loaded) sub.append(el("span", "pill fit-yes", "loaded"));
   const busy = r.busy || mmPending.has(r.id);
-  // The action rides the meta row rather than spanning the panel: one model,
-  // one thing to do with it, not a banner.
   const btn = r.loaded ? el("button", "btn", "Unload") : el("button", "btn primary", "Load");
   btn.disabled = busy;
   btn.title = r.loaded ? `Unload from ${r.node}` : `Load on ${r.node}`;
@@ -449,8 +419,7 @@ function renderInfo(body, r) {
   if (wl) {
     kv(box, "Workload", `${wl.title} — ${profileTitle(wl.profile)}`, false);
   } else if (routingView?.llmd?.running) {
-    // Saying which model has it is more use than a blank: it explains why this
-    // one does not, and llm-d serving one model at a time is the reason.
+    // llm-d serves one model at a time; name the model occupying it.
     kv(box, "Workload", `none — llm-d is scheduling ${routingView.llmd.model}`, false);
   }
   body.append(box);
@@ -480,7 +449,7 @@ async function renderSettingsTab(body, r, inference) {
     body.replaceChildren(el("div", "err-text side-note", `Cannot read settings on ${r.node}: ${err.message}`));
     return;
   }
-  if (mm.shownFor !== `${r.id}|${mm.tab}`) return; // switched away meanwhile
+  if (mm.shownFor !== `${r.id}|${mm.tab}`) return;
   body.replaceChildren();
 
   const values = settingsToForm(saved.settings ?? {});
@@ -492,8 +461,6 @@ async function renderSettingsTab(body, r, inference) {
 
   const nodeModels = mm.catalog.rows.filter((x) => x.node === r.node && x.key !== r.key).map((x) => x.key);
   if (inference) {
-    // The preset belongs at the top of the settings it carries, as LM Studio
-    // puts it: pick one, or manage the library, without leaving the model.
     const bar = el("div", "preset-bar");
     bar.append(el("span", "preset-label", "Preset"));
     const sel = el("select", "select preset-select");
@@ -515,14 +482,11 @@ async function renderSettingsTab(body, r, inference) {
     manage.title = "Create, edit, import or delete presets";
     manage.addEventListener("click", (e) => { e.preventDefault(); openPresetManager(); });
 
-    // The settings on screen, as the form holds them right now.
     const currentValues = () => {
       const v = {};
       for (const input of form.querySelectorAll("[name]")) v[input.name] = input.value;
       return v;
     };
-    // LM Studio marks a preset the moment you move away from it, so you can
-    // tell "uses focused" from "used focused, then someone changed it".
     const refreshDrift = () => {
       const chosen = presets.find((p) => p.name === sel.value);
       const { dirty, changed } = presetDrift(currentValues(), chosen?.settings ?? {});
@@ -536,8 +500,7 @@ async function renderSettingsTab(body, r, inference) {
       }
       saveAs.hidden = Boolean(chosen) && !dirty;
     };
-    // An empty field inherits, so say what it inherits from: the preset's
-    // value when one is chosen, else the model's own recommendation.
+    // Empty fields inherit the selected preset, then model recommendations.
     const refreshHints = () => {
       const chosen = presets.find((p) => p.name === sel.value);
       for (const f of PRESET_FIELDS) {
@@ -586,16 +549,14 @@ async function renderSettingsTab(body, r, inference) {
     });
     bar.append(sel, mark, saveTo, saveAs, manage);
     form.append(bar);
-    // The fields exist only after the groups below are built.
     queueMicrotask(() => { refreshHints(); refreshDrift(); });
   }
   for (const group of SETTINGS_SCHEMA.filter((gr) => Boolean(gr.inference) === inference)) {
     const g = el("div", "side-group");
     g.append(el("div", "side-group-title", group.group));
     for (const f of group.fields) {
-      // The effort levels belong to this model's chat template. When it names
-      // them they become pills; when it does not, the typed field stands,
-      // because a guessed list 500s every request that picks a wrong level.
+      // Use levels from the model's template; guessed levels can cause
+      // Jinja errors. Fall back to text input if the template lists none.
       let field = f;
       if (f.key === "reasoning_effort" && r.reasoningEfforts?.length) {
         field = { ...f, type: "pills", options: r.reasoningEfforts };
@@ -626,7 +587,7 @@ async function renderSettingsTab(body, r, inference) {
   const save = async (reload) => {
     const v = {};
     for (const input of form.querySelectorAll("[name]")) v[input.name] = input.value;
-    // Keep the other tab's saved values: this form holds only one half.
+    // This form edits one tab; preserve the other tab's saved values.
     const other = settingsToForm(saved.settings ?? {});
     const merged = { ...other, ...v };
     const { settings, errors } = parseSettingsForm(merged);
@@ -674,8 +635,6 @@ async function renderSettingsTab(body, r, inference) {
   body.append(err, foot);
 }
 
-// What a loaded instance is actually running with, for a Load setting left
-// empty: the value it inherits today.
 function runningValue(r, key) {
   const c = r.instances[0]?.config;
   if (!c) return "";
@@ -689,18 +648,13 @@ function runningValue(r, key) {
   return String(v);
 }
 
-// What a loaded instance is actually thinking with, as one short chip. Across
-// nodes this is the fact that matters and the one nothing showed: the same
-// model can run with the publisher's xhigh on one node and a capped allowance
-// on another, and the difference is most of a classification's tokens.
 function thinkingState(r) {
   const c = r.instances[0]?.config;
   if (!c) return null;
   const kwargs = c.chat_template_kwargs ?? {};
   if (c.reasoning === "off" || kwargs.enable_thinking === false) return { on: false, text: "think off" };
   const effort = c.reasoning_effort || kwargs.reasoning_effort || r.spec?.template_vars?.reasoning_effort || "";
-  // A budget of 0 ends thinking at once, which is "off" however it was asked
-  // for; -1 is the default and says nothing worth a chip.
+  // A zero budget disables thinking; -1 is the default and needs no badge.
   if (c.reasoning_budget === 0) return { on: false, text: "think off" };
   const budget = typeof c.reasoning_budget === "number" && c.reasoning_budget > 0 ? ` ≤${c.reasoning_budget}` : "";
   if (!effort && !budget) return null;
@@ -758,9 +712,4 @@ async function unloadRow(r, quiet = false) {
 
 $("mm-search").addEventListener("input", (e) => { mm.text = e.target.value; renderMyModels(); });
 
-
-
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and selfNode is written by the poll
-// loop and read here.
 export function setSelfNode(v) { selfNode = v; }

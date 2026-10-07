@@ -70,8 +70,6 @@ func TestMeshManagementIsForTheOwnersDevices(t *testing.T) {
 	}
 }
 
-// /api/v1/nodes/{node}/<path> is that node's /api/v1/<path>; for this node
-// itself it is served here, without a hop.
 func TestNodeProxyPathIsRelativeToAPIv1(t *testing.T) {
 	s := adminServer(t, "")
 	rec := httptest.NewRecorder()
@@ -86,8 +84,6 @@ func TestNodeProxyPathIsRelativeToAPIv1(t *testing.T) {
 	}
 }
 
-// Only a running download can be cancelled; its cancel function is called
-// once and forgotten when the download ends.
 func TestCancelDownload(t *testing.T) {
 	s := adminServer(t, "")
 	called := 0

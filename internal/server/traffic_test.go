@@ -7,8 +7,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// recent is what a peer answers when another node's dashboard asks what it has
-// served, so its order and its discretion about bodies both matter.
 func TestTrafficRecent(t *testing.T) {
 	tr := newTraffic(newMetrics())
 	tr.setSettings(true, 10)

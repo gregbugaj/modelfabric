@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// Run as root on a node running as greg, `mfsh key` read /root, created a key
-// there and printed it as the node's; the node refused it. It must refuse to
-// touch a key directory the running node does not use, and stay out of the way
-// when there is no node to ask.
 func TestKeyCommandsUseTheNodesDirectory(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -39,7 +39,7 @@ func TestFitCacheRAM(t *testing.T) {
 		want  int
 	}{
 		{0, 8192},        // unknown: llama.cpp's default
-		{15 << 30, 1920}, // minion: an eighth of 15 GiB
+		{15 << 30, 1920}, // one eighth of 15 GiB
 		{125 << 30, 8192},
 	} {
 		memTotal = func() int64 { return c.total }
@@ -49,11 +49,8 @@ func TestFitCacheRAM(t *testing.T) {
 	}
 }
 
-// "mlock" alone is try_mmap=false with keep_in_memory=true. Dropping the lock
-// falls back to mmap rather than "none" on purpose: the lock was dropped
-// because memory is tight, and "none" would read the whole model into
-// anonymous memory on that same machine. This pins the reasoning so the
-// fallback is not "corrected" into the worse option.
+// Dropping mlock must fall back to mmap: "none" would load the whole model
+// into anonymous memory on a host already short of RAM.
 func TestDroppingMlockFallsBackToMmapNotNone(t *testing.T) {
 	oldAvail, oldLimit := memAvailable, memlockLimit
 	t.Cleanup(func() { memAvailable, memlockLimit = oldAvail, oldLimit })

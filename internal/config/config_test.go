@@ -36,9 +36,7 @@ func TestJITPolicy(t *testing.T) {
 	}
 }
 
-// `touch config.json` is an ordinary thing to do. An empty or whitespace-only
-// file is an absent config, not a broken one — it used to stop the node with a
-// parse error.
+// Empty or whitespace-only config files use defaults instead of returning a parse error.
 func TestEmptyConfigFileIsNotAParseError(t *testing.T) {
 	for _, body := range []string{"", "   ", "\n\t\n"} {
 		dir := t.TempDir()
@@ -55,7 +53,6 @@ func TestEmptyConfigFileIsNotAParseError(t *testing.T) {
 			t.Errorf("defaults not applied for %q: listen=%q", body, c.Listen)
 		}
 	}
-	// Actual malformed JSON is still an error.
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(p, []byte("{oops"), 0o644); err != nil {

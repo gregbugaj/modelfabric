@@ -40,8 +40,8 @@ func (b browserReq) do(h http.Handler) *httptest.ResponseRecorder {
 
 const local = "127.0.0.1:1234"
 
-// Measured before this guard: a page from https://evil.example POSTed
-// text/plain to /api/v1/tokens and got 201 — any site could manage the node.
+// Cross-origin text/plain POSTs previously created tokens without preflight;
+// the browser guard must reject them.
 func TestBrowserGuard(t *testing.T) {
 	tests := []struct {
 		name string
@@ -79,10 +79,8 @@ func TestBrowserGuard(t *testing.T) {
 			cors: []string{"http://localhost:3000"},
 			req:  browserReq{method: "POST", path: "/v1/chat/completions", host: local, origin: "http://localhost:3000", site: "same-site", ctype: "application/json"},
 			want: 200, acao: "http://localhost:3000"},
-		// /api/v1/chat is an app's route that happens to live beside the
-		// management ones: an origin without leave is still refused there, and
-		// one with it gets through the guard (the fixture has no front door
-		// for the chat to call, which is the 503).
+		// /api/v1/chat uses inference CORS rules. Allowed origins reach the handler;
+		// the fixture returns 503 because it has no front door.
 		{name: "an allowed origin can call /api/v1/chat",
 			cors: []string{"http://localhost:3000"},
 			req:  browserReq{method: "POST", path: "/api/v1/chat", host: local, origin: "http://localhost:3000", site: "same-site", ctype: "application/json", body: `{"model":"m","input":"hi"}`},

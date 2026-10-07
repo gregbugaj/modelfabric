@@ -12,32 +12,13 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tuner"
 )
 
-// Slot tuning on this node: internal/tuner's sweep, driven from the supervisor
-// rather than over HTTP.
-//
-//	POST   /api/v1/tune  start a sweep     {"model", "context_length", "prompt", "output", "slots"}
-//	GET    /api/v1/tune  progress, then the report
-//	DELETE /api/v1/tune  stop the sweep and put the node back
-//
-// A sweep is started and then polled rather than answered by one long request.
-// It reloads the engine once per slot count and runs for minutes, and a caller
-// that goes away — a closed browser tab, a dropped ssh session — must not leave
-// the machine on whichever count was being tested when the connection died. So
-// the work outlives the request that asked for it, and the last report stays
-// readable afterwards.
-//
-// Tuning a whole fleet is this endpoint reached through the node proxy
-// (/api/v1/nodes/{node}/tune) once per node: each machine measures its own
-// hardware, because a slot count is a fact about one machine and nothing about
-// a peer's GPU can be read from here. Nothing is applied — the sweep restores
-// what it found and reports what it would recommend.
+// Slot tuning uses the local supervisor and runs independently of HTTP requests.
+// POST /api/v1/tune starts a sweep; GET returns progress and the report;
+// DELETE cancels it. The sweep restores original settings, including on cancel.
+// Each node measures its own hardware; peers use /api/v1/nodes/{node}/tune.
 
-// tuneState is the one sweep this node will run at a time. A second concurrent
-// sweep would fight the first for the same engine: both unload it, each waits
-// for a slot count the other just replaced, and every row times out while the
-// mesh reports the engine healthy throughout. That is not hypothetical — it is
-// what two overlapping sweeps did on minion, which reported "did not run" for
-// every row of a configuration that had measured fine minutes earlier.
+// tuneState permits one sweep per node. Concurrent sweeps replace each other's
+// engine loads and invalidate measurements.
 type tuneState struct {
 	mu      sync.Mutex
 	running bool
@@ -57,8 +38,7 @@ func (s *Server) registerTune(mux *http.ServeMux) {
 
 type tuneRequest struct {
 	Model string `json:"model"`
-	// ContextLength is per request. Zero means what the model is loaded with:
-	// tuning a context nobody runs answers a question nobody asked.
+	// ContextLength is per request; zero uses the loaded model's context.
 	ContextLength int   `json:"context_length"`
 	Prompt        int   `json:"prompt"`
 	Output        int   `json:"output"`
@@ -66,15 +46,13 @@ type tuneRequest struct {
 }
 
 type tuneStatus struct {
-	Node    string        `json:"node"`
-	Running bool          `json:"running"`
-	Config  tuner.Config  `json:"config"`
-	Rows    []tuner.Row   `json:"rows"`
-	Report  *tuner.Report `json:"report,omitempty"`
-	Error   string        `json:"error,omitempty"`
-	// StartedAt dates the report as well as the run: a recommendation is only
-	// as good as the hardware and build it was measured on.
-	StartedAt time.Time `json:"started_at,omitempty"`
+	Node      string        `json:"node"`
+	Running   bool          `json:"running"`
+	Config    tuner.Config  `json:"config"`
+	Rows      []tuner.Row   `json:"rows"`
+	Report    *tuner.Report `json:"report,omitempty"`
+	Error     string        `json:"error,omitempty"`
+	StartedAt time.Time     `json:"started_at,omitempty"`
 }
 
 func (s *Server) handleTuneStatus(w http.ResponseWriter, _ *http.Request) {
@@ -164,14 +142,8 @@ func (s *Server) handleTuneStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// claimTune reserves this node's one sweep, and is where a second one is
-// refused. Separate from the handler because the refusal is the interesting
-// part: a node with no supervisor answers 503 before this is ever reached, so
-// the rule needs to be assertable without one.
-//
-// The returned context belongs to the sweep rather than to the request that
-// started it: a sweep survives the browser tab or the ssh session that asked
-// for it, and is stopped only by DELETE.
+// claimTune reserves the single sweep independently of supervisor availability.
+// The returned context outlives the initiating request and is cancelled by DELETE.
 func (s *Server) claimTune(cfg tuner.Config) (context.Context, context.CancelFunc, error) {
 	// A benchmark reloads the same engine; one at a time, whichever came first.
 	s.bench.mu.Lock()
@@ -188,10 +160,8 @@ func (s *Server) claimTune(cfg tuner.Config) (context.Context, context.CancelFun
 			s.tune.cfg.Model, s.tune.at.Format(time.TimeOnly))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	// Field by field, not `s.tune = tuneState{...}`: that assignment replaces
-	// the mutex this function is holding, and the deferred unlock then releases
-	// a different, never-locked one — "sync: unlock of unlocked mutex", which
-	// kills the process rather than the request.
+	// Assign fields individually: replacing tuneState would replace the locked
+	// mutex and make the deferred Unlock panic.
 	s.tune.running, s.tune.cfg, s.tune.at, s.tune.cancel = true, cfg, time.Now(), cancel
 	s.tune.rows, s.tune.rep, s.tune.err = nil, nil, ""
 	return ctx, cancel, nil
@@ -215,8 +185,6 @@ func (s *Server) handleTuneCancel(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// supEngine is the local machine, driven through its own supervisor. The CLI's
-// httpEngine drives a node over its management API; both run the same sweep.
 type supEngine struct{ s *Server }
 
 // reloadWait bounds one row's reload. A load that has not produced a serving
@@ -234,12 +202,8 @@ func (e supEngine) Reload(ctx context.Context, model string, contextLen, slots i
 			e.s.sup.Journal().Wait(op.ID, reloadWait)
 		}
 	}
-	// Only the settings that change what is being measured are stated; the
-	// rest come from the model's own defaults, exactly as an `mfsh load` would
-	// take them. Vision and speculation are carried over from what was running
-	// rather than left out, because a saved default for either would otherwise
-	// decide them halfway through a sweep — and a sweep that changes two
-	// things at once measures neither.
+	// Preserve running vision and speculation settings so saved defaults cannot
+	// change them during the sweep. Other unspecified fields use model defaults.
 	req := supervisor.LoadRequest{Model: model}
 	req.ContextLength = &contextLen
 	req.Parallel = &slots
@@ -247,10 +211,8 @@ func (e supEngine) Reload(ctx context.Context, model string, contextLen, slots i
 		vision, spec := before.Config.Vision, specModeOf(before.Config)
 		req.Vision = &vision
 		req.SpecMode = &spec
-		// And the engine, plus the weights it serves. A Mac holds this model as
-		// GGUF and as MLX and can run either; without these the reload takes the
-		// node's default runtime and the sweep reports one engine's numbers under
-		// the other's name.
+		// Preserve the runtime and weights variant so reloads cannot switch between
+		// GGUF and MLX while reporting the original engine's measurements.
 		req.Runtime = before.Runtime
 		req.Format = e.formatOf(model, before.Variant)
 	}
@@ -267,8 +229,6 @@ func (e supEngine) Reload(ctx context.Context, model string, contextLen, slots i
 	case settled.Error != "":
 		return fmt.Errorf("%s", settled.Error)
 	}
-	// Confirm what actually loaded. A row measured against settings other than
-	// the ones it reports is worse than a missing row: it looks like data.
 	after := e.instance(model)
 	switch {
 	case after.ID == "":
@@ -279,8 +239,6 @@ func (e supEngine) Reload(ctx context.Context, model string, contextLen, slots i
 	return nil
 }
 
-// specModeOf reads a loaded instance's speculation back as the setting that
-// would reproduce it.
 func specModeOf(a runtime.Applied) string {
 	if !a.Speculative {
 		return "off"
@@ -313,11 +271,8 @@ func (e supEngine) Target(_ context.Context, model string) (string, string, erro
 			served = st.ServedModel
 		}
 	}
-	// The engine's own address, not the shim's and not the front door's: the
-	// measurement is of this machine, not of wherever a router would have sent
-	// the work. The address the router itself dials, not 127.0.0.1 and the
-	// port: an engine bound to the tailnet (engine_bind) does not listen on
-	// loopback, and the sweep refused to connect on exactly that node.
+	// Measure the engine directly, using its bound address. A tailnet-bound
+	// engine does not accept loopback connections.
 	for _, eng := range e.s.m.Engines() {
 		if eng.Name == i.ID && eng.BaseURL != "" {
 			return eng.BaseURL, served, nil
@@ -341,9 +296,8 @@ func (e supEngine) Current(_ context.Context, model string) (int, int, error) {
 	return i.Config.Parallel, i.Config.ContextLength, nil
 }
 
-// formatOf is the weights format of the variant an instance loaded, so a reload
-// picks the same ones. Empty when it cannot be determined, which leaves the
-// catalog's primary variant — right for a model that has only one.
+// formatOf returns the loaded variant's format. Empty selects the catalog's
+// primary variant when the original format is unknown.
 func (e supEngine) formatOf(model, variant string) string {
 	if variant == "" || e.s.sup == nil {
 		return ""

@@ -6,7 +6,7 @@
 // and every device belongs to a user or carries tags. Two devices have the
 // same owner when both are untagged and belong to the same user, or both are
 // tagged and share a tag (tags replace the user as a device's identity).
-// Anything else — including any failure to find out — is not the same owner.
+// Anything else; including any failure to find out; is not the same owner.
 package tsid
 
 import (
@@ -29,7 +29,6 @@ type Identity struct {
 	Device string   `json:"device,omitempty"`
 }
 
-// SameOwner reports whether a and b belong to the same owner.
 func SameOwner(a, b Identity) bool {
 	switch {
 	case len(a.Tags) > 0 && len(b.Tags) > 0:
@@ -63,7 +62,6 @@ type cached struct {
 	at  time.Time
 }
 
-// New returns a resolver that uses the tailscale binary on PATH.
 func New() *Resolver {
 	return &Resolver{
 		Run: func(ctx context.Context, args ...string) ([]byte, error) {
@@ -74,7 +72,6 @@ func New() *Resolver {
 	}
 }
 
-// Self is this device's identity.
 func (r *Resolver) Self(ctx context.Context) (Identity, error) {
 	r.mu.Lock()
 	c := r.self
@@ -89,7 +86,6 @@ func (r *Resolver) Self(ctx context.Context) (Identity, error) {
 	return id, err
 }
 
-// WhoIs identifies the device at a tailnet IP.
 func (r *Resolver) WhoIs(ctx context.Context, ip string) (Identity, error) {
 	r.mu.Lock()
 	c := r.peers[ip]

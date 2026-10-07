@@ -4,8 +4,7 @@
 
 ## How it was verified
 
-<!-- This project talks to GPUs and other machines, and reasoning that looks
-     sound is regularly wrong here. Say what you actually ran. -->
+<!-- List the commands and running-system checks performed. -->
 
 - [ ] `make build test check-ui test-ui`, `go vet ./...`, `gofmt -l internal cmd`
 - [ ] Tested against a running node (say which, and what you saw)

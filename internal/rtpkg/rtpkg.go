@@ -1,21 +1,7 @@
-// Package rtpkg installs llama.cpp engine builds into ModelFabric's own runtimes
-// directory — `mfsh runtime get/update/remove`.
-//
-// It follows LM Studio's packaging pattern exactly, into a different place:
-//
-//	<runtimes>/<name>-<version>/        the engine: llama-server and its libraries
-//	    backend-manifest.json           LM Studio's schema, so one reader serves both
-//	    engine-protocol-server-artifacts.json
-//	<runtimes>/vendor/<vendor-name>/    shared dependency libraries (the CUDA
-//	                                    runtime), downloaded once per CUDA version
-//
-// Builds come from upstream llama.cpp's public GitHub releases, which publish a
-// SHA-256 for every asset. Nothing here reads or writes LM Studio's tree.
-//
-// Upstream does not declare which GPU architectures a build was compiled for,
-// which LM Studio's manifests do. So each install is proven on the machine
-// instead: the engine must start and enumerate the accelerators the hardware
-// survey found, and that result is recorded in the manifest.
+// Package rtpkg installs upstream llama.cpp releases under ModelFabric's runtime
+// root, using LM Studio-compatible manifests and shared vendor libraries.
+// Assets are SHA-256 verified. A local device probe records compatibility
+// because upstream releases do not list supported GPU architectures.
 package rtpkg
 
 import (
@@ -34,10 +20,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/runtime"
 )
 
-// DefaultRepo is upstream llama.cpp.
 const DefaultRepo = "ggml-org/llama.cpp"
 
-// Client reads upstream releases.
 type Client struct {
 	APIBase string // https://api.github.com
 	Repo    string
@@ -45,7 +29,6 @@ type Client struct {
 	Token   string // optional GITHUB_TOKEN, only to lift the anonymous rate limit
 }
 
-// NewClient returns a client for upstream llama.cpp.
 func NewClient() *Client {
 	return &Client{
 		APIBase: "https://api.github.com",
@@ -55,7 +38,6 @@ func NewClient() *Client {
 	}
 }
 
-// Asset is one downloadable file of a release.
 type Asset struct {
 	Name   string
 	URL    string
@@ -133,7 +115,6 @@ type Want struct {
 	Build   string // "b11040"
 }
 
-// Plan is a resolved install.
 type Plan struct {
 	Build          string // b11040
 	BuildNumber    int
@@ -201,7 +182,6 @@ func hostArch() (string, error) {
 	return "", fmt.Errorf("no upstream build for %s", goruntime.GOARCH)
 }
 
-// autoBackend picks the accelerator to install for, from the survey.
 func autoBackend(hw runtime.Hardware) (string, string) {
 	switch {
 	case len(hw.GPUs) > 0: // the survey finds GPUs through nvidia-smi
@@ -281,7 +261,7 @@ func Choose(builds []Build, want Want, hw runtime.Hardware) (*Plan, error) {
 		}
 		if backend == "cuda" {
 			// The engine links libcudart/libcublas, which upstream ships as a
-			// separate archive — LM Studio's vendor package, by another name.
+			// separate archive; LM Studio's vendor package, by another name.
 			name := fmt.Sprintf("cudart-llama-%s-bin-ubuntu-cuda-%s-%s.tar.gz", b.Tag, best.version, arch)
 			va, ok := b.Assets[name]
 			if !ok {
@@ -301,7 +281,6 @@ func Choose(builds []Build, want Want, hw runtime.Hardware) (*Plan, error) {
 	return nil, fmt.Errorf("no complete %s build for linux/%s among the recent upstream releases", backend, arch)
 }
 
-// displayName names a package the way LM Studio's display data does.
 func displayName(backend, version string) string {
 	label := map[string]string{"cpu": "CPU", "cuda": "CUDA", "vulkan": "Vulkan", "rocm": "ROCm"}[backend]
 	if version != "" {

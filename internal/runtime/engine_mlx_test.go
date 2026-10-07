@@ -82,7 +82,6 @@ func TestMLXTraitsSayWhatItCannotBeAsked(t *testing.T) {
 	}
 }
 
-// A load must not be handed to an engine that cannot read the weights.
 func TestRuntimeSelectionFollowsTheWeightsFormat(t *testing.T) {
 	gguf := &Definition{Name: "llama", Engine: "llama.cpp"}
 	mlx := &Definition{Name: "mlx", Engine: "mlx"}
@@ -93,7 +92,6 @@ func TestRuntimeSelectionFollowsTheWeightsFormat(t *testing.T) {
 	}{
 		{gguf, "gguf", true}, {gguf, "mlx", false}, {gguf, "safetensors", false},
 		{mlx, "mlx", true}, {mlx, "safetensors", true}, {mlx, "gguf", false},
-		// An unknown format is nobody's to refuse, and no format means any.
 		{gguf, "", true}, {mlx, "", true}, {gguf, "awq", true},
 	} {
 		if got := c.d.LoadsFormat(c.format); got != c.want {

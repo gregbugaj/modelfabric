@@ -13,13 +13,9 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/runtime"
 )
 
-// Runtime management for the dashboard: what LM Studio's runtime page does —
-// check for builds, install, update, remove — against ModelFabric's own runtimes
-// directory. Installs run as durable operations in the same journal as model
-// loads, so the page shows progress by polling what it already polls, and a
-// closed tab does not cancel a download.
+// Runtime installation and removal use ModelFabric's runtimes directory.
+// Installs are journalled operations that outlive browser requests.
 
-// SetRuntimesRoot enables installing and removing ModelFabric's own runtimes.
 func (s *Server) SetRuntimesRoot(root string) { s.runtimesRoot = root }
 
 // availableCache keeps upstream's release list for a while: the page asks
@@ -82,8 +78,6 @@ func (s *Server) planView(p *rtpkg.Plan) planView {
 	return v
 }
 
-// handleRuntimesAvailable answers "what could I install, and is anything
-// out of date" — the page's Check for updates.
 func (s *Server) handleRuntimesAvailable(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRuntimeInstall(w) {
 		return
@@ -232,8 +226,6 @@ func (s *Server) runRuntimeInstall(opID string, plan *rtpkg.Plan, hw runtime.Har
 	j.Succeed(opID, "")
 }
 
-// handleRuntimeRemove deletes a ModelFabric-installed runtime. The checks live
-// here, in one place, for the CLI and the page alike.
 func (s *Server) handleRuntimeRemove(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRuntimeInstall(w) {
 		return

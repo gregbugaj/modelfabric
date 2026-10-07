@@ -56,7 +56,6 @@ func (p *Placement) schedule(cands []mesh.Candidate, shares map[string]float64, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// 1. room
 	kept := make([]mesh.Candidate, 0, len(cands))
 	for _, c := range cands {
 		if !waitingFor(c) {
@@ -94,7 +93,6 @@ func (p *Placement) schedule(cands []mesh.Candidate, shares map[string]float64, 
 		kept = withRoom
 	}
 
-	// 2. affinity
 	peak := 0.0
 	for _, c := range cands {
 		peak = max(peak, c.PrefillTokS)
@@ -128,7 +126,6 @@ func (p *Placement) schedule(cands []mesh.Candidate, shares map[string]float64, 
 		kept = sticky
 	}
 
-	// 3. score. Cold means no engine left holds any of the prompt.
 	cold := true
 	for _, c := range kept {
 		if shares[c.Name] > 0 {
@@ -154,7 +151,6 @@ func (p *Placement) schedule(cands []mesh.Candidate, shares map[string]float64, 
 		score[c.Name] = s
 	}
 
-	// 4. highest first; the mesh's order decides between equals.
 	sort.SliceStable(kept, func(a, b int) bool { return score[kept[a].Name] > score[kept[b].Name] })
 	out := append([]mesh.Candidate(nil), kept...)
 	for _, c := range cands {

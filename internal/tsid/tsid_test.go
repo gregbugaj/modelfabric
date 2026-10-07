@@ -18,9 +18,9 @@ func TestSameOwner(t *testing.T) {
 	}{
 		{greg, greg, true},
 		{greg, other, false},
-		{taggedA, taggedB, true},  // a shared tag
-		{taggedA, taggedC, false}, // tags, none shared
-		{greg, taggedA, false},    // a user and a tagged device are different identities
+		{taggedA, taggedB, true},
+		{taggedA, taggedC, false},
+		{greg, taggedA, false}, // a user and a tagged device are different identities
 		{Identity{}, Identity{}, false},
 	} {
 		if got := SameOwner(c.a, c.b); got != c.want {

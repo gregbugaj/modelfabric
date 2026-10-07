@@ -1,6 +1,4 @@
-// The Benchmark page: the standard suite on a chosen node (internal/bench),
-// and Tune slots beside it. A run is the node's own, through its
-// /api/v1/bench, so it survives this tab closing; the page polls it.
+// The chosen node owns /api/v1/bench runs; closing the tab does not cancel them.
 
 import { showNotice } from "./actions.js";
 import { $ } from "./core.js";
@@ -68,10 +66,8 @@ export async function openBench() {
   try {
     mesh = await fetchJSON("/z/mesh");
   } catch (err) {
-    // Opened while the node was restarting, the page said "Failed to fetch"
-    // and stayed that way, its Node and Model boxes empty, until reloaded.
-    // The node comes back in a second or two, so ask again while the page
-    // is still the one on screen.
+    // Retry while this page is open so a node restart does not leave
+    // the form permanently empty.
     $("bn-status").textContent = `Could not read the mesh (${err.message}); retrying…`;
     clearTimeout(bn.retry);
     bn.retry = setTimeout(() => { if (!document.querySelector('section[data-view="bench"]')?.hidden) void openBench(); }, 2000);
@@ -90,8 +86,7 @@ export async function openBench() {
   await loadNode();
 }
 
-// The models loaded on the node: a run restores the load it found, so it
-// benchmarks what is loaded rather than loading something itself.
+// Benchmark only loaded models: the run restores the existing load.
 async function loadNode() {
   const sel = $("bn-model");
   sel.replaceChildren();
@@ -102,7 +97,7 @@ async function loadNode() {
     setStatus(`Could not read ${bn.node}'s models: ${err.message}`);
     return;
   }
-  // An embedding model generates nothing, so there is nothing here to time.
+  // Embedding models do not generate tokens to benchmark.
   const loaded = (api.models ?? []).filter((m) => (m.loaded_instances ?? []).length && m.type !== "embedding");
   for (const m of loaded) {
     const o = el("option", null, m.key);
@@ -118,7 +113,7 @@ async function loadNode() {
   sel.value = bn.model;
   $("bn-run").disabled = !bn.model;
   setStatus(bn.model ? "" : "Load a model on this node first (My Models), then benchmark it.");
-  await poll(); // a run already going, or the last one, on this node
+  await poll();
 }
 
 function lockForm(locked) {
@@ -160,9 +155,7 @@ async function run() {
   await poll();
 }
 
-// A node older than the benchmark answers "no such endpoint" to everything
-// about it. The Run button showed that bare, which reads as a bug in this
-// dashboard instead of a peer that needs the current build.
+// An older node returns "no such endpoint"; report the required upgrade.
 export function benchError(err) {
   return /no such endpoint/i.test(err.message)
     ? `${bn.node} runs a build without benchmarking; deploy the current one there.`
@@ -186,18 +179,13 @@ async function poll() {
   } catch (err) {
     setStatus(benchError(err));
     $("bn-results").replaceChildren();
-    // Nothing to run on a node that cannot benchmark: clicking only repeated
-    // the same message.
     if (/no such endpoint/i.test(err.message)) $("bn-run").disabled = true;
     return;
   }
   $("bn-run").hidden = st.running;
   $("bn-stop").hidden = !st.running;
-  // A run reloads the engine for each phase, so the node's loaded models are
-  // empty for a moment between them. Read then, the Model box said "nothing
-  // loaded on this node" for the rest of a run that was benchmarking the
-  // 27B. While a run goes on the form shows that run's model and is locked —
-  // it cannot change mid-run — and the list is read again once it ends.
+  // Engine reloads temporarily empty the model list between phases. Keep
+  // the running model selected and refresh available models after the run.
   lockForm(st.running);
   if (st.running && st.report?.model) showModel(st.report.model);
   const ended = bn.wasRunning && !st.running;
@@ -208,9 +196,7 @@ async function poll() {
   }
   if (st.running) {
     const r = st.report;
-    // From the run's start, not took_s: the node updates that only when a
-    // phase changes, so a two-minute 32K test showed the same number
-    // throughout (and the page read a field that does not exist: "0s").
+    // took_s changes only between phases; use the start time for a live duration.
     const started = Date.parse(r?.at ?? "");
     const secs = Number.isFinite(started) ? Math.max(0, Math.round((Date.now() - started) / 1000)) : Math.round(r?.took_s ?? 0);
     setStatus(r?.phase ? `${secs}s · ${r.phase}` : "starting…");
@@ -248,8 +234,6 @@ export function table(title, hint, t, opts = {}) {
       row.append(td);
     } else {
       r.cells.forEach((c, i) => {
-        // The generation column is the headline, and a speedup worth having
-        // is marked, as on the standard layout.
         const cls = i === 0 ? "mono" : (opts.bold === i ? "num strong" : (opts.speedup === i && r.speedup >= 2 ? "num good" : "num"));
         row.append(el("td", cls, c));
       });
@@ -277,7 +261,6 @@ function renderResults(rep, running) {
   for (const n of t.notes) out.push(el("div", "bn-warn", n));
   if (t.partial) out.push(el("div", "bn-warn", "Stopped before the end: these are partial results."));
 
-  // What a reader needs to repeat it, and the command that does.
   const repro = el("div", "panel bn-panel");
   const rh = el("div", "panel-head");
   rh.append(el("span", null, "Reproduce this run"));
@@ -301,7 +284,6 @@ function renderResults(rep, running) {
       downloadButton(rep));
     th.append(actions);
     text.append(th);
-    // The text itself, as the CLI prints it: the same renderer, on the node.
     const pre = el("pre", "bn-pre", "…");
     text.append(pre);
     fetch(nodeAPI(bn.node, "/api/v1/bench?format=text")).then((r) => (r.ok ? r.text() : "")).then((t) => { pre.textContent = t; });

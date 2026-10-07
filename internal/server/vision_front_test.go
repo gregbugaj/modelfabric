@@ -9,8 +9,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/discovery"
 )
 
-// A real multimodal request, as an OpenAI SDK sends one: content is an array of
-// parts rather than a string, and the image is a data URI.
 const imageBody = `{"model":"m","messages":[{"role":"user","content":[` +
 	`{"type":"text","text":"what is in this image?"},` +
 	`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg"}}]}]}`
@@ -26,11 +24,8 @@ func post(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder 
 	return rec
 }
 
-// llm-d is given modelfabric.sh/vision on every endpoint and cannot read the request
-// body the way ModelFabric can, so ModelFabric names the profile: an image gets the one that
-// filters on the label, text gets the one that does not. Without this an image
-// could be scheduled onto an engine loaded without its projector, which fails
-// inside llama.cpp with "failed to process mtmd chunk".
+// Set llm-d's profile from image detection so its vision label filter excludes
+// engines loaded without projectors, avoiding mtmd chunk failures.
 func TestTheSchedulerIsToldWhenARequestCarriesAnImage(t *testing.T) {
 	f := newFrontFixture(t, true, false)
 	h := f.srv.FrontHandler()
@@ -47,11 +42,8 @@ func TestTheSchedulerIsToldWhenARequestCarriesAnImage(t *testing.T) {
 	}
 }
 
-// Every request names one, including text. A profile llm-d does not recognise
-// fails the request outright — measured against EPP v0.10.0, an unknown name
-// came back "ResourceExhausted - failed to find target endpoint" — so this is
-// not a header to leave to chance, and a caller must not be able to choose its
-// own scheduling by sending it.
+// Set a known profile on every request and override caller-supplied values.
+// EPP rejects unknown profiles with ResourceExhausted.
 func TestACallerCannotChooseItsOwnSchedulingProfile(t *testing.T) {
 	f := newFrontFixture(t, true, false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(textBody))
@@ -67,10 +59,8 @@ func TestACallerCannotChooseItsOwnSchedulingProfile(t *testing.T) {
 	}
 }
 
-// The whole point of reading the model from a large body: llm-d has to be given
-// the requests it was enabled for. A 90k-token agent conversation is about
-// 360KB, and under the old 64KiB cap every one of them went to ModelFabric's own
-// router instead, with nothing said.
+// Large bodies must retain model-based scheduler selection. The former
+// 64 KiB cap bypassed llm-d for long conversations.
 func TestALongConversationStillReachesTheScheduler(t *testing.T) {
 	f := newFrontFixture(t, true, false)
 	h := f.srv.FrontHandler()

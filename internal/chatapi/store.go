@@ -36,7 +36,6 @@ func NewStore(max int, ttl time.Duration) *Store {
 	return &Store{max: max, ttl: ttl, now: time.Now, items: map[string]*stored{}, maxBytes: 256 << 20}
 }
 
-// Put stores a conversation under a new id and returns it.
 func (s *Store) Put(model string, messages []map[string]any) string {
 	raw := make([]byte, 24)
 	rand.Read(raw)
@@ -97,7 +96,6 @@ func (s *Store) Get(id string) ([]map[string]any, bool) {
 	return append([]map[string]any(nil), v.messages...), true
 }
 
-// Len is how many conversations are held.
 func (s *Store) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

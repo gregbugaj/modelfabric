@@ -1,18 +1,5 @@
 import type { ReactNode } from 'react';
 
-/*
- * Architecture diagram primitives.
- *
- * Mermaid drew these as identical rounded boxes in its default palette, which
- * meant the picture carried no information the caption didn't already have.
- * The thing that actually matters in ModelFabric's topology is *who can reach what* —
- * so these use the same four scope colours the dashboard's Mesh page uses, and
- * group nodes into the trust boundary they sit inside.
- *
- * HTML and CSS rather than SVG: these are all short left-to-right flows, so
- * flexbox gets the layout right at every width, wraps sensibly on a phone, and
- * inherits the theme without a second set of colour definitions.
- */
 
 export type Scope = 'loopback' | 'tailnet' | 'public' | 'internal';
 
@@ -26,7 +13,6 @@ const SCOPE: Record<Scope, { label: string; v: string }> = {
 const c = (s: Scope) => `hsl(var(${SCOPE[s].v}))`;
 const cAlpha = (s: Scope, a: number) => `hsl(var(${SCOPE[s].v}) / ${a})`;
 
-/* ------------------------------------------------------------------ frame */
 
 export function Arch({
   children,
@@ -35,7 +21,7 @@ export function Arch({
 }: {
   children: ReactNode;
   legend?: Scope[];
-  /** Stack top-to-bottom. Right for trust tiers, which never fit side by side. */
+  /** Stack trust tiers vertically. */
   down?: boolean;
 }) {
   return (
@@ -69,7 +55,6 @@ export function Arch({
   );
 }
 
-/* ------------------------------------------------------- trust boundaries */
 
 export function Zone({
   label,
@@ -102,7 +87,6 @@ export function Zone({
   );
 }
 
-/* -------------------------------------------------------------------- node */
 
 export function Node({
   title,
@@ -138,7 +122,6 @@ export function Node({
   );
 }
 
-/* ------------------------------------------------------------------- port */
 
 export function Port({ scope, children }: { scope: Scope; children: ReactNode }) {
   return (
@@ -152,7 +135,6 @@ export function Port({ scope, children }: { scope: Scope; children: ReactNode })
   );
 }
 
-/* ------------------------------------------------------------------ arrow */
 
 export function Arrow({
   label,
@@ -231,7 +213,6 @@ export function Arrow({
   );
 }
 
-/* ------------------------------------------------- a column of stacked nodes */
 
 export function Stack({ children, label }: { children: ReactNode; label?: string }) {
   return (

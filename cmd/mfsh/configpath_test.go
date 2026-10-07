@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// An entrypoint was started with -config ~/.config/ModelFabric/config.json, a
-// capitalisation its file never had, and ran on defaults (a GPU node, no
-// public listener) without a word. A path asked for must exist.
+// An explicitly selected config path must exist; a capitalization typo previously loaded defaults silently.
 func TestRequireExplicitConfig(t *testing.T) {
 	dir := t.TempDir()
 	there := filepath.Join(dir, "config.json")

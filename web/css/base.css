@@ -1,6 +1,3 @@
-/* ModelFabric dashboard — follows the m3-desktop token idiom:
-   HSL component tokens on :root, semantic aliases derived from them, and a
-   dark theme via both an explicit [data-theme] and the OS preference. */
 
 :root {
   color-scheme: light;
@@ -14,8 +11,6 @@
   --text-secondary: 215 20% 45%;
   --text-muted-token: 215 14% 60%;
 
-  /* A product blue, the colour a console uses for "do the thing" — not the
-     violet every generated dashboard ships with. */
   --brand-primary: 215 100% 50%;
   --brand-primary-hover: 216 100% 43%;
   --brand-primary-muted: 215 100% 96%;
@@ -27,9 +22,7 @@
   --success-subtle: 142 76% 96%;
   --success-text: 142 71% 29%;
   --warning-token: 38 92% 50%;
-  /* The amber above is a fill colour. As *text* on a pale fill it is about
-     2.3:1, so warnings that are a sentence rather than a chip use this darker
-     one; the dark theme lightens it instead. */
+  /* Use darker warning text on light fills for contrast; dark themes use lighter text. */
   --warning-text: 32 88% 32%;
   --error-token: 0 84% 60%;
   --error-subtle: 0 86% 97%;
@@ -55,29 +48,17 @@
   --primary-soft: hsl(var(--brand-primary-muted));
 
   --radius: var(--r-md);
-  /* Three radii, by what a thing is: a control, a surface, or an overlay.
-     Bars and meters keep their own 2-3px, which is a shape, not a container.
-     Pills (999px) are only for status and filters, circles only for dots. */
-  /* The mono stack was written out five times and referenced as var(--mono)
-     four more, where it was undefined — so those declarations were dropped and
-     the text rendered in the body face. */
+  /* Keep --mono defined: an unresolved variable drops the font declaration. */
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --r-sm: 4px;   /* buttons, inputs, tags, badges */
   --r-md: 6px;   /* rows, cards, panels */
   --r-lg: 10px;  /* dialogs, popovers, the tailnet boundary */
-  /* One overlay elevation, and one selection ring. In-page surfaces are
-     separated by their border and background, not by floating. */
   --shadow-overlay: 0 16px 48px hsl(220 25% 12% / 0.22);
-  /* A dialog's own surface and the scrim behind it. Light theme separates a
-     dialog from the page by being brighter than it; dark theme cannot, since
-     everything is already dark and a dark shadow on a dark page is invisible.
-     Both are tokens so every dialog is lifted the same way. */
   --overlay-bg: var(--surface);
   --overlay-scrim: hsl(220 20% 10% / 0.45);
   --ring: 0 0 0 3px var(--primary-soft);
   --shadow: 0 1px 2px hsl(220 20% 20% / 0.06), 0 1px 3px hsl(220 20% 20% / 0.04);
-  /* A segment's selected state, and the flyout's edge. Light theme lifts both
-     with a shadow; dark theme has no shadow, so they need a fill and a ring. */
+  /* Use fill and border in dark themes, where shadows provide little contrast. */
   --seg-active-bg: hsl(var(--surface-1));
   --seg-active-shadow: 0 1px 2px hsl(220 20% 20% / 0.06), 0 1px 3px hsl(220 20% 20% / 0.04);
   --side-shadow: -14px 0 40px hsl(220 40% 12% / 0.18);
@@ -95,8 +76,7 @@
   --brand-primary: 213 100% 62%;
   --brand-primary-hover: 213 100% 70%;
   --brand-primary-muted: 215 55% 22%;
-  /* Badge text on a dark surface: the light-theme browns and blues turned the
-     glyph dark-on-dark inside the quantization picker. */
+  /* Lighten badge text to maintain contrast in the dark quantization picker. */
   --cap-vision-fg: hsl(38 95% 66%);
   --cap-tool-fg: hsl(213 95% 72%);
   --cap-reasoning-fg: hsl(142 60% 62%);
@@ -112,9 +92,6 @@
   --seg-active-bg: hsl(var(--surface-2));
   --seg-active-shadow: inset 0 0 0 1px hsl(220 14% 32%);
   --side-shadow: -1px 0 0 hsl(220 14% 30%), -22px 0 60px hsl(224 45% 2% / 0.62);
-  /* Dialogs in the dark: a step lighter than the page rather than the same
-     tone, a hairline ring in place of the shadow that cannot show, and a
-     scrim deep enough that the page reads as behind rather than beside. */
   --overlay-bg: hsl(var(--surface-2));
   --overlay-scrim: hsl(224 45% 2% / 0.72);
   --warning-text: 38 92% 66%;
@@ -148,9 +125,6 @@
     --seg-active-bg: hsl(var(--surface-2));
     --seg-active-shadow: inset 0 0 0 1px hsl(220 14% 32%);
     --side-shadow: -1px 0 0 hsl(220 14% 30%), -22px 0 60px hsl(224 45% 2% / 0.62);
-  /* Dialogs in the dark: a step lighter than the page rather than the same
-     tone, a hairline ring in place of the shadow that cannot show, and a
-     scrim deep enough that the page reads as behind rather than beside. */
   --overlay-bg: hsl(var(--surface-2));
   --overlay-scrim: hsl(224 45% 2% / 0.72);
   --warning-text: 38 92% 66%;

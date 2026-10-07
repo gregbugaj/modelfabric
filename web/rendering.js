@@ -6,8 +6,6 @@ import { capBadges, kv } from "./my-models.js";
 import { buildFront, buildView, gib, platformBadge, relativeTime, waitedText } from "./ui-model.js";
 import { nodesServing } from "./workload-presets.js";
 
-/* ---------- rendering ---------- */
-
 export function el(tag, className, text) {
   const n = document.createElement(tag);
   if (className) n.className = className;
@@ -17,14 +15,8 @@ export function el(tag, className, text) {
   return n;
 }
 
-// Which address a node's engines listen on. Shown for every node, not only
-// the misconfigured ones: the absence of a warning is not the same as a
-// visible confirmation, and the tailnet is how this mesh connects at all.
-//
-// Loopback is not broken — the node still serves through its own front door,
-// and ModelFabric forwards to it. What it costs is anything that dials an engine
-// directly rather than going through that node, which today means llm-d's
-// scheduler. That is a consequence of the binding, not the reason for it.
+// Loopback engines remain reachable through their node's router.
+// Direct consumers such as llm-d require a tailnet-bound engine.
 function engineScopeCell(n) {
   const td = el("td");
   if (!n.engineScope) {
@@ -81,18 +73,13 @@ export function fillTable(bodyId, emptyId, rows, emptyMessage, buildRow) {
 export let lastView = buildView({});
 let lastLocal = { supervised: false, models: [] };
 
-export let meshView = null; // the mesh as last polled; read outside the poll too
+export let meshView = null;
 
-// This node's front door: the address apps use and what it asks of them. Read
-// from /api/v1/front, which is the only place that reports it.
+// Only /api/v1/front reports this node's application address and access rules.
 export let frontView = buildFront(null);
 
-// Each engine's recent in-flight samples, for the load average on Serving.
-//
-// The instant is what an engine is doing; the average is how work was shared,
-// and on a mixed fleet only the second answers the question worth asking.
-// Three engines reading 1/2 tells you nothing about whether the slowest of
-// them has been carrying an even share of a two-hour run.
+// Recent in-flight samples show load distribution over time, which
+// an instantaneous count cannot capture.
 const LOAD_WINDOW_MS = 120000;
 const loadHistory = new Map(); // engine id -> [{t, inflight}]
 
@@ -106,13 +93,11 @@ export function recordLoad(engines) {
     while (h.length && now - h[0].t > LOAD_WINDOW_MS) h.shift();
     loadHistory.set(e.id, h);
   }
-  // An engine that went away keeps no history: its average would otherwise
-  // reappear against the next instance to take its id.
+  // Discard departed engines' history before their IDs can be reused.
   for (const id of [...loadHistory.keys()]) if (!live.has(id)) loadHistory.delete(id);
 }
 
-// meanInflight is the average over the window, or null before there is enough
-// to mean anything — two samples of a two-minute window is not an average.
+// Require enough samples for a meaningful average over the window.
 function meanInflight(id) {
   const h = loadHistory.get(id);
   if (!h || h.length < 3) return null;
@@ -139,8 +124,7 @@ export function renderFrontDoor() {
       document.createTextNode(" (key required)"));
   }
 
-  // Each stop is something actually in the path right now. Two of them, since
-  // ModelFabric's own router is the front door: nothing sits between them.
+  // The front door is the router; there is no intermediate routing hop.
   const engines = view.meshEngines ?? [];
   const nodesServing = new Set(engines.map((e) => e.node)).size;
   const stops = [
@@ -165,8 +149,6 @@ export function renderFrontDoor() {
     path.append(li);
   });
 
-  // One line where four tiles used to be: on an idle mesh three of them read
-  // zero, which is a lot of furniture to say nothing.
   const p = $("pulse");
   p.replaceChildren();
   const { nodesOnline, nodesTotal, models, inflight } = view.stats;
@@ -203,12 +185,7 @@ export function render(view, local) {
       tr.append(name, addr, engineScopeCell(n), status,
         el("td", "num", String(n.inflight)),
         el("td", "num", String(n.modelCount)),
-        // This node used to show a dash here, on the reasoning that "last seen"
-        // is about peers and a node does not probe itself. But it does refresh
-        // its own state on the same clock, and that timestamp is already
-        // carried — so the column read as missing data next to three rows
-        // saying "1s ago". The row is already labelled "this node"; the
-        // distinction does not need making twice.
+        // The local state refresh timestamp is available even without a self-probe.
         el("td", "muted", relativeTime(n.lastSeen)),
         preferCell(n));
       return tr;
@@ -235,9 +212,7 @@ export function render(view, local) {
       return tr;
     });
 
-  // Work done: what each engine was actually given. The share column is the
-  // point — three engines at healthy rates can still mean one carried the run,
-  // and only a total shows it.
+  // Lifetime totals reveal uneven work distribution that rates alone hide.
   const totalPrefilled = (view.meshEngines ?? []).reduce((sum, e) => sum + (e.promptTokens || 0), 0);
   fillTable("work-body", "work-empty", view.meshEngines,
     () => [el("span", null, "No engines are running anywhere in the mesh.")],
@@ -263,8 +238,6 @@ export function render(view, local) {
       return tr;
     });
 
-  // One line for the whole mesh, so "is anything waiting, and is anything
-  // free" is answered without adding up a column.
   const cap = $("engines-capacity");
   if (cap) {
     const c = view.capacity;
@@ -281,7 +254,6 @@ export function render(view, local) {
     }
   }
 
-  // Each held request on its own line: how long, where, and what for.
   const heldBox = $("engines-held");
   if (heldBox) {
     const held = view.heldRequests ?? [];
@@ -317,20 +289,15 @@ export function render(view, local) {
         ? "Unknown: this engine does not report how many slots it has."
         : e.waiting ? `${plural(e.waiting, "request")} queued for a slot on this engine.` : "";
       const free = el("td", "num", e.free === null ? "—" : String(e.free));
-      // The average beside the instant: on a mixed fleet an even share of
-      // requests is not an even share of work, and a single sample cannot
-      // show which engine has been carrying a run.
-      // The node's own average first: it covers the whole run, where the
-      // dashboard's only covers since the page was opened. A peer too old to
-      // publish one falls back to what this page has seen.
+      // Prefer the node's rolling average, which covers time before the page
+      // opened. Use browser samples for peers that do not report one.
       const served = typeof e.loadAvg === "number" && e.loadAvg >= 0 ? e.loadAvg : null;
       const avg = served ?? meanInflight(e.id);
       const load = el("td", "num", avg === null ? "—" : avg.toFixed(2));
       load.title = avg === null
         ? "Mean requests in flight over the last two minutes, once there are enough samples."
         : `Mean requests in flight over the last two minutes${served === null ? ", since this page was opened" : ""}. Full is ${e.slots}.`;
-      // "~" while the rate is still rough: it is shown early so a busy engine
-      // does not read as a dash, but it is not what llm-d is scheduling by.
+      // Mark early rate estimates; llm-d does not schedule by them yet.
       const roughMark = e.prefillTokS && !e.prefillTrusted ? "~" : "";
       const prefill = el("td", "num" + (roughMark ? " rough" : ""),
         e.prefillTokS ? roughMark + Math.round(e.prefillTokS).toLocaleString() : "—");
@@ -339,8 +306,6 @@ export function render(view, local) {
         : roughMark
           ? "Measured prompt tokens per second, but still rough: under 20,000 prompt tokens a few short requests dominate the average. Shown so a busy engine is not a dash; routing and llm-d wait for it to settle."
           : "Measured prompt tokens per second: reading the conversation. Settled enough that routing and llm-d schedule by it.";
-      // Decode is the other half of a turn, and the half speculative decoding
-      // moves — prefill alone showed nothing when it was switched on.
       const decode = el("td", "num", e.decodeTokS ? Math.round(e.decodeTokS).toLocaleString() : "—");
       decode.title = e.decodeTokS
         ? "Measured generated tokens per second: writing the answer. This is what speculative decoding changes."
@@ -351,9 +316,7 @@ export function render(view, local) {
         : "This engine is not speculating, or has not drafted yet.";
       const model = el("td", "mono");
       model.append(el("span", null, e.model || "—"));
-      // Vision is a property of the launched process, not of the model file:
-      // the same model runs with images on one node and not another, and the
-      // slot count beside it is what an image request actually gets.
+      // Vision support and slots describe the launched process, not the model file.
       if (e.vision) {
         const v = capBadges(["vision"]);
         v.title = e.slots === 1
@@ -361,8 +324,6 @@ export function render(view, local) {
           : `Serving images with ${e.slots} slots. One is the default: llama.cpp can fail an image request with "failed to process mtmd chunk" when slots are shared.`;
         model.append(v);
       }
-      // The host-RAM cache and what it has cost: a count that keeps rising
-      // means conversations are being read again for want of room.
       const ram = el("td", "num");
       if (e.cacheRamMib === null) {
         ram.textContent = "—";
@@ -384,19 +345,11 @@ export function render(view, local) {
     });
 }
 
-
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and meshView is written by the poll
-// loop and read here.
 export function setMeshView(v) { meshView = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and frontView is written by the poll
-// loop and read here.
 export function setFrontView(v) { frontView = v; }
 
-// movedCell is "moved in / sent here" for one node, or a dash when no router
-// in the mesh has reported sending it anything: not known is not zero.
+// Show unknown when no router reports this node; absent traffic is not zero.
 function movedCell(t) {
   if (!t || !t.calls) {
     const td = el("td", "num", "—");

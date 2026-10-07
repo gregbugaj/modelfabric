@@ -1,9 +1,5 @@
 import { Arch, Zone, Node, Port, Arrow } from '../arch';
 
-/*
- * The landing page's mesh picture — the same graph as the Introduction's,
- * built from the same primitives so the two can't drift apart in style.
- */
 export function MeshHero() {
   return (
     <Arch down legend={['loopback', 'tailnet']}>

@@ -1,15 +1,5 @@
-/* ---- routing ---- */
-
-/* Pick one. A list of rows, not a grid of cards inside a card: the rows share
-   one surface, the hairline between them is the only separator, and the chosen
-   row is marked on its edge, its dot and its fill. */
-/* A labelled section inside a shared surface: the rule above it does the
-   separating that a second panel border used to. */
 .section-head {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  /* Air above, a real rule, and the weight of a heading: a section inside a
-     shared surface still has to read as a break, or the page becomes one
-     undifferentiated block. */
   margin-top: 8px; padding: 16px 14px 9px; font-size: 13px; font-weight: 600; color: var(--text);
   border-top: 1px solid var(--border-strong);
 }
@@ -17,8 +7,7 @@
 .choices { display: grid; }
 .choice {
   position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-  /* Top-aligned: the mark belongs beside the title, not halfway down a
-     three-line description. The action stays centred against the whole row. */
+  /* Align selection marks with titles even when descriptions wrap. */
   align-items: start; gap: 11px; padding: 10px 14px;
   border-top: 1px solid var(--border-soft); cursor: pointer;
 }
@@ -39,8 +28,6 @@
 .choice-desc { font-size: 12.5px; color: var(--text-2); }
 .choice a { color: var(--primary); font-size: 12px; }
 
-/* A metadata line: facts in a row, value first and its label small beside it.
-   Replaces a strip of bordered cells that looked like a dashboard. */
 .meta-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; padding: 11px 14px; }
 .meta { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
 .meta-v { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }

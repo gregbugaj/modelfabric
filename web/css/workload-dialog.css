@@ -1,5 +1,3 @@
-/* ---- workload dialog ---- */
-
 #wl-dialog {
   width: min(520px, calc(100vw - 32px));
   padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
@@ -7,14 +5,12 @@
 }
 #wl-dialog::backdrop { background: var(--overlay-scrim); }
 .wl-blurb { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-2); }
-/* Also the tune dialog's: the same amber block saying the same kind of thing —
-   what the button is about to do to a running engine. */
+/* Shared with tune dialogs for warnings about engine changes. */
 .wl-warn, .tn-warn {
   margin: 0; padding: 8px 10px; border-radius: var(--r-sm); font-size: 12.5px; line-height: 1.45;
   background: hsl(var(--warning-token) / 0.12); color: hsl(var(--warning-text));
 }
 .wl-group { display: grid; gap: 2px; }
-/* Also the tune dialog's section labels, for the same reason as .wl-warn. */
 .wl-group-title, .tn-group-title {
   display: flex; align-items: center; gap: 8px; padding: 0 9px;
   font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
@@ -30,12 +26,8 @@
 .wl-model-name { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 .wl-model-where { font-size: 11.5px; color: var(--text-muted); }
 .wl-model .chip { margin-left: auto; }
-/* The slot count sits at the end of its node's row, where the "serving now"
-   chip sits on the model rows — the row reads as "this node: this many". */
-/* Two numbers per row, the right-hand one last: the group header labels them
-   in the same order. */
 .wl-slots + .wl-slots { margin-left: 8px; }
-/* Each header sits over its own input: same width, same 8px gap. */
+/* Match input widths and gaps so headers align with their fields. */
 .wl-col-head { width: 88px; text-align: center; font-weight: 400; color: var(--text-muted); line-height: 1.25; }
 .wl-col-head:first-of-type { margin-left: auto; }
 .wl-col-head + .wl-col-head { margin-left: 8px; }
@@ -47,13 +39,8 @@
 }
 .wl-slots + .wl-slots { margin-left: 8px; width: 88px; }
 .wl-slots:focus-visible { outline: 2px solid hsl(var(--brand-primary)); outline-offset: 1px; }
-/* A rate still settling: shown, but not to be read as the one being routed
-   by. Dimmed rather than hidden, because a dash beside a busy engine reads as
-   "broken" and a number reads as "working". */
 td.num.rough { color: var(--text-muted); }
 
-/* Share of the fleet's prefill, drawn: a column of percentages hides the
-   imbalance that is the whole point of looking. */
 .share { display: inline-flex; align-items: center; gap: 8px; }
 .share-track {
   display: inline-block; width: 120px; height: 6px; border-radius: 3px;
@@ -62,7 +49,6 @@ td.num.rough { color: var(--text-muted); }
 .share-fill { display: block; height: 100%; background: hsl(var(--brand-primary)); }
 .share-pct { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
-/* Pills: the same segmented look as the node tabs, at field scale. */
 .pills { display: flex; flex-wrap: wrap; gap: 4px; }
 .pill {
   padding: 3px 9px; font-size: 12px; font-family: var(--mono);
@@ -76,7 +62,6 @@ td.num.rough { color: var(--text-muted); }
 }
 .pill:focus-visible { outline: 2px solid hsl(var(--brand-primary)); outline-offset: 1px; }
 
-/* The thinking chip on a loaded row: state, not an action. */
 .chip.think { margin-left: 6px; font-family: var(--mono); font-size: 11px; }
 .chip.think.off { color: var(--text-muted); }
 

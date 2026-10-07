@@ -38,7 +38,7 @@ func Zombie(pid int) bool {
 }
 
 // statFields is /proc/<pid>/stat after comm, which is parenthesised and may
-// itself contain spaces — so it is parsed after the final ')'.
+// itself contain spaces; so it is parsed after the final ')'.
 func statFields(pid int) ([]string, error) {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
@@ -52,7 +52,6 @@ func statFields(pid int) ([]string, error) {
 	return strings.Fields(line[idx+2:]), nil
 }
 
-// Argv is a process's command line.
 func Argv(pid int) ([]string, error) {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
@@ -100,7 +99,7 @@ func DieWithParent() *syscall.SysProcAttr {
 }
 
 // MemlockLimit is RLIMIT_MEMLOCK's soft limit in bytes, and whether it is
-// unlimited — a sentinel each platform spells differently, so callers must not
+// unlimited; a sentinel each platform spells differently, so callers must not
 // compare against one themselves. The limit is 0 when it cannot be read.
 func MemlockLimit() (uint64, bool) {
 	const rlimitMemlock = 0x8 // RLIMIT_MEMLOCK on Linux
@@ -131,7 +130,6 @@ func OSVersion() string {
 	return "Linux"
 }
 
-// cstr reads a NUL-terminated field from a syscall struct.
 func cstr(b []int8) string {
 	out := make([]byte, 0, len(b))
 	for _, c := range b {

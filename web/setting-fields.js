@@ -1,4 +1,3 @@
-// Shared settings controls keep labels and descriptions accessible on both pages.
 import { el } from "./rendering.js";
 
 export function settingControl(f, prefix = "ss") {
@@ -65,7 +64,6 @@ export function settingRow(f, input) {
     text.append(d);
   }
   if (f.prefix) {
-    // The host this port belongs to, filled in from the saved address.
     const addr = el("span", "ss-addr");
     const host = el("span", "mono ss-host", "127.0.0.1:");
     host.id = `${input.id}-host`;

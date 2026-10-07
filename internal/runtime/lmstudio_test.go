@@ -8,7 +8,7 @@ import (
 
 // A package manifest names its own entrypoint and vendor directories. Joining
 // those names without confining them let "../.." reach a binary the package
-// does not own — and that binary is what gets launched.
+// does not own - and that binary is what gets launched.
 func TestManifestPathsCannotEscapeTheirPackage(t *testing.T) {
 	root := "/models/.lmstudio/extensions/backends/llama.cpp-cuda"
 	for _, ok := range []string{"llama-server", "bin/llama-server", "./bin/llama-server"} {
@@ -25,7 +25,7 @@ func TestManifestPathsCannotEscapeTheirPackage(t *testing.T) {
 
 // An LM Studio manifest states its minimum driver either as a bare code
 // ("12040") or as a dotted version ("12.4"). The dotted form used to become 0,
-// which reads as "no requirement" — so a build was offered on a driver that
+// which reads as "no requirement" - so a build was offered on a driver that
 // may be too old for it.
 func TestMinDriverAcceptsBothManifestForms(t *testing.T) {
 	for in, want := range map[string]int{
@@ -41,9 +41,8 @@ func TestMinDriverAcceptsBothManifestForms(t *testing.T) {
 	}
 }
 
-// A package installed before the rename to ModelFabric records its
-// provenance under "llmz". It is still ours: its build number and the devices
-// probed at install time have to survive the rename.
+// Pre-rename packages store provenance under "llmz"; preserve their build
+// number and install-time device probe.
 func TestProvenanceIsReadUnderEitherKey(t *testing.T) {
 	for _, key := range []string{"modelfabric", "llmz"} {
 		t.Run(key, func(t *testing.T) {

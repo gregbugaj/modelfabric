@@ -8,7 +8,7 @@ import (
 )
 
 // Each assertion below guards a failure found by running the real EPP against a
-// real llama.cpp engine — every one of them failed silently.
+// real llama.cpp engine; every one of them failed silently.
 
 func TestEPPConfigMapsLlamaCppMetrics(t *testing.T) {
 	cfg := string(EPPConfig(EPPOptions{EndpointsPath: "/x/endpoints.yaml"}))
@@ -88,7 +88,7 @@ func TestRoomFilterRunsFirstInEveryProfile(t *testing.T) {
 	for _, profile := range []string{ProfileLoadAware, ProfileOptimizedBaseline, ProfileTuned} {
 		cfg := string(EPPConfig(EPPOptions{EndpointsPath: "/e.yaml", Profile: profile, PrefixCache: true, RoomFilter: true, Slots: 2}))
 		// In both profiles. The vision profile puts its capability filter first
-		// — an engine that cannot read the image is not a candidate at all —
+		//; an engine that cannot read the image is not a candidate at all ;
 		// and the room filter runs next, before anything scores warmth.
 		for _, p := range []struct{ name, before string }{
 			{"default", ""},

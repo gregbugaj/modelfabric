@@ -36,7 +36,7 @@ func TestKVUsageCountsResidentTokens(t *testing.T) {
 }
 
 // Measured on a real engine: while the model generates, is_processing goes
-// false and the slot keeps its prompt — and it keeps it after the request ends
+// false and the slot keeps its prompt; and it keeps it after the request ends
 // too, as a cache for the next one. Gating on is_processing reported an idle
 // engine throughout a long generation.
 func TestKVUsageCountsSlotsThatAreNotProcessing(t *testing.T) {
@@ -87,19 +87,15 @@ func TestAugmentAppendsAGaugeAndKeepsTheEnginesOwn(t *testing.T) {
 	if !strings.Contains(out, "# TYPE "+KVUsageMetric+" gauge") || !strings.Contains(out, KVUsageMetric+" 0.250000") {
 		t.Errorf("gauge missing or malformed:\n%s", out)
 	}
-	// No value: publish nothing rather than a zero.
 	if got := string(Augment(metrics, 0, false)); got != string(metrics) {
 		t.Errorf("unknown usage still wrote a gauge:\n%s", got)
 	}
-	// An engine that publishes its own is left alone.
 	own := []byte(KVUsageMetric + " 0.9\n")
 	if got := string(Augment(own, 0.1, true)); got != string(own) {
 		t.Errorf("overwrote the engine's own gauge:\n%s", got)
 	}
 }
 
-// Everything but /metrics reaches the engine unchanged, and /metrics comes
-// back with the gauge added.
 func TestShimProxiesAndAugments(t *testing.T) {
 	var gotPath, gotBody string
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,12 +193,10 @@ func TestAugmentRecognisesAnExistingSample(t *testing.T) {
 			t.Errorf("augmented an exposition that already had %q", m)
 		}
 	}
-	// A HELP line alone is not a sample; the gauge is still owed.
 	helpOnly := "# HELP " + gauge + " something\n# TYPE " + gauge + " gauge\n"
 	if got := Augment([]byte(helpOnly), 0.25, true); !bytes.Contains(got, []byte(gauge+" 0.250000")) {
 		t.Errorf("a HELP line without a sample suppressed the gauge: %s", got)
 	}
-	// An unrelated metric with the same prefix does not count.
 	other := gauge + "_total 3\n"
 	if got := Augment([]byte(other), 0.25, true); !bytes.Contains(got, []byte(gauge+" 0.250000")) {
 		t.Errorf("a differently-named metric suppressed the gauge: %s", got)

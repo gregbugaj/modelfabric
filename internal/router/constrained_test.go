@@ -7,8 +7,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// Which requests actually need an engine to constrain decoding, rather than
-// just to format a reply.
 func TestConstrainedOutput(t *testing.T) {
 	for _, c := range []struct {
 		name, format, grammar, schema string
@@ -20,8 +18,6 @@ func TestConstrainedOutput(t *testing.T) {
 		{name: "json_schema", format: "json_schema", want: true},
 		{name: "llama.cpp grammar", grammar: `root ::= "yes" | "no"`, want: true},
 		{name: "llama.cpp json_schema", schema: `{"type":"object"}`, want: true},
-		// An empty or whitespace-only schema asks for nothing, and must not
-		// strand a request on an error.
 		{name: "empty schema", schema: `  `},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -48,11 +44,9 @@ func TestSplitConstrainedPrefersACapableEngine(t *testing.T) {
 	if len(dropped) != 2 {
 		t.Fatalf("dropped %v, want both mlx engines named for the error", dropped)
 	}
-	// The names are what the user is told, so they must identify a machine.
 	if dropped[0] != "helion/inst-mlx" {
 		t.Errorf("dropped[0] = %q, want node/engine", dropped[0])
 	}
-	// A peer candidate is the node itself, so it is named once, not twice.
 	peerOnly, peerDropped := splitConstrained([]mesh.Candidate{
 		{Node: "helion", Name: "helion", NoConstrainedDecoding: true},
 	})
@@ -61,7 +55,6 @@ func TestSplitConstrainedPrefersACapableEngine(t *testing.T) {
 	}
 }
 
-// A fleet with no MLX in it must be completely unaffected.
 func TestSplitConstrainedLlamaOnlyIsUntouched(t *testing.T) {
 	in := []mesh.Candidate{{Node: "a", Name: "1"}, {Node: "b", Name: "2"}}
 	kept, dropped := splitConstrained(in)

@@ -9,15 +9,10 @@ import (
 	"syscall"
 )
 
-// macOS has no /proc, and the kinfo_proc sysctl is not in the standard
-// library's syscall package for darwin, so these facts come from ps. Argv is
-// therefore a command line split on spaces rather than the kernel's exact
-// argument vector: a path containing a space arrives as two elements. Callers
-// use it to recognise processes they started, under paths ModelFabric controls
-// (~/.modelfabric, the state directory), so that is accurate there — but it is why
-// nothing here is used to decide to kill a process by name alone.
+// macOS process metadata comes from ps because the standard library lacks
+// kinfo_proc support. Argv is split on spaces and cannot preserve quoted paths;
+// never use it alone to authorize process termination.
 
-// ps runs ps for one field, returning it trimmed. An unknown pid is an error.
 func ps(pid int, format string) (string, error) {
 	out, err := exec.Command("ps", "-ww", "-o", format, "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
@@ -33,12 +28,11 @@ func ps(pid int, format string) (string, error) {
 // BirthID is a process's start time as ps reports it ("Sat Sep 20 10:11:12
 // 2026"). It has one-second resolution rather than Linux's clock ticks, so
 // (pid, BirthID) distinguishes a replacement process unless the pid was reused
-// within the same second — which needs the whole pid space to wrap first.
+// within the same second; which needs the whole pid space to wrap first.
 func BirthID(pid int) (string, error) {
 	return ps(pid, "lstart=")
 }
 
-// Zombie reports whether pid has exited and is waiting to be reaped.
 func Zombie(pid int) bool {
 	st, err := ps(pid, "state=")
 	return err == nil && strings.HasPrefix(st, "Z")
@@ -62,7 +56,6 @@ func Name(pid int) string {
 	return filepath.Base(comm)
 }
 
-// All lists the processes this user can see.
 func All() []Proc {
 	out, err := exec.Command("ps", "-axww", "-o", "pid=,command=").Output()
 	if err != nil {
@@ -91,20 +84,15 @@ func All() []Proc {
 	return procs
 }
 
-// DieWithParent starts a child in its own process group.
-//
-// macOS has no Pdeathsig, so a child does not die with its parent here: a node
-// killed outright leaves llm-d running. That is what the pid
-// files and orphan reaping on the next start are for, which every caller of
-// this already does because the same case exists on Linux when a node is
-// SIGKILLed before it can signal its group.
+// DieWithParent creates a process group. macOS lacks Pdeathsig, so callers
+// must track ownership and recover surviving children after a node crash.
 func DieWithParent() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }
 
 // MemlockLimit is RLIMIT_MEMLOCK's soft limit in bytes, and whether it is
 // unlimited. macOS reports unlimited as the largest signed 64-bit value, not
-// the all-ones Linux uses, and its resource numbers differ too — reading
+// the all-ones Linux uses, and its resource numbers differ too; reading
 // Linux's RLIMIT_MEMLOCK here would return the open-file limit instead.
 func MemlockLimit() (uint64, bool) {
 	const rlimitMemlock = 6 // RLIMIT_MEMLOCK on darwin

@@ -126,8 +126,6 @@ func TestAssembleJoinsContentAndReasoning(t *testing.T) {
 	}
 }
 
-// Tool call arguments arrive as fragments across chunks and are worthless
-// unless joined in order.
 func TestAssembleJoinsToolCalls(t *testing.T) {
 	m := assemble(t, sse(
 		`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run","arguments":"{\"cmd\""}}]}}]}`,
@@ -176,8 +174,6 @@ func TestAssembleKeepsChoicesApart(t *testing.T) {
 	}
 }
 
-// The watcher is fed while the engine is still writing — that is the entire
-// reason for upgrading the request.
 func TestAssembleFeedsTheWatcherPerChunk(t *testing.T) {
 	var seen []string
 	_, err := assembleStream(strings.NewReader(sse(
@@ -216,13 +212,9 @@ func TestAssembleRefusesAnEmptyStream(t *testing.T) {
 	}
 }
 
-// End to end through the scheduler path: a non-streaming request must reach
-// upstream as a streamed one, and come back to the caller as one JSON body.
 func TestUpstreamUpgradesNonStreamingRequests(t *testing.T) {
 	f := newFrontFixture(t, true, false)
 	var gotUpstream string
-	// An upstream that records the body it was sent and answers with an event
-	// stream, as an engine does for a streamed request.
 	up := newRecordingUpstream(t, &gotUpstream)
 	u, err := url.Parse("http://" + up)
 	if err != nil {

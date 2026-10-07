@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// collect runs a response through the tap and returns what a watcher saw.
 func collect(t *testing.T, writes []string) ([]Event, *Writer) {
 	t.Helper()
 	tap := New()
@@ -35,7 +34,7 @@ func chunk(field, text string) string {
 
 // The response reaches Write in whatever sizes the network produced, so a
 // frame is routinely split across calls. Parsing per-write rather than
-// buffering would drop every token that straddled a boundary — and it would
+// buffering would drop every token that straddled a boundary; and it would
 // look like a slow model, not a bug.
 func TestTokenWriterFramesSplitAcrossWrites(t *testing.T) {
 	whole := chunk("content", "Hello") + chunk("content", " world")
@@ -165,7 +164,7 @@ func TestTokenTapInactiveAndNonBlocking(t *testing.T) {
 
 // A caller that does not ask for streaming gets the whole reply in one JSON
 // body. There is no live view to give, but showing nothing made the panel look
-// broken for a large share of real traffic — aider's benchmark, for one, never
+// broken for a large share of real traffic; aider's benchmark, for one, never
 // sets "stream": true.
 func TestNonStreamingReplyIsStillShown(t *testing.T) {
 	body := `{"id":"chatcmpl-1","choices":[{"message":{"reasoning_content":"thinking hard","content":"the answer"}}],` +

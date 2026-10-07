@@ -1,43 +1,21 @@
 #!/bin/bash
-# Which hop between the client and the engine fails to stop a generation that
-# nobody is waiting for any more?
+# Check cancellation propagation at each client-to-engine hop.
 #
 #   bench/hops/abandon.sh [engine|shim|front|public] [close|hold]
 #
-# A request that outlives its client is not a curiosity: one of them held a
-# single-slot engine for ninety minutes, produced about 130,000 tokens nobody
-# read, and stopped a benchmark at 22 of 24 with two idle machines beside it.
-# The chain it crossed has its own timeouts and buffering at every hop, and
-# only one of them has to swallow the cancellation:
-#
-#   aider -> nginx -> ModelFabric public :1235 -> ModelFabric router
-#         -> [llm-d Envoy] -> ModelFabric shim :18001 -> llama-server :18000
-#
-# So this abandons a request deliberately at one layer at a time and watches
-# whether the engine stops. Whichever layer keeps it running is the answer.
-#
-# Two ways to abandon, because they are not the same failure:
-#
-#   close  the client closes the socket, as a well-behaved timeout does.
-#          Every hop should propagate this, and a hop that does not is a bug
-#          with an obvious fix.
-#   hold   the client stops reading but leaves the socket open, which is what
-#          a library timeout often does. Nothing downstream can see it except
-#          as an absence of reads, so this is the case that actually bit.
+# Path: client -> nginx -> public API -> router -> optional Envoy -> shim -> engine.
+# close closes the socket; each hop should propagate cancellation.
+# hold stops reading with the socket open; detecting it requires a progress timeout.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 MFSH=${MFSH:-./mfsh}
 MODEL=${MODEL:-qwen/qwen3.8-27b}
 WHERE=${1:-engine}
 HOW=${2:-close}
-# Long enough that the engine is unambiguously still working when the client
-# leaves, and capped so a forgotten run cannot become the thing it studies.
+# Cap generation while keeping it long enough to remain active when the client disconnects.
 MAX_TOKENS=${MAX_TOKENS:-3000}
 WATCH=${WATCH:-45}
 
-# The node whose engine will serve this, and how to watch it. Everything is
-# read from the mesh rather than assumed: the port an engine listens on is
-# assigned, not fixed.
 read -r NODE ENGINE_URL SHIM_URL <<EOF
 $(curl -s http://127.0.0.1:1234/z/mesh | python3 -c '
 import json, sys
@@ -62,9 +40,7 @@ case "$WHERE" in
   *) echo "usage: $0 [engine|shim|front|public] [close|hold]" >&2; exit 1 ;;
 esac
 
-# stream:false on purpose. That is what the benchmark's client sends, and it
-# matters: with no streaming the client receives nothing at all until the
-# answer is complete, so a client timeout always lands mid-generation.
+# Use stream:false to match the benchmark: the client receives no text until generation completes.
 BODY=$(python3 - "$MODEL" "$MAX_TOKENS" <<'PY'
 import json,sys
 print(json.dumps({
@@ -96,14 +72,11 @@ echo "before:   $(engineBusy)"
 
 case "$HOW" in
   close)
-    # curl gives up and closes, which is what a timeout ought to look like.
     curl -s -m 6 -o /dev/null -H "Content-Type: application/json" \
       ${KEY:+-H "Authorization: Bearer $KEY"} -d "$BODY" "$TARGET" 2>/dev/null
     echo "client:   closed the socket after 6s"
     ;;
   hold)
-    # Sends the request, reads nothing, and keeps the socket open: the case a
-    # library timeout produces, and the one no hop can detect directly.
     python3 - "$TARGET" "$KEY" "$BODY" <<'PY' &
 import socket, ssl, sys, time
 from urllib.parse import urlparse
@@ -118,7 +91,7 @@ req = [f"POST {u.path} HTTP/1.1", f"Host: {u.hostname}",
 if key:
     req.append(f"Authorization: Bearer {key}")
 s.sendall(("\r\n".join(req) + "\r\n\r\n").encode() + body)
-# Never read. Hold the socket open until killed, which is the whole point.
+# Keep the socket open without reading until terminated.
 time.sleep(3600)
 PY
     HOLDER=$!
@@ -128,8 +101,7 @@ PY
     ;;
 esac
 
-# Then watch. If the engine is still decoding well after the client is gone,
-# this hop did not propagate the abandonment.
+# Continued decoding after disconnect indicates cancellation was not propagated.
 for i in $(seq $((WATCH / 5))); do
   sleep 5
   echo "+$((i * 5))s:     $(engineBusy)"

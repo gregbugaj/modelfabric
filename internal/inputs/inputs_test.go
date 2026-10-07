@@ -27,8 +27,6 @@ func write(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-// The spec's own acceptance case: a model that changed on disk after the
-// manifest was built must be rejected.
 func TestChangedModelIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	model := write(t, dir, "model.gguf", "first")
@@ -52,7 +50,7 @@ func TestChangedModelIsRejected(t *testing.T) {
 	}
 }
 
-// A same-size edit must still be caught — size alone is only a fast pre-filter.
+// A same-size edit must still be caught; size alone is only a fast pre-filter.
 func TestSameSizeEditIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	model := write(t, dir, "model.gguf", "aaaaa")
@@ -96,12 +94,10 @@ func TestTamperedManifestIsRejected(t *testing.T) {
 	model := write(t, dir, "model.gguf", "weights")
 	manifest, _ := BuildManifest(dir, []string{model})
 
-	// Right files, wrong expected digest: the manifest is not the one we agreed on.
 	if _, err := VerifyInput(dir, manifest, strings.Repeat("0", 64), ""); !errors.Is(err, ErrInputVerification) {
 		t.Fatal("a mismatched manifest digest must be rejected")
 	}
 
-	// Manifest edited to describe a file that is not what is on disk.
 	swapped := []byte(strings.Replace(string(manifest), "model.gguf", "other.gguf", 1))
 	if _, err := VerifyInput(dir, swapped, digestOf(swapped), ""); !errors.Is(err, ErrInputVerification) {
 		t.Fatal("a manifest naming a missing file must be rejected")
@@ -152,13 +148,11 @@ func TestManifestEncodingIsCanonical(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(lines))
 	}
-	// Sorted bytewise: a.txt, c.txt, sub/b.txt
 	for i, want := range []string{"a.txt", "c.txt", "sub/b.txt"} {
 		if !strings.HasSuffix(lines[i], "  "+want) {
 			t.Fatalf("line %d = %q, want it to end with %q", i, lines[i], want)
 		}
 	}
-	// The documented shape: "<64 hex>  <size>  <path>"
 	parts := strings.SplitN(lines[0], "  ", 3)
 	if len(parts) != 3 || !isHex64(parts[0]) || parts[1] != "5" {
 		t.Fatalf("line %q does not match the canonical encoding", lines[0])
@@ -204,7 +198,7 @@ func TestVerifyTreePinsRuntimeByContent(t *testing.T) {
 		t.Fatalf("runtime digest %q is not a sha256", vi.ManifestSHA256)
 	}
 
-	// Swapping the binary must change its identity — a mutable system
+	// Swapping the binary must change its identity; a mutable system
 	// environment cannot be reported as a pinned runtime.
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho different\n"), 0o644); err != nil {
 		t.Fatalf("rewrite: %v", err)
@@ -229,7 +223,6 @@ func TestPreparedInputsValidate(t *testing.T) {
 	if err := (PreparedInputs{Model: model}).Validate(); err == nil {
 		t.Fatal("inputs with no runtime must be rejected")
 	}
-	// Runtime is a verified tree OR an image, never both.
 	if err := (PreparedInputs{Runtime: runtime, RuntimeImage: image, Model: model}).Validate(); err == nil {
 		t.Fatal("a runtime that is both a tree and an image must be rejected")
 	}
@@ -253,7 +246,7 @@ func TestVerifyTreeRoundTrip(t *testing.T) {
 	}
 }
 
-// "duplicate entries" — a manifest naming the same path twice is ambiguous:
+// "duplicate entries"; a manifest naming the same path twice is ambiguous:
 // one entry could verify while a conflicting one is never reached.
 func TestDuplicateManifestEntriesAreRejected(t *testing.T) {
 	dir := t.TempDir()
@@ -264,7 +257,6 @@ func TestDuplicateManifestEntriesAreRejected(t *testing.T) {
 		t.Fatal("a manifest with duplicate entries must be rejected")
 	}
 
-	// And we must never emit one either.
 	f := filepath.Join(dir, "model.gguf")
 	if _, err := BuildManifest(dir, []string{f, f}); !errors.Is(err, ErrInputVerification) {
 		t.Fatal("BuildManifest must not emit duplicate entries")
@@ -304,7 +296,6 @@ func TestHuggingFaceStyleSymlinksAreResolved(t *testing.T) {
 		t.Fatalf("verify symlinked snapshot: %v", err)
 	}
 
-	// Changing the blob behind the link must invalidate the snapshot.
 	if err := os.WriteFile(blob, []byte("tampered....."), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +337,6 @@ func TestRevalidateClosesTheTOCTOUWindow(t *testing.T) {
 		t.Fatalf("revalidate before any change: %v", err)
 	}
 
-	// Swap the model after verification but before launch.
 	if err := os.WriteFile(model, []byte("swapped"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +382,7 @@ func TestValidateRequiresARoot(t *testing.T) {
 // BuildManifest and VerifyTree resolve a relative file under root; stamps did
 // not, so they were statted against the process working directory. With an
 // absolute root and relative names, filepath.Rel then failed and the model got
-// no stamps at all — meaning every load re-hashed it.
+// no stamps at all; meaning every load re-hashed it.
 func TestStampsResolveRelativeFilesUnderRoot(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("weights"), 0o644); err != nil {

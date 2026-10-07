@@ -1,16 +1,11 @@
-/* ---- sidebar rail ---- */
-
-/* Pinned to the viewport rather than stretched down the page: the rail is a
-   fixed frame around whatever the content does. As a plain grid item it took
-   the height of the document, so a long table scrolled the nav off the top and
-   left the footer stranded at the bottom of the page. align-self keeps the
-   grid from stretching it, which is what makes sticky take effect at all. */
+/* Prevent grid stretching so sticky navigation stays within the viewport
+   instead of growing with the document. */
 .rail {
   position: sticky;
   top: 0;
   align-self: start;
   height: 100vh;
-  height: 100dvh; /* mobile browsers, where the toolbar eats part of 100vh */
+  height: 100dvh; /* Account for mobile browser toolbars. */
   overflow-y: auto;
   background: var(--sidebar);
   color: hsl(var(--product-rail-fg));
@@ -45,12 +40,7 @@
 .rail a.active { background: hsl(var(--product-rail-active)); font-weight: 600; }
 .rail a svg { flex: none; opacity: 0.85; }
 
-/* Workload presets. They sit in the rail but choose rather than navigate, so
-   the selected one is marked with a tick at the end instead of the filled row
-   the links use: a fill there means "the page you are on", and these are a
-   setting. Without the difference the two read as the same kind of thing. */
-/* Sized as the links are — same padding, gap, type and spacing — so the rail
-   keeps one rhythm; only the mark at the end says these choose. */
+/* Distinguish workload selection from navigation: ticks select, filled rows navigate. */
 .rail-preset {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 8px 10px; margin-bottom: 4px; border: none; border-radius: var(--r-md);
@@ -65,20 +55,15 @@
   min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* Holds the tick, and reserves its width so the labels do not shift when the
-   selection moves from one preset to another. */
+/* Reserve tick width so selection changes do not shift labels. */
 .rail-preset-mark {
   margin-left: auto; flex: none; width: 14px; height: 14px;
   display: inline-flex; align-items: center; justify-content: center;
 }
-/* The tick carries the brand colour; the empty ring must not, or it reads as
-   a faint blue smudge on a dark rail rather than an unchosen option. */
+/* Keep empty rings neutral to distinguish them from selected ticks. */
 .rail-preset-mark svg { color: hsl(var(--brand-primary)); opacity: 1; }
 .rail-preset-mark .spinner { width: 12px; height: 12px; }
-/* The unchosen ones keep the slot and show a faint ring, so the three read as
-   one set with a choice made, not as links that happen to be unlit. Not
-   `.empty`: that is the dashboard's empty-state message, whose 22px padding
-   made every workload row 58px tall against the links' 37px. */
+/* Do not use .empty: its empty-state padding enlarges workload rows. */
 .rail-preset-mark.unchosen::before {
   content: ""; flex: none; box-sizing: border-box;
   width: 11px; height: 11px; border-radius: 50%;

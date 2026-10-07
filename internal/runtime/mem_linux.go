@@ -18,8 +18,7 @@ func meminfo(key string) int64 {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		if f := strings.Fields(line); len(f) >= 2 && f[0] == key {
-			// A partial or overflowing value used to be shifted anyway, which
-			// turns an unreadable /proc/meminfo into a confident wrong number.
+			// Reject partial and overflowing values before converting to bytes.
 			kb, err := strconv.ParseInt(f[1], 10, 64)
 			if err != nil || kb < 0 {
 				return 0

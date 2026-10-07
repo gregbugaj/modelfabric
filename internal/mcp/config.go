@@ -45,7 +45,6 @@ func Load(path string) (map[string]Server, error) {
 	return f.Servers, nil
 }
 
-// Names lists the servers in order, for messages.
 func Names(m map[string]Server) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -55,7 +54,6 @@ func Names(m map[string]Server) []string {
 	return out
 }
 
-// Dial opens a session with the server.
 func (s Server) Dial(ctx context.Context) (Client, error) {
 	if s.URL != "" {
 		return DialHTTP(ctx, s.URL, s.Headers)

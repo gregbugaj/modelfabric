@@ -106,7 +106,6 @@ func chainOf(name string, n int) []Block {
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// serve runs one request through Place as the router would.
 func serve(t *testing.T, s *Store, f *fakeEngine, chain []Block, status int) int {
 	t.Helper()
 	slot, done := s.Place(context.Background(), "e", chain)
@@ -136,8 +135,6 @@ func kinds(calls []string) string {
 	return strings.Join(out, ", ")
 }
 
-// The whole point: a conversation pushed out of its slot is written to disk,
-// and comes back from disk when it returns.
 func TestEvictedConversationIsSavedThenRestored(t *testing.T) {
 	dir := t.TempDir()
 	f := newFakeEngine(t, dir, 1)

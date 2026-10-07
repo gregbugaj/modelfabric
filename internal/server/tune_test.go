@@ -23,10 +23,7 @@ func tuneServer(t *testing.T) *Server {
 	return New(m, router.New(m, log), nil, log, nil)
 }
 
-// A second sweep on one node is the failure that produced a table of "did not
-// run" for a configuration that had measured fine minutes earlier: two sweeps
-// unloading the same engine, each waiting for a slot count the other had just
-// replaced. The node refuses it rather than trusting callers to coordinate.
+// Reject concurrent sweeps: each would unload the engine the other measures.
 func TestTuneRefusesASecondSweepOnTheSameNode(t *testing.T) {
 	s := tuneServer(t)
 	if _, _, err := s.claimTune(tuner.Config{Model: "q"}); err != nil {
@@ -40,8 +37,6 @@ func TestTuneRefusesASecondSweepOnTheSameNode(t *testing.T) {
 		t.Errorf("the refusal does not say why: %v", err)
 	}
 
-	// And once it ends, the node is tunable again — a guard that never
-	// released would make one sweep the last one until a restart.
 	s.tune.mu.Lock()
 	s.tune.running = false
 	s.tune.mu.Unlock()
@@ -75,8 +70,6 @@ func TestTuneStatusIsReadableBeforeAnySweep(t *testing.T) {
 	}
 }
 
-// Cancelling nothing is a 409, not a silent success: a UI that shows "stopped"
-// for a sweep that was never running hides the sweep that is.
 func TestTuneCancelWithNothingRunningSaysSo(t *testing.T) {
 	s := tuneServer(t)
 	rec := httptest.NewRecorder()
@@ -86,11 +79,8 @@ func TestTuneCancelWithNothingRunningSaysSo(t *testing.T) {
 	}
 }
 
-// A node that manages no models — an entrypoint — cannot tune, and says which
-// it is. Without a supervisor the sweep would reload nothing and measure the
-// mesh instead of a machine.
 func TestTuneOnANodeThatRunsNoModelsIsRefused(t *testing.T) {
-	s := tuneServer(t) // built with a nil supervisor
+	s := tuneServer(t)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/tune",
 		strings.NewReader(`{"model":"q"}`)))

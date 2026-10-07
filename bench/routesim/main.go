@@ -1,31 +1,11 @@
-// Command routesim replays a recorded benchmark run through the router's
-// placement logic, in virtual time, and reports what each engine would have
-// had to read again.
+// Command routesim replays recorded requests through router.Placement and mesh.Rank.
 //
-//	go run ./bench/routesim -run ~/.local/share/modelfabric/bench/swe/runs/1005b-litellm
 //	go run ./bench/routesim -run RUN -policy least-busy
-//	go run ./bench/routesim -run RUN -fleet 'xpredator:2:131072:1761:101:8192,...'
+//	go run ./bench/routesim -run RUN -fleet NAME:SLOTS:KV:PREFILL:DECODE:RAM,...
 //
-// It exists because of how the placement faults of 2026-10-05 were found: run
-// a 90-minute benchmark on three GPUs, read the counters, change a rule, run it
-// again. Five faults took six runs and a working day. A replay takes seconds,
-// so a rule can be tried against every recorded run before any GPU is used, and
-// the real benchmark is left to confirm it.
-//
-// The "router" policy is the router's own code (router.Placement and
-// mesh.Rank), not a copy. What is modelled is everything around it: the
-// engines. That model is deliberately small, and wrong in ways that matter for
-// absolute times (see engine.rates). It is for comparing placements on the same
-// workload, and -check prints the recorded run beside the simulated one so that
-// how far to trust it is a number rather than a feeling.
-//
-// That check is not a formality. The first model predicted 34 minutes and 0.85M
-// tokens read again for a rule whose real run took 88 minutes and 3.6M. It was
-// missing two things, both read off the recorded calls afterwards: the router
-// places from a view of its peers up to a poll old (see sim.poll), and an
-// engine writing an answer all but stops while another slot reads a prompt
-// (see engine.rates). A rule is only worth a GPU run once the replay of the
-// run it was recorded from lands near what that run measured.
+// Engine timing is approximate; use -check against the recorded run before
+// comparing policies. Models must account for stale peer-load observations
+// and decode slowdown during concurrent prefill.
 package main
 
 import (
@@ -45,7 +25,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// turn is one model call of a recorded conversation.
 type turn struct {
 	prompt, out int     // tokens
 	pause       float64 // seconds the agent took before its next call
@@ -63,14 +42,10 @@ type task struct {
 	turns []turn
 }
 
-// sharedPrefix is what every conversation has cached everywhere: the system
-// prompt. Read off the engines' slots during the 2026-10-05 runs, where a
-// conversation landing cold reported exactly this many tokens from cache.
+// sharedPrefix is the system-prompt token count cached on every engine, measured from cold conversation cache hits.
 const sharedPrefix = 321
 
-// kibPerToken is the size of saved KV state per token for Qwen3.8-27B with an
-// f16 cache, from llama-server's own message on minion: "prompt state size
-// 10486.991 MiB" for a 127,049-token prompt.
+// kibPerToken is f16 KV size for Qwen3.8-27B: 10486.991 MiB for 127,049 tokens, measured by llama-server.
 const kibPerToken = 84.5
 
 func loadRun(dir, model string) ([]task, error) {
@@ -153,7 +128,6 @@ func loadRun(dir, model string) ([]task, error) {
 	return tasks, nil
 }
 
-// slot is one of an engine's slots and the conversation cached in it.
 type slot struct {
 	conv   string
 	tokens int
@@ -194,8 +168,7 @@ type engine struct {
 	readSeconds float64
 
 	// served is each finished request's read and cached tokens, for -trace.
-	served []hitAt
-	// Totals.
+	served                                 []hitAt
 	requests, prefilled, cached, generated int
 }
 
@@ -292,9 +265,7 @@ func (e *engine) serve(r *request, now float64) {
 	}
 	cached, restore := sharedPrefix, 0.0
 	if pick < 0 {
-		// An empty slot before anyone's: llama-server takes the slot unused
-		// longest, and one never used is older than any. Choosing by time
-		// alone evicted a conversation while a slot beside it stood empty.
+		// Prefer never-used slots; timestamps alone could evict a conversation while another slot remained empty.
 		for i, s := range e.slots {
 			if s.busy {
 				continue
@@ -347,25 +318,9 @@ func (e *engine) serve(r *request, now float64) {
 	e.served = append(e.served, hitAt{now, r.prompt - cached, cached})
 }
 
-// rates is how fast each running request reads and writes right now, in tokens
-// a second.
-//
-// The numbers are what the engines did in the two full runs of 2026-10-05,
-// from each call's own timings sorted by what else the engine was doing:
-//
-//	                     xpredator (5090)   minion (6000 Ada)
-//	reading, alone            1500-1800         500-570
-//	reading, beside another    800-1080         350-400
-//	writing, alone               75-81           60-72
-//	writing, beside a writer       81            36-44
-//	writing, beside a reader     16-20            5-7
-//
-// The last row is what the first model lacked, and it is most of the cost of a
-// cold read. A slot reading a prompt takes the GPU in 2048-token batches and a
-// slot writing gets one step between them, so every other conversation on the
-// engine writes at a tenth of its speed until the read is over. On minion,
-// 4,100 of the 8,500 seconds spent writing in the router run were spent like
-// that. A re-read costs its own time and everyone else's.
+// rates estimates per-request prefill and decode throughput in tokens per second.
+// Prefill uses large GPU batches, reducing concurrent decode throughput. The
+// model accounts for that contention as well as sharing between readers or writers.
 func (e *engine) rates() (read, write float64) {
 	readers, writers := 0, 0
 	for _, r := range e.running {
@@ -484,7 +439,6 @@ func (e *engine) settled(now, grace float64) bool {
 	return false
 }
 
-// events is the simulation's clock: a heap of things due to happen.
 type event struct {
 	at  float64
 	seq int
@@ -513,42 +467,18 @@ type sim struct {
 	rng     *rand.Rand
 	model   string
 
-	// holdGrace and holdMax turn on holding at the router: a request whose
-	// home has no free slot is not handed to an engine to queue inside it,
-	// where it cannot be recalled. It waits here for a slot that has stayed
-	// free for holdGrace seconds, up to holdMax, and then goes wherever the
-	// policy would have sent it.
-	//
-	// Tried 2026-10-05 and not adopted. It halved the slowest calls (p99 358s
-	// to about 180s at 8 workers) by keeping requests out of the slow node's
-	// queue, but the overflow then took GPU slots instead: 0.85M tokens read
-	// again became 1.4-2.2M, wall clock did not improve, and with a grace
-	// shorter than an agent's longest pause it was far worse (4.7M at 1s). A
-	// request held here is also waiting time the caller sees directly. Kept
-	// behind its flag so the next person can measure it rather than rebuild it.
+	// holdGrace and holdMax delay dispatch when the home engine is full. Wait for
+	// a slot idle for holdGrace seconds, up to holdMax, then apply the policy.
+	// Holding can reduce queue latency but increases cache eviction when overflow
+	// occupies GPU slots; short grace periods can increase reread costs.
 	holdGrace, holdMax float64
 	held               int
 
-	// poll is how old the router's view of the engines may be, in seconds; 0
-	// for a router that sees them exactly, which since the fix below it does
-	// for every request it sent itself. -poll 2 is the router as it was, and
-	// what the recorded run 1005b-router-v7-stale-peer-load-88min has to be
-	// replayed with to land near what it measured.
-	//
-	// In the benchmark every request enters at one node and every engine is
-	// that node's peer. It learned a peer's load from a poll every two seconds
-	// and, in between, added one for each request it sent there. Nothing was
-	// taken off when a request finished: that waited for the next poll. An agent
-	// asks again 0.2 seconds after its last answer (the median of 775 recorded
-	// calls), so its own finished request is still counted against its home,
-	// and on a two-slot engine with its neighbour busy the home reads as full.
-	// Measured in the 88-minute router run of 2026-10-05: 142 moves, 109 of
-	// them away from an engine that had a slot free, and 2.6M of the 3.6M
-	// tokens read again were read on the call straight after a move.
-	//
-	// A single proxy that counts its own requests in and out (LiteLLM) has no
-	// such gap, so the least-busy policies always see the engines exactly. The
-	// mesh now counts the same way (mesh.Peer.sent).
+	// poll bounds the age of router load observations in seconds; zero uses current
+	// load. Use -poll 2 for recordings made before peer completion accounting.
+	// Those polls added dispatched requests but retained completed requests until
+	// the next poll, causing unnecessary moves from engines with free slots.
+	// Least-busy policies always use current load, matching direct proxy accounting.
 	poll      float64
 	waited    float64 // seconds requests spent queued for a slot
 	engineSec float64 // seconds requests spent being served
@@ -561,8 +491,6 @@ type sim struct {
 	latencies  []float64
 }
 
-// traceLine prints, per engine, how many conversations are on it (seen within
-// the last minute), how many requests it is running, and its recent cache hit.
 func (s *sim) traceLine() {
 	fmt.Printf("  t+%4.0fm", s.now/60)
 	for _, e := range s.engines {
@@ -591,15 +519,13 @@ func (s *sim) engine(name string) *engine {
 	return nil
 }
 
-// choose picks the engine for a request under the policy being tried.
 func (s *sim) choose(conv string, body []byte) (*engine, func(), func(time.Duration, int)) {
 	switch s.policy {
 	case "random":
 		return s.engines[s.rng.Intn(len(s.engines))], func() {}, func(time.Duration, int) {}
 	case "least-busy", "least-busy-first":
-		// LiteLLM's least-busy: fewest requests it has in flight, and no idea
-		// of slots, speed or caches. Ties go to chance, or with -first to the
-		// engine listed first.
+		// Least-busy counts inflight requests without slot, speed or cache information.
+		// Ties are random unless -first selects the first listed engine.
 		var best []*engine
 		for _, e := range s.engines {
 			n := e.busy() + len(e.queue)
@@ -615,9 +541,6 @@ func (s *sim) choose(conv string, body []byte) (*engine, func(), func(time.Durat
 		}
 		return best[s.rng.Intn(len(best))], func() {}, func(time.Duration, int) {}
 	}
-	// Experimental policies, tried here before anything is written into the
-	// router. Each is a few lines, and a replay of two recorded runs is a
-	// second; a rule that loses to least-busy here does not get deployed.
 	if strings.HasPrefix(s.policy, "x-") {
 		return s.experiment(conv), func() {}, func(time.Duration, int) {}
 	}
@@ -657,7 +580,6 @@ func (s *sim) pollAll(float64) {
 	}
 }
 
-// orderFor is the router's own ordering of the engines for a request.
 func (s *sim) orderFor(body []byte) router.Choice {
 	cands := make([]mesh.Candidate, 0, len(s.engines))
 	for _, e := range s.engines {
@@ -741,7 +663,6 @@ func (s *sim) sendAt(conv string, t turn, done func(now float64), arrived float6
 		case s.now-arrived >= s.holdMax:
 			// waited long enough; go where the policy says
 		default:
-			// The fastest engine with a slot that has stayed free.
 			var free *engine
 			for _, c := range s.engines {
 				if c.busy()+len(c.queue) < len(c.slots) && c.settled(s.now, s.holdGrace) && (free == nil || c.prefill > free.prefill) {
@@ -800,8 +721,6 @@ func (s *sim) start(e *engine, r *request) {
 	s.wake(e)
 }
 
-// settle brings e up to now and deals with whatever finished: its slot is
-// freed, the next queued request takes it, and its caller is answered.
 func (s *sim) settle(e *engine) {
 	for _, r := range e.advance(s.now) {
 		e.release(r.conv, s.now)
@@ -869,11 +788,9 @@ func (s *sim) run(tasks []task, workers int) float64 {
 	return s.now
 }
 
-// defaultFleet is the three machines of the 2026-10-05 runs as they ran that
-// day: slots, the KV pool each engine reported, and the rates in the table at
-// engine.rates. The RAM cache is set to nothing, because in those runs a
-// conversation pushed out of its slot was read again in full whatever
-// -cache-ram was given.
+// defaultFleet reproduces the recorded slot counts, KV pools and rates.
+// RAM caching is disabled because evicted conversations were fully reread
+// in those recordings regardless of -cache-ram.
 const defaultFleet = "helion:1:65536:256:22:1,minion:4:262144:530:62:1:1.4:0.65:6,xpredator:2:131072:1500:80:1:1.25:1:18"
 
 const fleetUsage = "name:slots:pool_tokens:prefill_tok_s:decode_tok_s:cache_ram_mib[:pshare:dshare:dstarve]"
@@ -1007,10 +924,6 @@ func main() {
 	}
 }
 
-// printRecorded prints what the recorded run measured, in the shape of the
-// simulated summary above it. Replaying a run under the policy and fleet it was
-// recorded with should land near these; how near is how far to trust the model
-// on a policy that has not been run.
 func printRecorded(tasks []task, nodes string) {
 	name := map[string]string{}
 	for _, kv := range strings.Split(nodes, ",") {

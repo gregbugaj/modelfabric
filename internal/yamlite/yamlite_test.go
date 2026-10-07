@@ -120,7 +120,6 @@ func TestBlockScalars(t *testing.T) {
 	}
 }
 
-// Everything outside the subset fails loudly instead of being misread.
 func TestRejectsUnsupportedSyntax(t *testing.T) {
 	for _, src := range []string{
 		"a: &anchor 1\nb: *anchor\n",

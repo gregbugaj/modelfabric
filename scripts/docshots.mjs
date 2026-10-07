@@ -1,20 +1,12 @@
 #!/usr/bin/env node
-// Captures every dashboard screenshot the docs use, scrubbed.
+// Capture scrubbed dashboard screenshots using Chromium and Node 22+.
 //
 //   node scripts/docshots.mjs [http://127.0.0.1:1234] [site/public/img]
 //
-// Docs screenshots must not carry a real tailnet address or the entrypoint's
-// real hostname (AGENTS.md), and are re-captured rather than edited by hand.
-// This does both: it drives a headless Chromium at a running node, rewrites
-// those strings in the page as it renders, and saves each page. Needs Node
-// 22+ (for WebSocket) and chromium on PATH.
-//
-// It photographs the node as it is, so set the scene first: load models, and
-// run `mfsh bench -quick` and `mfsh bench -cluster -quick` for the Benchmark
-// tabs to have results. On the way it makes a few chat requests with capture
-// switched on (for the Activity pages) and creates a token named
-// "docs-example" (for the Tokens tab); it switches capture back off and
-// revokes the token before it exits. It saves no settings.
+// Replace private hostnames and tailnet addresses before capture, as required
+// by AGENTS.md. Load models and run node and cluster benchmarks beforehand.
+// The script enables capture for sample requests and creates a docs-example
+// token, then disables capture and revokes the token. Settings are not saved.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -62,7 +54,6 @@ const scrub = `(() => {
   new MutationObserver(run).observe(document.body, { childList: true, subtree: true, characterData: true });
 })()`;
 
-// What must never be in a saved image's text.
 const LEAK = String.raw`sites-01|gregbugaj|\b100\.(?!64\.0\.)\d+\.\d+\.\d+`;
 
 try {
@@ -96,20 +87,16 @@ try {
   await ev(`document.head.insertAdjacentHTML("beforeend", "<style>html{scrollbar-width:none}::-webkit-scrollbar{display:none}</style>")`);
   await sleep(500);
 
-  // shoot saves the element sel matches. A leak anywhere in it stops the run:
-  // a screenshot that slipped through would be published.
   const shoot = async (sel, file, maxHeight = 2200) => {
     await sleep(1800); // a redraw, then the scrub that follows it
     const q = JSON.stringify(sel);
     const box = await ev(`(() => { const e = document.querySelector(${q}); if (!e) return null;
       const r = e.getBoundingClientRect();
-      // A flyout is as tall as the window whatever it holds: cut it where
-      // its content ends rather than photograph the empty panel below.
+      // Crop flyouts to their content rather than their full window height.
       let h = Math.max(r.height, e.scrollHeight);
       if (e.classList.contains("side-panel")) {
         let end = r.top;
-        // Measured by what can be seen (text and controls): the containers
-        // around them stretch to the panel's full height.
+        // Measure visible text and controls; container height includes empty panel space.
         for (const c of e.querySelectorAll("*")) {
           const shows = c.matches("input, textarea, select, button, pre") ||
             [...c.childNodes].some((t) => t.nodeType === 3 && t.nodeValue.trim());
@@ -164,8 +151,6 @@ try {
   await sleep(2500);
   await shoot(view("bench"), "dash-bench-cluster.png");
 
-  // Activity: switch capture on and make a few requests of our own, so the
-  // rows and the bodies shown are this script's and nobody's real prompts.
   await page("activity");
   const models = (await (await api("/v1/models")).json()).data ?? [];
   const model = (models.find((m) => !/embed/i.test(m.id)) ?? {}).id;
@@ -193,10 +178,7 @@ try {
     if (!was && await capturing()) await click("#act-bodies");
   }
 
-  // Server settings. The CORS rows are filled in to show the tab in use and
-  // are not saved; the token is real, so it is revoked below.
-  // A shorter window for the flyout: its Save bar sits at the bottom of the
-  // panel, a long way below a tab with three rows on it.
+  // Shorten the window to keep the flyout Save bar near its content.
   await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 760, deviceScaleFactor: 2, mobile: false });
   await page("overview");
   await click("#ss-open");

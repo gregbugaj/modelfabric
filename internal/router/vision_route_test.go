@@ -19,10 +19,8 @@ func msgs(raw ...string) []msg {
 	return out
 }
 
-// A multimodal model loaded -vision off answers to the same name and fails any
-// request carrying an image: llama.cpp returns "failed to process mtmd chunk"
-// for the whole request. Which machine happened to be idle must not decide
-// whether an image can be read.
+// Engines loaded with vision disabled retain the model name but fail image
+// requests with an mtmd chunk error; routing must exclude them for images.
 func TestCarriesImage(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -67,14 +65,11 @@ func TestSplitVisionKeepsOnlyCapableEngines(t *testing.T) {
 	if len(kept) != 1 || kept[0].Node != "helion" {
 		t.Errorf("only the engine with a projector may serve an image: %+v", kept)
 	}
-	// Named for the error, and a peer candidate is not written "helion/helion".
 	if len(dropped) != 2 || dropped[0] != "xpredator/inst-1" || dropped[1] != "minion/inst-2" {
 		t.Errorf("dropped engines should be named: %v", dropped)
 	}
 }
 
-// With nothing able to serve it, the caller gets a reason rather than an
-// engine error from whichever node was idle.
 func TestSplitVisionCanDropEverything(t *testing.T) {
 	kept, dropped := splitVision([]mesh.Candidate{{Node: "a", NoVision: true}})
 	if len(kept) != 0 || len(dropped) != 1 {

@@ -7,40 +7,30 @@ import { meta } from "./routing.js";
 import { available, operations } from "./runtime.js";
 import { formatBytes, relativeTime } from "./ui-model.js";
 
-/* ---------- activity: what the node did, and what it is doing ---------- */
-
-// Kept in memory rather than re-fetched: the stream is the source, and a
-// reload is allowed to start the list over. Capped so a long-lived tab does
-// not grow a table with ten thousand rows in it.
+// The stream owns this in-memory history; a reload starts it over.
+// Cap it to bound memory in long-lived tabs.
 const TRAFFIC_MAX = 250;
 let trafficRows = [];
 let trafficSource = null;
 
 let captureCfg = { bodies: false, keep: 200, max_bytes: 8192, to_file: false, keep_max: 2000 };
-// Requests live in each node's own memory, so "the mesh" is a fan-out rather
-// than a subscription: this node streams live over SSE, peers are polled and
-// merged. The choice is remembered because it is a way of working, not a mood.
+// Request histories are node-local: stream this node over SSE, then poll
+// and merge peer histories.
 export let actScope = readSidePref("mfsh.act.scope") === "mesh" ? "mesh" : "node";
 const peerTraffic = new Map();  // node -> events, newest first
 const peerCapture = new Map();  // node -> whether that node is capturing
-// node -> "ok" | "old" | "unreachable". Nodes in this mesh run different
-// builds on purpose, so a peer that does not know this route is a fact to
-// report, not a failure to hide.
+// node -> "ok" | "old" | "unreachable"; older peers may lack this endpoint.
 const peerStatus = new Map();
-// Bodies fetched for a request someone opened, by row key. The mesh poll
-// refreshes peer events every couple of seconds with metadata only, which used
-// to wipe the bodies out from under the open flyout; they live here instead,
-// outside what the poll replaces. Bounded: only clicked rows land in it.
+// Cache opened bodies separately: metadata-only peer polls replace events
+// and would otherwise clear the open flyout.
 const bodyCache = new Map();
 const BODY_CACHE_MAX = 20;
-// The request the flyout is showing, by key. A key rather than an index: new
-// requests arrive at the top of the list while the panel is open.
+// Use a key, not an index: new requests are inserted while the flyout is open.
 export let actSelected = "";
-// Wider than the model panel by default: JSON bodies read badly at 420px.
+// JSON bodies need more width than the model panel.
 const actSide = { width: Number(readSidePref("mfsh.act.width")) || 560 };
 
-// Every request the chosen scope covers, newest first. Each row carries the
-// node whose front door it came through, which is not the node that served it.
+// Rows name the entry node, which may differ from the serving node.
 function activityRows() {
   const rows = trafficRows.map((e) => ({ ...e, front: selfNode }));
   if (actScope === "mesh") {
@@ -52,10 +42,8 @@ function activityRows() {
   return rows.slice(0, TRAFFIC_MAX);
 }
 
-// Peers are asked only while Activity is open and the scope includes them.
-// Metadata only: the table shows no bodies, and a poll that shipped every
-// prompt across the tailnet to render it would be careless. The one request
-// someone opens fetches its own bodies.
+// Poll peer metadata only while the mesh Activity view is open.
+// Fetch prompt bodies only when their request is opened.
 export async function refreshPeerTraffic() {
   if (actScope !== "mesh") return;
   const peers = [...mm.nodes.keys()].filter((n) => n && n !== selfNode);
@@ -66,8 +54,7 @@ export async function refreshPeerTraffic() {
       peerCapture.set(node, Boolean(r.capture));
       peerStatus.set(node, "ok");
     } catch (err) {
-      // A node that will not answer is left out rather than faked. "No such
-      // endpoint" means it is up and answering, just older than this route.
+      // A missing endpoint identifies an older peer; other failures are unreachable.
       peerTraffic.delete(node);
       peerCapture.delete(node);
       peerStatus.set(node, /no such endpoint/i.test(err.message) ? "old" : "unreachable");
@@ -89,8 +76,6 @@ export function setActScope(scope) {
   $("act-scope-hint").textContent = scope === "mesh"
     ? "every request any node in the mesh answered, merged from each one's own log."
     : "every request this node answered.";
-  // The page's own subtitle follows the scope: it was claiming "this node"
-  // while the table showed the whole mesh.
   const sub = $("page-sub");
   if (sub && !document.querySelector('section[data-view="activity"]').hidden) {
     sub.textContent = scope === "mesh"
@@ -106,13 +91,12 @@ export async function loadCapture() {
   try {
     const r = await fetch("/api/v1/traffic", { cache: "no-store" });
     if (r.ok) { captureCfg = await r.json(); renderCapture(); }
-  } catch { /* the panel still works without it */ }
+  } catch { /* Keep metadata available if capture status cannot be fetched. */ }
 }
 
 export async function setCapture(patch, node = selfNode) {
   try {
-    // A peer's switch goes through this node, which forwards it over the
-    // tailnet; that node accepts it only from a device of the same owner.
+    // The proxy forwards over the tailnet; the peer requires the same owner.
     const r = await fetch(nodeAPI(node, "/api/v1/traffic"), {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
     });
@@ -120,8 +104,7 @@ export async function setCapture(patch, node = selfNode) {
     if (node !== selfNode) {
       const cfg = await r.json();
       peerCapture.set(node, Boolean(cfg.bodies));
-      // Its ring cleared with the switch, so drop what we hold of it rather
-      // than showing bodies the node no longer has.
+      // Capture changes clear the node ring, so discard its cached bodies too.
       if (!cfg.bodies) {
         peerTraffic.delete(node);
         bodyCache.clear();
@@ -132,15 +115,14 @@ export async function setCapture(patch, node = selfNode) {
     }
     {
       captureCfg = await r.json();
-      // Turning capture off clears what was kept, so drop it here too rather
-      // than leaving stale bodies expanded on screen.
+      // Turning capture off clears the node ring and cached bodies.
       if (!captureCfg.bodies) {
         for (const e of trafficRows) { e.req_body = ""; e.resp_body = ""; }
       }
       renderCapture();
       renderTraffic();
     }
-  } catch { /* leave the control where it was */ }
+  } catch { /* Preserve the previous control state on failure. */ }
 }
 
 function renderCapture() {
@@ -156,9 +138,7 @@ function renderCapture() {
   renderPeerCapture();
 }
 
-// Capture is each node's own switch — its ring, its memory — so the mesh view
-// offers one per node rather than a single control that would only ever have
-// flipped the machine you happen to be looking at.
+// Capture and its in-memory ring are configured separately on each node.
 function renderPeerCapture() {
   const strip = $("act-peers");
   if (!strip) return;
@@ -189,8 +169,6 @@ function renderPeerCapture() {
 
 export function startTrafficStream() {
   if (trafficSource) return;
-  // backlog=1 asks for what the node already has, so the table is not empty
-  // the first time it is opened.
   trafficSource = new EventSource("/z/log/stream?backlog=1");
   trafficSource.addEventListener("message", (ev) => {
     let e;
@@ -203,7 +181,6 @@ export function startTrafficStream() {
   trafficSource.addEventListener("error", () => { $("act-live").classList.remove("on"); });
 }
 
-// JSON bodies read far better indented; anything else is shown as it came.
 function pretty(text) {
   try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
 }
@@ -218,15 +195,12 @@ export function renderTraffic() {
   if (!body) return;
   body.replaceChildren();
   const rows = activityRows();
-  // The open request's trace, so its other records stand out in the table
-  // rather than having to be hunted for by eye.
   const selectedTrace = rows.find((x) => trafficKey(x) === actSelected)?.trace || "";
   for (const e of rows) {
     const tr = el("tr");
     tr.append(el("td", "mono", clockTime(e.time)));
     if (actScope === "mesh") {
-      // Where the request came in, which is a different question from where
-      // it ran: an app talking to one node can be served by another.
+      // The entry node can differ from the serving node.
       const front = el("td");
       front.append(el("span", null, e.front || "—"));
       if (e.front === selfNode) front.append(el("span", "chip", "this node"));
@@ -239,19 +213,12 @@ export function renderTraffic() {
     if (e.node) {
       where.append(el("span", null, e.node));
       if (e.engine) where.append(el("span", "hint", ` ${e.engine}`));
-      // A request that did not stay on the node it arrived at crossed the
-      // tailnet, which is the whole point of the mesh. "local" is recorded by
-      // that node about itself, so it is read against the front door, never
-      // against whichever node this dashboard happens to be running on.
+      // Resolve "local" relative to the request's entry node, not this dashboard.
       if (!e.local) where.append(el("span", "chip", "forwarded"));
       if (e.affine) where.append(el("span", "chip", "affinity"));
-      // Who picked it is a separate fact from who ran it, and both fit.
       if (e.via) where.append(el("span", "chip", `via ${e.via}`));
     } else if (e.via) {
-      // ModelFabric proxied it but did not choose the engine. Say who did rather
-      // than leaving the row looking like a gap in the record. The chip alone:
-      // what "via llm-d" means is said once in the panel hint, not repeated on
-      // every row.
+      // llm-d chose the engine; ModelFabric only proxied the request.
       where.append(el("span", "chip", `via ${e.via}`));
     } else {
       where.append(el("span", "hint", "—"));
@@ -265,8 +232,7 @@ export function renderTraffic() {
     tr.append(el("td", "num", e.bytes_out != null ? formatBytes(e.bytes_out) : "—"));
     if (e.error) tr.title = e.error;
 
-    // Every request opens, not just a captured one: how it was routed is the
-    // part you usually came for, and it is recorded either way.
+    // Routing metadata is available even when body capture is off.
     const key = trafficKey(e);
     tr.dataset.row = key;
     tr.tabIndex = 0;
@@ -283,9 +249,7 @@ export function renderTraffic() {
   }
   $("act-log-empty").hidden = rows.length > 0;
   if (!rows.length) {
-    // Under llm-d the EPP behind Envoy dials engines itself, so this node's
-    // router never chose one and the log can be thin. Saying that beats an
-    // empty table that looks like a broken stream.
+    // With llm-d, EPP chooses engines behind Envoy; this router may log less detail.
     $("act-log-empty").textContent = actScope === "mesh"
       ? "Nothing yet on any node — send a request to any front door and it appears here."
       : "Nothing yet — send a request and it appears here.";
@@ -293,10 +257,7 @@ export function renderTraffic() {
   renderActSide(rows.find((e) => trafficKey(e) === actSelected), rows);
 }
 
-/* One request, in the flyout — the same panel My Models uses for a model. */
-
-// Identity for a row: the node stamps no id, and time alone repeats when two
-// requests land in the same millisecond.
+// Nodes provide no request ID, and timestamps can repeat within a millisecond.
 function trafficKey(e) {
   return `${e.time}|${e.path}|${e.ms}|${e.bytes_out ?? ""}`;
 }
@@ -308,13 +269,12 @@ function openActSide(key) {
   fetchBodiesFor(key);
 }
 
-// The mesh poll asks peers for metadata only, so a peer's request arrives
-// without its prompt. One click is a different matter from a timer: fetch that
-// node's ring with bodies, and if the row is still the one open, show them.
+// Peer polls omit bodies. Fetch them on open, then verify the same row
+// is still selected before displaying them.
 async function fetchBodiesFor(key) {
   const row = activityRows().find((e) => trafficKey(e) === key);
   if (!row || row.front === selfNode || row.req_body || row.resp_body) return;
-  if (!peerCapture.get(row.front)) return; // that node is not capturing; nothing to fetch
+  if (!peerCapture.get(row.front)) return; // No bodies exist when capture is off.
   try {
     const r = await fetchJSON(nodeAPI(row.front, `/api/v1/traffic/recent?limit=${TRAFFIC_MAX}&bodies=1`));
     peerCapture.set(row.front, Boolean(r.capture));
@@ -323,11 +283,9 @@ async function fetchBodiesFor(key) {
     if (bodyCache.size >= BODY_CACHE_MAX) bodyCache.delete(bodyCache.keys().next().value);
     bodyCache.set(key, { req_body: got.req_body, resp_body: got.resp_body, truncated: got.truncated });
     if (actSelected === key) renderTraffic();
-  } catch { /* the panel keeps its metadata */ }
+  } catch { /* Keep metadata available if bodies cannot be fetched. */ }
 }
 
-// Closing hands focus back to the row, so keyboard use does not restart at the
-// top of a table that has grown while the panel was open.
 export function closeActSide() {
   const key = actSelected;
   actSelected = "";
@@ -382,23 +340,20 @@ function renderActSide(e, rows = []) {
   if (actScope === "mesh") {
     kv(box, "Front door", e.front + (e.front === selfNode ? " (this node)" : ""), false);
   }
-  // Two separate facts, kept apart: which machine ran it, and who decided.
-  // The machine is resolved from the address the request was dialled at, so
-  // "served by" is answerable even when ModelFabric did not choose.
+  // The dialled address identifies the serving machine even when
+  // ModelFabric did not choose it.
   if (e.node) {
     kv(box, "Served by", e.node + (e.node === selfNode ? " (this node)" : ""), false);
     kv(box, "Engine", e.engine || "not identified — no engine of that node listens on this port", !!e.engine);
   } else if (e.via === "llm-d") {
-    // Envoy is the address; the EPP behind it chose an engine somewhere in the
-    // mesh and does not report which. Naming this machine would be a guess.
+    // Envoy does not report the engine EPP selected; leave the serving node unknown.
     kv(box, "Served by", "not reported — llm-d's scheduler picked the engine behind Envoy", false);
   } else {
     kv(box, "Served by", e.upstream ? "not in the mesh" : "not recorded", false);
   }
   if (e.upstream) kv(box, "Upstream", e.upstream);
   if (e.trace) kv(box, "Trace", e.trace);
-  // The router that chose is the one at the front door the request came
-  // through — which is this node only when you are looking at its own log.
+  // The entry node owns the router decision, including in peer logs.
   const chooser = !e.front || e.front === selfNode ? "this node" : `${e.front}'s router`;
   kv(box, "Chosen by", e.via
     ? `${e.via} — ModelFabric carried the request; ${e.via} picked where it went`
@@ -408,9 +363,7 @@ function renderActSide(e, rows = []) {
   if (e.error) kv(box, "Error", e.error, false);
   body.append(box);
 
-  // The point of the trace: a request forwarded from one front door to another
-  // node is recorded by both, and those two rows are one request. Shown only
-  // when there is more than one, so a purely local request stays uncluttered.
+  // A forwarded request appears in both nodes' logs; the trace joins those records.
   const hops = e.trace ? rows.filter((x) => x.trace === e.trace) : [];
   if (hops.length > 1) {
     hops.sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -444,7 +397,7 @@ function renderActSide(e, rows = []) {
     copy.addEventListener("click", () => copyToClipboard(text, label));
     gh.append(copy);
     group.append(gh);
-    // textContent, via el(): this is somebody's prompt coming back off the wire.
+    // Use textContent via el(): prompt text is untrusted.
     group.append(el("pre", "act-body", pretty(text)));
     body.append(group);
   };
@@ -472,9 +425,7 @@ export function renderOperations() {
   if (!body) return;
   body.replaceChildren();
 
-  // Every node keeps its own journal, and a load that happened on another
-  // machine is exactly the thing you came here to find. mm.nodes already holds
-  // each peer's operations for My Models, so reuse it rather than fetching twice.
+  // Reuse peer operations already fetched by My Models; each node owns its journal.
   const all = [];
   for (const [node, entry] of mm.nodes) {
     for (const o of entry?.operations ?? []) all.push({ ...o, node });
@@ -515,8 +466,6 @@ export function renderOperations() {
   if (!rows.length) $("act-ops-empty").textContent = "No operations recorded yet.";
 }
 
-// Clock time in the cell, the full timestamp on hover: a journal spanning days
-// needs the date, but showing it on every row would drown the time you want.
 function stampCell(iso) {
   const td = el("td", "mono");
   if (!iso) { td.textContent = "—"; td.classList.add("hint"); return td; }

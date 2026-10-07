@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// The footer's headroom line, which exists because a conversation that runs out
-// of context fails as an error with the conversation lost, and until the mesh
-// published a context length there was nothing here to warn with. The only tasks
-// a 2026-09-24 benchmark run failed to solve died at ~130,900 tokens of 131,072.
 func TestFooterShowsHeadroomAgainstTheNextTurn(t *testing.T) {
 	s := &chatSession{}
 	s.last = &chatTurn{
@@ -28,8 +24,6 @@ func TestFooterShowsHeadroomAgainstTheNextTurn(t *testing.T) {
 	}
 }
 
-// Nothing is shown when the limit is unknown. mlx-lm serves no /props, and a
-// percentage against a guessed limit is the kind of number that gets believed.
 func TestFooterShowsNoHeadroomWhenTheLimitIsUnknown(t *testing.T) {
 	s := &chatSession{}
 	s.last = &chatTurn{
@@ -41,8 +35,6 @@ func TestFooterShowsNoHeadroomWhenTheLimitIsUnknown(t *testing.T) {
 	}
 }
 
-// Close to the limit it has to be impossible to miss, and it has to say what to
-// do: the next turn is likely to be refused, and the refusal loses the thread.
 func TestFooterWarnsBeforeTheContextRunsOut(t *testing.T) {
 	s := &chatSession{}
 	s.last = &chatTurn{
@@ -64,9 +56,6 @@ func TestFooterWarnsBeforeTheContextRunsOut(t *testing.T) {
 	}
 }
 
-// An engine running a different context than it was loaded with makes every
-// figure above it measured against the wrong limit, so it is stated rather than
-// left to be inferred.
 func TestFooterSurfacesAContextDisagreement(t *testing.T) {
 	s := &chatSession{}
 	s.last = &chatTurn{

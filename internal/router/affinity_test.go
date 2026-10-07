@@ -37,9 +37,8 @@ func doc(n int) string {
 	return string(b)
 }
 
-// The case the first version of this got wrong: a ~3KB document followed by a
-// different question each time. A single hash over a fixed window included the
-// varying question, so no two requests ever matched.
+// A fixed-window hash included changing questions after a shared document,
+// preventing prefix matches. Block hashes must preserve the shared prefix.
 func TestSharedDocumentMatchesDespiteDifferentQuestions(t *testing.T) {
 	d := doc(3000)
 	a := newAffinity(1024, time.Hour)
@@ -95,11 +94,8 @@ func TestApplyAffinityPrefersWarmWithinSlack(t *testing.T) {
 	}
 }
 
-// Rewritten 2026-10-05. This used to say "much busier" by raising b's Score
-// past the slack. A score is a request count times how slow the engine is, and
-// the slack is a request count; comparing them is what broke affinity for
-// every engine but the fastest. Busier is now requests in flight, on engines
-// whose capacity is unknown (the only case the slack is for).
+// Regression: AffinitySlack is a request count, not a rate-weighted score.
+// Apply it to in-flight counts only when engine capacity is unknown.
 func TestApplyAffinityYieldsToLoad(t *testing.T) {
 	cs := []mesh.Candidate{
 		{Name: "a", Local: true, Inflight: 0},
@@ -154,16 +150,12 @@ func TestApplyAffinityRefusesFullWarmEngine(t *testing.T) {
 	if got := order(applyAffinity(cs, "warm", "")); got != "idlewarm" {
 		t.Fatalf("a full warm engine must not beat one with room, got %s", got)
 	}
-	// With a free slot the warm engine still wins.
 	cs[1].Inflight, cs[1].Score = 1, 1
 	if got := order(applyAffinity(cs, "warm", "")); got != "warmidle" {
 		t.Fatalf("a warm engine with room should lead, got %s", got)
 	}
-	// Rewritten 2026-10-05. With everything full this used to expect the warm
-	// engine, "where it at least finds its cache". It does not: an engine is
-	// full of other conversations because one of them took that slot. Queueing
-	// there again is what kept an engine one conversation over for a whole
-	// run, a cold read in every slot. The fewest in flight wins instead.
+	// A full engine may have evicted this conversation. Rank by in-flight
+	// count rather than queueing there on the assumption its cache survives.
 	cs[0].Inflight, cs[1].Inflight = 2, 3
 	if got := order(applyAffinity(cs, "warm", "")); got != "idlewarm" {
 		t.Fatalf("with every engine full the less loaded one should lead, got %s", got)
@@ -204,12 +196,8 @@ func TestFindTellsAConversationFromASharedPrefix(t *testing.T) {
 	}
 }
 
-// The whole placement rule, on the fleet of the 2026-10-05 SWE runs and its
-// measured prefill rates: a 5090, a 4-slot 6000 Ada and a 1-slot Apple Silicon
-// node. Candidates arrive in the mesh's order, fastest first.
-//
-// Each case is something an earlier version of this function got wrong on that
-// day, in a live run or in bench/routesim's replay of one.
+// Regression cases from live routing and routesim replay on a heterogeneous
+// fleet. Candidates arrive fastest first, using measured prefill rates.
 func TestPlacementOnTheBenchmarkFleet(t *testing.T) {
 	fleet := func(x, m, h int64) []mesh.Candidate {
 		return []mesh.Candidate{
@@ -224,9 +212,8 @@ func TestPlacementOnTheBenchmarkFleet(t *testing.T) {
 		warm      string
 		wantFirst string
 	}{
-		// Affinity compared rate-weighted scores with a slack meant for
-		// request counts, so a conversation on a slower engine never returned
-		// to it: 53% of requests placed by affinity, cache hit 68/48/26%.
+		// Affinity slack uses request counts; rate-weighted scores prevented
+		// conversations from returning to slower engines.
 		{"home on a slower engine, two of four slots busy", fleet(0, 2, 0), "minion", "minion"},
 		{"home on a slower engine, three of four busy", fleet(1, 3, 0), "minion", "minion"},
 		// "Home is full, wait there": the slot it waits for is another
@@ -238,17 +225,12 @@ func TestPlacementOnTheBenchmarkFleet(t *testing.T) {
 		{"everything full and level: the slower engine", fleet(4, 4, 4), "xpredator", "helion"},
 		{"a new conversation on an idle fleet: the fastest", fleet(0, 0, 0), "", "xpredator"},
 		{"a new conversation: the fewest in flight", fleet(1, 0, 1), "", "minion"},
-		// This one looks wrong and is kept on purpose: it queues behind the
-		// one-slot node (1 in flight) past a GPU with two slots open (2). "An
-		// open slot first" wanted minion here, was run live on 2026-10-05, and
-		// took 104 minutes against 75: the open slot was another
-		// conversation's, and taking it set off a chain of evictions.
+		// An open slot may still hold another conversation's cache. Preferring
+		// it here caused cascading evictions in live runs.
 		{"home full: the fewest in flight, even past an open slot", fleet(2, 2, 1), "xpredator", "helion"},
 		{"home full, no slot open anywhere: the fewest in flight", fleet(3, 4, 2), "minion", "helion"},
-		// A cap of one waiting request per engine wanted xpredator here, and
-		// was stopped 27 minutes into its live run on 2026-10-06, behind on
-		// tasks and on re-reading: the request it turned away took a 5090
-		// slot from a conversation about to come back.
+		// Do not cap each engine at one queued request: displacement can consume
+		// another conversation's cached slot.
 		{"home full: behind a request already waiting, if that is the fewest", fleet(2, 4, 2), "minion", "helion"},
 		// Sticky placement alone left a lone conversation on whichever node
 		// it began: 749 calls on the Apple Silicon node beside an idle 5090.
@@ -283,7 +265,6 @@ func TestALoneConversationTriesAnUnmeasuredEngine(t *testing.T) {
 	if got := applyAffinity(cs, "helion", "")[0].Name; got != "helion" {
 		t.Errorf("first choice %s, want home: the others can never be measured", got)
 	}
-	// Home itself unmeasured: nothing to compare against, so it stays.
 	cs[0].PrefillTokS = 0
 	cs[1].RateUnmeasurable, cs[2].RateUnmeasurable = false, false
 	if got := applyAffinity(cs, "helion", "")[0].Name; got != "helion" {

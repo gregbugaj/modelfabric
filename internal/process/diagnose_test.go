@@ -37,7 +37,6 @@ func TestDiagnoseCUDAOutOfMemory(t *testing.T) {
 	if !strings.Contains(d.reason, "GPU ran out of memory") {
 		t.Errorf("reason %q should name the cause", d.reason)
 	}
-	// The size is what tells you whether it nearly fit or was hopeless.
 	if !strings.Contains(d.reason, "15.0GB") {
 		t.Errorf("reason %q should carry the size it asked for", d.reason)
 	}
@@ -63,7 +62,7 @@ func TestDiagnoseOtherEndings(t *testing.T) {
 }
 
 // Anything ModelFabric does not recognise must leave the error alone rather than
-// invent a cause — a confident wrong reason is worse than an exit status.
+// invent a cause; a confident wrong reason is worse than an exit status.
 func TestDiagnoseStaysQuietOnAnUnknownEnding(t *testing.T) {
 	for _, body := range []string{"", "all fine, then the power went out\n"} {
 		if d := diagnose(logWith(t, body)); d != nil {

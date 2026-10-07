@@ -1,19 +1,5 @@
-// Package runtime turns a versioned runtime definition plus a catalog model
-// into a concrete engine launch.
-//
-// The spec calls for "a small versioned runtime definition embedded in the
-// deployment configuration or operator-controlled file", and separates three
-// decisions that a hardcoded binary name conflates:
-//
-//	Origin:            LM Studio package, public upstream build, or Marie runtime
-//	Execution:         native process or script (Track B), or an external endpoint
-//	Inference protocol: OpenAI-compatible, LM Studio-native, or engine-specific
-//
-// So a runtime is declared, not assumed. That is what lets one node offer a
-// CUDA build and another a CPU build of the same engine, and what makes the
-// launch reproducible: "record an immutable package/image reference and digest,
-// platform/backend, entry point, typed parameters, model location, endpoint and
-// readiness contract, and stop behavior".
+// Package runtime turns a versioned runtime definition and a catalog model
+// into an engine launch.
 package runtime
 
 import (
@@ -28,32 +14,28 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/inputs"
 )
 
-// Origin is where a runtime came from.
 type Origin string
 
 const (
-	OriginUpstream Origin = "upstream" // a public upstream build
-	OriginLMStudio Origin = "lmstudio" // an LM Studio engine package
-	OriginMarie    Origin = "marie"    // built and shipped by us
-	OriginCustom   Origin = "custom"   // operator-provided
+	OriginUpstream Origin = "upstream"
+	OriginLMStudio Origin = "lmstudio"
+	OriginMarie    Origin = "marie"
+	OriginCustom   Origin = "custom"
 )
 
-// Protocol is the inference API an engine speaks.
 type Protocol string
 
 const (
 	ProtocolOpenAI Protocol = "openai"
 )
 
-// Definition is one declared runtime.
 type Definition struct {
 	Name    string `json:"name"`
 	Engine  string `json:"engine"`  // "llama.cpp"
 	Origin  Origin `json:"origin"`  // upstream | lmstudio | marie | custom
 	Version string `json:"version"` // engine build identifier, e.g. "b4321"
-	// LlamaBuild is the upstream llama.cpp build number underneath, whoever
-	// packaged it (LM Studio's 2.41.0 is b11026). Zero when unknown. It is
-	// what makes builds from different packagers comparable.
+	// LlamaBuild is the upstream llama.cpp build number, independent of packager
+	// versioning. Zero means unknown.
 	LlamaBuild int `json:"llama_build,omitempty"`
 	// DisplayName is the package's human name ("CUDA 12 llama.cpp (Linux)"),
 	// from its display-data.json as LM Studio shows it.
@@ -61,22 +43,16 @@ type Definition struct {
 	Backend     string   `json:"backend"` // cuda | rocm | metal | vulkan | cpu
 	Protocol    Protocol `json:"protocol"`
 
-	// Entrypoint is the executable or shell script to run. A script is a
-	// supported launch mechanism: it "can initialize the packaged environment
-	// and invoke the server".
 	Entrypoint string `json:"entrypoint"`
 
 	// Args are extra engine arguments appended to the generated ones. They are
 	// typed configuration, never assembled from an inference request.
 	Args []string `json:"args,omitempty"`
 
-	// Env is added to the child environment.
 	Env map[string]string `json:"env,omitempty"`
 
-	// Digest pins the runtime's verified artifact set by content: it is the
-	// manifest hash from VerifyTree, which covers the entrypoint and every
-	// file the package declares — not the entrypoint's own file hash, as this
-	// comment used to say. Computed on first use when empty.
+	// Digest is the VerifyTree manifest hash covering the entrypoint and every
+	// package-declared artifact. Computed on first use when empty.
 	Digest string `json:"digest,omitempty"`
 
 	// Defaults applied to a load unless the request overrides them.
@@ -94,23 +70,16 @@ type Definition struct {
 	LoadMode string `json:"load_mode,omitempty"`
 	// KVUnified shares one KV cache across parallel slots instead of splitting
 	// the context between them.
-	KVUnified *bool `json:"kv_unified,omitempty"`
-	// CtxCheckpoints bounds how many context checkpoints are retained.
-	CtxCheckpoints int `json:"ctx_checkpoints,omitempty"`
+	KVUnified      *bool `json:"kv_unified,omitempty"`
+	CtxCheckpoints int   `json:"ctx_checkpoints,omitempty"`
 	// Threads for generation; 0 leaves the engine's own default.
 	Threads int `json:"threads,omitempty"`
 
-	// resolved is the absolute entrypoint path, filled by Resolve.
-	resolved string
-	// pkgDir is the package root when this runtime came from a package.
-	pkgDir string
-	// vendorDirs are dependency packages outside pkgDir.
+	resolved   string
+	pkgDir     string
 	vendorDirs []string
-	// domains is what the engine serves ("llm", "embedding").
-	domains []string
-	// req is what the package declares it needs, for compatibility checks.
-	req Requirements
-	// provenance is set for packages ModelFabric installed itself.
+	domains    []string
+	req        Requirements
 	provenance *PackageProvenance
 
 	mu       sync.Mutex
@@ -118,20 +87,15 @@ type Definition struct {
 	manifest []byte
 }
 
-// PinKind describes how completely a runtime is pinned.
 type PinKind string
 
 const (
 	// PinContent means the entrypoint itself is content-addressed.
 	PinContent PinKind = "content"
-	// PinPartial means the entrypoint is a script: its own bytes are pinned,
-	// but the environment it initializes is not. The spec is explicit — "a
-	// script digest alone does not pin its Python environment or image" — so
-	// this is reported rather than glossed over.
+	// PinPartial means the script's bytes are pinned, but its environment is not.
 	PinPartial PinKind = "partial"
 )
 
-// Pin reports how completely this runtime is pinned.
 func (d *Definition) Pin() PinKind {
 	if d.isScript() {
 		return PinPartial
@@ -168,8 +132,7 @@ func (d *Definition) resolvedOrEntrypoint() string {
 func (d *Definition) Path() string { return d.resolvedOrEntrypoint() }
 
 // Resolve locates the entrypoint and applies defaults. A bare name is looked up
-// on PATH and then pinned by content, because "a mutable system environment is
-// unverified and cannot be reported as a pinned runtime".
+// on PATH and then pinned by content.
 func (d *Definition) Resolve() error {
 	if d.Name == "" {
 		return fmt.Errorf("runtime has no name")
@@ -221,10 +184,8 @@ func (d *Definition) Resolve() error {
 		return err
 	}
 
-	// Only zero meant "unset", so a negative value passed straight through to
-	// the engine's flags (-c, --parallel, -ngl) and to KVCacheTokens, where it
-	// is multiplied out. A configuration mistake became an engine that failed
-	// to start, or started with nonsense.
+	// Reject negative values before they reach engine flags or KVCacheTokens;
+	// only zero selects defaults.
 	for _, f := range []struct {
 		name string
 		val  int
@@ -263,8 +224,6 @@ func (d *Definition) Resolve() error {
 		d.CacheTypeV = "f16"
 	}
 	if d.LoadMode == "" {
-		// Matches what LM Studio passes: memory-map the weights and keep them
-		// resident rather than letting them be paged back out.
 		d.LoadMode = "mmap+mlock"
 	}
 	if d.KVUnified == nil {
@@ -272,13 +231,9 @@ func (d *Definition) Resolve() error {
 		d.KVUnified = &t
 	}
 	if d.CtxCheckpoints == 0 {
-		// Checkpoints live in host RAM, per slot, and grow with the
-		// conversation: ~150 MiB + ~4 KiB/token each for Qwen3.8-27B. At
-		// llama.cpp's 32 one slot held 7.4 GB after 25 agent turns at 23k
-		// tokens, and 90k-token SWE-bench conversations OOM-killed a 15 GB
-		// host. An agent's prompt diverges only near its end (the template
-		// drops earlier reasoning), so the newest checkpoint is the one used:
-		// 32, 4 and 2 did identical prefill work on that replay.
+		// Checkpoints consume host RAM per slot: about 150 MiB + 4 KiB/token each
+		// for Qwen3.8-27B. The default of 32 caused host OOMs in long conversations;
+		// 2, 4 and 32 performed identical prefill work in replay measurements.
 		d.CtxCheckpoints = 4
 	}
 	return nil
@@ -314,11 +269,10 @@ func (d *Definition) Verify() (*inputs.VerifiedInput, []byte, error) {
 	return vi, manifest, nil
 }
 
-// Registry holds the runtimes this node can launch.
 type Registry struct {
 	mu       sync.RWMutex // runtimes can be installed and removed while serving
 	defs     []*Definition
-	fallback string // name of the default runtime
+	fallback string
 	hw       *Hardware
 }
 
@@ -330,11 +284,8 @@ func (r *Registry) SetHardware(hw Hardware) {
 	r.hw = &c
 }
 
-// Hardware reports the surveyed machine, if a survey was attached.
-// Hardware returns a copy of the surveyed hardware. The registry used to hand
-// out its own pointer, so a caller could mutate what every fit decision reads —
-// and CPUFlags and GPUs are reference types, so even the struct copy that
-// SetHardware stored still shared them with the caller's value.
+// Hardware returns a copy of the surveyed hardware, or nil if unavailable.
+// Deep-copy CPUFlags and GPUs so callers cannot mutate registry state.
 func (r *Registry) Hardware() *Hardware {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -352,7 +303,6 @@ func (r *Registry) Pinned() string {
 	return r.fallback
 }
 
-// SetDefault makes name the default for loads that do not pick a runtime.
 func (r *Registry) SetDefault(name string) error {
 	if name == "" {
 		r.mu.Lock()
@@ -412,7 +362,6 @@ func (r *Registry) Len() int {
 	return len(r.defs)
 }
 
-// All returns every usable runtime.
 func (r *Registry) All() []*Definition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -448,7 +397,6 @@ func (r *Registry) usable() []*Definition {
 	return out
 }
 
-// Lookup finds a runtime by name.
 func (r *Registry) Lookup(name string) (*Definition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -464,10 +412,8 @@ func (r *Registry) Lookup(name string) (*Definition, bool) {
 // format.
 func (r *Registry) Default() (*Definition, error) { return r.DefaultFor("") }
 
-// DefaultFor returns the runtime used when a load names none, for a model in
-// the given format ("gguf", "mlx"; empty means any). A machine can have engines
-// for several formats — a Mac runs GGUF on llama.cpp and MLX weights on mlx-lm
-// — so the format decides which engines are even candidates.
+// DefaultFor selects a runtime for the given weights format ("gguf", "mlx";
+// empty means any) when a load does not name one.
 func (r *Registry) DefaultFor(format string) (*Definition, error) {
 	r.mu.RLock()
 	n, fallback := len(r.defs), r.fallback
@@ -520,10 +466,8 @@ func (r *Registry) SelectFor(name, format string) (*Definition, error) {
 	return d, nil
 }
 
-// LoadsFormat reports whether this runtime's engine reads that weights format.
-// An empty format, or one ModelFabric has no mapping for, matches everything: the
-// engine will say so itself, and refusing here would block a format ModelFabric
-// simply does not know about yet.
+// LoadsFormat reports whether the engine reads the weights format.
+// Empty or unknown formats match all engines, leaving validation to the engine.
 func (d *Definition) LoadsFormat(format string) bool {
 	if format == "" {
 		return true

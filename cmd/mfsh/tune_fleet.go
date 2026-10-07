@@ -13,21 +13,11 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tuner"
 )
 
-// `mfsh tune -fleet`: every node that serves the model, side by side.
-//
-// One node's answer is not the fleet's. A slot count depends on the GPU, the
-// build and the quantization, so the useful output is the comparison — and the
-// comparison is what says whether the uniform count everyone starts with is
-// costing anything. On the fleet this was written for it was costing throughput
-// on one node and latency on another, in opposite directions.
-//
-// Each node sweeps itself, through POST /api/v1/tune reached by the node proxy.
-// Nothing is applied: the table ends with the command per node, and what to run
-// is the operator's call.
+// `mfsh tune -fleet` compares slot counts across nodes serving the model.
+// Each node runs POST /api/v1/tune through the node proxy. Recommendations
+// are printed as commands and are not applied automatically.
 
-// tuneFleetPoll is how often each node is asked for progress. A row takes tens
-// of seconds at best — a reload plus a generation — so this is frequent enough
-// to look live and far from busy.
+// tuneFleetPoll sets the progress polling interval; each reload-and-generation row takes tens of seconds.
 const tuneFleetPoll = 3 * time.Second
 
 type fleetResult struct {
@@ -47,10 +37,7 @@ func tuneFleet(ctx context.Context, addr string, req tuneRequestBody, nodes []st
 	fmt.Println(dim("  would recommend."))
 	fmt.Println()
 
-	// Nodes sweep at the same time. They are separate machines measuring
-	// themselves, so there is nothing to serialize — and serializing would
-	// multiply an already slow operation by the size of the fleet. Two sweeps
-	// on *one* node is the case that breaks, and the node refuses that itself.
+	// Sweep independent nodes concurrently; each node rejects overlapping local sweeps.
 	var (
 		mu      sync.Mutex // one writer to the terminal
 		wg      sync.WaitGroup
@@ -79,9 +66,7 @@ func tuneFleet(ctx context.Context, addr string, req tuneRequestBody, nodes []st
 	return nil
 }
 
-// tuneOneNode starts a sweep on one node and follows it to the end. The node
-// runs it in the background, so losing this process — or a peer's answer going
-// missing for a poll or two — does not stop or corrupt the sweep.
+// tuneOneNode starts and follows a node-owned sweep, which survives CLI disconnects and failed polls.
 func tuneOneNode(ctx context.Context, addr, node string, req tuneRequestBody, onRow func(tuner.Row)) (*tuner.Report, error) {
 	base := "/api/v1/nodes/" + node + "/tune"
 	var started tuneStatusBody
@@ -125,20 +110,12 @@ func tuneOneNode(ctx context.Context, addr, node string, req tuneRequestBody, on
 	}
 }
 
-// printFleetTable is the point of the whole exercise: one row per machine, one
-// column per slot count, so the answer and its shape are visible at once.
 func printFleetTable(results []fleetResult) {
-	// The union of the counts actually tried. Nodes stop at different places —
-	// a 5090 runs out of memory two steps before a 48GB card does — so a fixed
-	// set of columns would either invent rows or hide them.
+	// Include every tried slot count; nodes reach memory limits at different counts.
 	var counts []int
 	seen := map[int]bool{}
 	model, contextLen := "", 0
-	// Each node defaults to the context it is already loaded with, so a fleet
-	// that was set up by hand can be swept at two different contexts at once —
-	// and throughput at 32k is not comparable to throughput at 64k. Collected
-	// so the table can say so instead of printing one of them as if it were
-	// everyone's.
+	// Track each context length because throughput at different contexts is not comparable.
 	contexts := map[int][]string{}
 	for _, r := range results {
 		if r.Report == nil {
@@ -207,8 +184,6 @@ func printFleetTable(results []fleetResult) {
 	}
 	fmt.Printf("  %s\n", dim(strings.Repeat(" ", 12)+"total tok/s with that many requests in flight"))
 
-	// Why, per node, because the number alone does not say whether the sweep
-	// found a ceiling or a knee — and those call for different next steps.
 	fmt.Println()
 	for _, r := range results {
 		if r.Report == nil {
@@ -239,14 +214,11 @@ func printFleetTable(results []fleetResult) {
 		fmt.Printf("  %s\n", dim("Nothing was changed — back as found: "+strings.Join(restored, ", ")))
 	}
 	if len(notRestored) > 0 {
-		// Said plainly, because it is the one outcome that leaves work to do.
 		fmt.Printf("  %s\n", yellow("Check these nodes; the sweep could not put them back: "+
 			strings.Join(notRestored, ", ")))
 	}
 
-	// The commands, not an offer to run them. Applying a slot count is a
-	// reload: it drops every conversation resident on that engine, and whether
-	// now is the moment is not something this tool can know.
+	// Print apply commands without running them: reloading drops engine-resident conversations.
 	fmt.Println()
 	fmt.Println(bold("  To apply:"))
 	for _, r := range results {
@@ -320,9 +292,6 @@ type tuneStatusBody struct {
 	Error   string        `json:"error"`
 }
 
-// fleetNodes are the nodes serving this model, this one included. A node with
-// the model resident is a node with something to tune; one without it would
-// spend the sweep loading weights it was not asked about.
 func fleetNodes(ctx context.Context, addr, model string) ([]string, error) {
 	var mesh struct {
 		Self  meshNodeView   `json:"self"`
@@ -349,9 +318,6 @@ func fleetNodes(ctx context.Context, addr, model string) ([]string, error) {
 	return nodes, nil
 }
 
-// confirmFleetTune asks first. A fleet sweep takes every engine down in turn:
-// on the three-node fleet this was written for, that is the whole mesh
-// unavailable in rotation for the better part of an hour.
 func confirmFleetTune(nodes []string, yes bool) bool {
 	if yes {
 		return true

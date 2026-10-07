@@ -36,8 +36,6 @@ func xdg(t *testing.T) (cache, state, data string) {
 	return
 }
 
-// State that lived in the cache directory moves, whole, to the state
-// directory; the node log joins the other logs; benchmark runs become data.
 func TestMigrateLegacyState(t *testing.T) {
 	cache, state, data := xdg(t)
 	legacy := filepath.Join(cache, "llm-z")
@@ -46,7 +44,6 @@ func TestMigrateLegacyState(t *testing.T) {
 	write(t, filepath.Join(legacy, "node.log"), "node")
 	write(t, filepath.Join(legacy, "bench", "swe", "runs", "r.json"), "run")
 
-	// Before the move, the old place is used — never half of each.
 	if got := defaultStateDir(); got != legacy {
 		t.Fatalf("before migration: state dir %s, want %s", got, legacy)
 	}
@@ -72,7 +69,6 @@ func TestMigrateLegacyState(t *testing.T) {
 	if nodeLogPath() != filepath.Join(dir, "logs", "node.log") {
 		t.Errorf("node log at %s", nodeLogPath())
 	}
-	// Running it again is a no-op.
 	migrateLegacyState(quietLog())
 }
 
@@ -81,5 +77,5 @@ func TestFreshInstallUsesTheStateDirectory(t *testing.T) {
 	if got := defaultStateDir(); got != filepath.Join(state, "modelfabric") {
 		t.Fatalf("state dir %s", got)
 	}
-	migrateLegacyState(quietLog()) // nothing to move
+	migrateLegacyState(quietLog())
 }

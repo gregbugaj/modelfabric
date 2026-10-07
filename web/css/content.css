@@ -1,5 +1,3 @@
-/* ---- content ---- */
-
 .content { padding: 20px 24px 36px; min-width: 0; }
 
 .page-head {
@@ -8,8 +6,7 @@
 }
 .page-head h1 { font-size: 22px; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
 .page-sub { color: var(--text-2); margin: 0 0 18px; }
-/* A page with no second line still owes the content below it the same air the
-   second line used to provide. */
+/* Keep content spacing consistent when the subtitle is absent. */
 .page-head:has(+ .page-sub[hidden]) { margin-bottom: 16px; }
 
 .badge {
@@ -18,9 +15,6 @@
   font-size: 12px; font-weight: 600;
   background: hsl(var(--success-subtle)); color: hsl(var(--success-text));
 }
-/* The connection state beside the page title: it has to be visible when it
-   breaks and invisible when it does not, so healthy is a dot and a muted
-   word, and only the failure gets a pill and a colour. */
 #conn { padding: 0; background: none; color: var(--text-muted); font-weight: 500; }
 #conn .dot { background: hsl(var(--success-token)); }
 #conn.err { padding: 3px 10px; background: hsl(var(--error-subtle)); color: hsl(var(--error-text)); font-weight: 600; }
@@ -32,7 +26,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   .badge.live .dot { animation: none; }
-  /* The spinner was only slowed, not stopped: continuous motion is exactly
-     what this preference asks to be spared. */
   .spinner { animation: none; }
 }

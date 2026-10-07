@@ -3,14 +3,13 @@ package runtime
 import "testing"
 
 // An upstream build tag is "b11040". Atoi fails on the leading letter, and
-// returning 0 made every upstream version compare equal — so ModelFabric could not
+// returning 0 made every upstream version compare equal - so ModelFabric could not
 // tell b11040 from b10662 when neither carried a parsed LlamaBuild.
 func TestUpstreamBuildTagsCompare(t *testing.T) {
 	newerV, olderV := versionParts("b11040"), versionParts("b10662")
 	if compareVersions(newerV, olderV) <= 0 {
 		t.Errorf("b11040 did not compare newer than b10662: %v vs %v", newerV, olderV)
 	}
-	// Ordinary semantic versions still work.
 	if compareVersions(versionParts("2.41.0"), versionParts("2.33.0")) <= 0 {
 		t.Error("2.41.0 did not compare newer than 2.33.0")
 	}

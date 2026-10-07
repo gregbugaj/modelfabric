@@ -4,21 +4,9 @@ import { Gallery } from "../components/landing/gallery";
 import { FleetBench } from "../components/landing/fleet-bench";
 import icons from "../data/brand-icons.json";
 
-/*
- * The landing page makes a claim, then backs it with numbers that were
- * actually measured.
- *
- * An earlier version led with `localhost:1234` set large. It read well and
- * said nothing: a port number is not a description, and a first-time visitor
- * left without learning what ModelFabric is. The address is still here — it is the
- * whole idea — but as evidence under the claim rather than in place of it.
- */
 
-// From the router comparison of 2026-10-07 (docs/benchmark/router-comparison,
-// numbers in data/routing.json): one recorded coding-agent workload replayed
-// through ModelFabric's router, llm-d and LiteLLM, three runs each. The caption
-// says what was compared, because a number without its question is decoration.
-// Update these with that page when its data is regenerated.
+// Benchmark values come from data/routing.json and docs/benchmark/router-comparison.
+// Update both when regenerating results.
 const PROOF = [
   { big: "20%", small: "faster than LiteLLM on the same agent workload" },
   { big: "4%", small: "faster than llm-d, from one binary with no proxy to run" },
@@ -75,16 +63,9 @@ const SHOTS = [
 export default function Home() {
   return (
     <main>
-      {/* ---------------------------------------------------------- hero */}
-      {/* Two columns from lg up: the claim on the left, the picture of it on
-          the right. The picture used to sit a screen and a half down, under
-          the numbers, while the right half of the hero was empty. */}
       <section className="mx-auto grid max-w-[90rem] items-center gap-x-12 gap-y-8 px-6 pt-14 pb-10 md:pt-16 lg:grid-cols-2">
-        {/* min-w-0 on both: a grid item is otherwise as wide as its longest
-            unbreakable line, and the install command pushed a phone sideways. */}
+        {/* min-w-0 prevents the unbreakable install command from widening the grid on phones. */}
         <div className="min-w-0">
-          {/* No logo/wordmark eyebrow here: the navbar carries both, a few
-            pixels above. Repeating them just delays the headline. */}
           <h1 className="max-w-3xl text-4xl font-bold leading-[1.1] tracking-tight text-[hsl(var(--mfsh-ink))] sm:text-5xl">
             Every machine serves{" "}
             <span className="text-[hsl(var(--mfsh-loopback))]">
@@ -98,8 +79,6 @@ export default function Home() {
               href="https://tailscale.com"
               className="inline-flex items-baseline gap-1.5 whitespace-nowrap font-semibold text-[hsl(var(--mfsh-ink))] underline decoration-[hsl(var(--mfsh-rule))] underline-offset-4 hover:decoration-[hsl(var(--mfsh-loopback))]"
             >
-              {/* The same simple-icons mark the footer uses, in the text colour
-                  so it reads on both themes. */}
               <svg
                 viewBox="0 0 24 24"
                 aria-hidden="true"
@@ -136,8 +115,7 @@ export default function Home() {
             </Link>
           </div>
 
-          {/* The real installer URL, served by the docs site itself (see
-            scripts/sync-install.mjs). */}
+          {/* Published by scripts/sync-install.mjs. */}
           <div className="mt-5 max-w-2xl overflow-x-auto rounded border border-[hsl(var(--mfsh-rule))] bg-[hsl(var(--mfsh-surface-sunken))] px-3.5 py-2.5">
             <code className="whitespace-nowrap font-mono text-[0.8rem] text-[hsl(var(--mfsh-ink))]">
               <span className="select-none text-[hsl(var(--mfsh-muted))]">
@@ -170,7 +148,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* --------------------------------------------------------- proof */}
       <section className="border-y border-[hsl(var(--mfsh-rule))] bg-[hsl(var(--mfsh-surface-sunken))]">
         <div className="mx-auto max-w-[90rem] px-6 py-8">
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
@@ -198,14 +175,9 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ---------------------------------------------- per-machine speed */}
-      {/* Rendered only once bench/fleet/build.py has written real reports. */}
       <FleetBench />
 
-      {/* ------------------------------------------------- the real thing */}
-      {/* The hero's diagram is a drawing of the idea. These are the dashboard
-          drawing an actual mesh, captured by scripts/docshots.mjs (which
-          scrubs the entrypoint's name and the tailnet addresses). */}
+      {/* scripts/docshots.mjs scrubs hostnames and tailnet addresses. */}
       <section>
         <div className="mx-auto max-w-[90rem] px-6 pt-12">
           <h2 className="text-xl font-semibold text-[hsl(var(--mfsh-ink))]">
@@ -217,7 +189,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ------------------------------------------------------ start here */}
       <section>
         <div className="mx-auto max-w-[90rem] px-6 py-12">
           <h2 className="text-xl font-semibold text-[hsl(var(--mfsh-ink))]">
@@ -243,7 +214,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* --------------------------------------------------- what it isn't */}
       <section className="border-t border-[hsl(var(--mfsh-rule))] bg-[hsl(var(--mfsh-surface-sunken))]">
         <div className="mx-auto max-w-[90rem] px-6 py-12">
           <h2 className="text-xl font-semibold text-[hsl(var(--mfsh-ink))]">

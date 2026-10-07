@@ -1,15 +1,5 @@
-// Package discovery exports the mesh as an llm-d endpoint list.
-//
-// llm-d's EPP takes endpoints from a pluggable EndpointDiscovery interface —
-// "anything that can enumerate endpoints and stream upsert/delete events" —
-// and ships a file-discovery plugin that watches a YAML file via fsnotify.
-// ModelFabric already enumerates exactly that set, so it writes the file.
-//
-// This deliberately stops short of importing llm-d's Go plugin. The file is a
-// stable, zero-coupling contract: ModelFabric keeps its single static binary, and an
-// EPP can be introduced later (or never) without changing anything here.
-//
-// The schema is llm-d's, not ours:
+// Package discovery exports mesh endpoints through llm-d's watched YAML file
+// interface, avoiding a dependency on its Go plugin.
 //
 //	endpoints:
 //	  - name: <string>        # required, unique within the file
@@ -29,14 +19,13 @@ import (
 	"strings"
 )
 
-// Endpoint is one model server the EPP may route to.
 type Endpoint struct {
 	Name      string
 	Namespace string
 	Address   string
 	// Port is what llm-d dials and scrapes. Where ModelFabric republishes an
 	// engine's metrics through the shim, that is the shim's port, not the
-	// engine's — the EPP scrapes whatever it routes to (see engineshim).
+	// engine's; the EPP scrapes whatever it routes to (see engineshim).
 	Port   int
 	Labels map[string]string
 
@@ -81,7 +70,7 @@ func (e Endpoint) Unreachable() bool {
 
 // NeedsRewrite reports whether reaching this engine means changing the
 // request's "model" field, which only ModelFabric itself does. Such an engine is
-// reached through its own node, never dialled directly — an engine that
+// reached through its own node, never dialled directly; an engine that
 // dispatches on the model id answers an unrecognised one by trying to download
 // it, or by failing.
 func (e Endpoint) NeedsRewrite() bool {
@@ -110,7 +99,6 @@ func Render(endpoints []Endpoint) ([]byte, error) {
 	b.WriteString("endpoints:\n")
 
 	if len(sorted) == 0 {
-		// An empty list is valid and meaningful: nothing is loaded anywhere.
 		b.WriteString("  []\n")
 		return []byte(b.String()), nil
 	}
@@ -122,7 +110,7 @@ func Render(endpoints []Endpoint) ([]byte, error) {
 		}
 		// The file schema requires unique names. Two entries sharing one made
 		// a file the EPP reads as a single endpoint, silently dropping the
-		// other — a whole engine missing from scheduling with nothing said.
+		// other; a whole engine missing from scheduling with nothing said.
 		if seen[e.Name] {
 			return nil, fmt.Errorf("two endpoints are both named %q", e.Name)
 		}

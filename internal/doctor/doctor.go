@@ -27,15 +27,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tscli"
 )
 
-// Package doctor checks everything ModelFabric depends on and says what to do about
-// anything wrong. It never starts the node or changes anything: a diagnosis
-// must work on exactly the broken state it is asked about, and must not "fix"
-// it by accident.
-//
-// The checks live here rather than in the CLI so the node can serve the same
-// report — including for a peer, which is the case the CLI cannot reach at
-// all. Rendering stays with the caller: this package decides what is true,
-// not how to colour it.
+// Package doctor provides read-only diagnostics for the CLI and node API.
+// Checks preserve the failing state; callers render the report.
 
 type Status string
 
@@ -54,8 +47,6 @@ type Check struct {
 	Fix     string `json:"fix,omitempty"`
 }
 
-// Opts is what the caller knows and this package does not: where the node is,
-// and the paths and version the binary was built with.
 type Opts struct {
 	Addr         string
 	Version      string
@@ -72,7 +63,6 @@ type Opts struct {
 	Runtimes func(config.Config) []*runtime.Definition
 }
 
-// Run performs every check and returns them in report order.
 func Run(o Opts) []Check {
 	d := &doctor{opts: o, addr: o.Addr, http: &http.Client{Timeout: 5 * time.Second}}
 	d.checkInstall()
@@ -351,7 +341,7 @@ func (d *doctor) checkHardwareAndRuntimes() {
 		// Offline: discover as the node would, without starting it.
 		// NewRegistry drops definitions whose Resolve failed and says which,
 		// so discarding the error made doctor report a clean runtime list for
-		// a machine that has a broken one — the opposite of its job.
+		// a machine that has a broken one; the opposite of its job.
 		reg, regErrs := runtime.NewRegistry(d.opts.Runtimes(d.cfg), d.cfg.DefaultRuntime)
 		for _, e := range regErrs {
 			d.add(s, "runtime discovery", StatusWarn, e.Error(), "mfsh runtime ls")
@@ -478,9 +468,6 @@ func (d *doctor) checkEngines() {
 				for _, i := range m.Instances {
 					rt, _ := i.Config["runtime"].(string)
 					d.instances = append(d.instances, doctorInstance{ID: i.ID, Model: m.Key, Runtime: rt, PID: i.PID, Port: i.Port})
-					// The shim is a proxy in front of the engine that nothing
-					// else shows: say it is there, and what it does to a
-					// request on its way through.
 					name := "shim · " + m.Key
 					if i.Shim == nil {
 						d.add("Shims", name, StatusInfo, fmt.Sprintf("none: %s is dialled directly (it publishes its own metrics)", i.ID), "")
@@ -508,10 +495,8 @@ func (d *doctor) checkEngines() {
 					d.add(s, e.Name, StatusFail, "not answering: "+e.Error, "mfsh log engine "+e.Name)
 					continue
 				}
-				// An engine running a different context than it was loaded with
-				// is the quietest failure ModelFabric has had: every long conversation
-				// routed there overflows at a limit nothing reported, and the
-				// only tasks a benchmark run failed to solve died exactly there.
+				// Report ignored context settings before clients exceed the engine's
+				// effective limit.
 				if e.ContextNote != "" {
 					d.add(s, "context", StatusWarn, e.Name+": "+e.ContextNote,
 						"reload it and check the settings were applied: mfsh load <model> -context N")
@@ -556,7 +541,6 @@ func (d *doctor) checkEngines() {
 			d.add(s, "other engine", StatusInfo, fmt.Sprintf("pid %d: a llama-server not started by ModelFabric%s", p.pid, mem), "")
 		}
 	}
-	// Other GPU users matter for the same reason.
 	var others []string
 	for pid, mb := range gpuMem {
 		if !ours[pid] && !isLlamaServer(pid) && mb >= 1024 {
@@ -687,9 +671,8 @@ func (d *doctor) checkSecurity() {
 		}
 		d.add(s, "engines", StatusOK, "bound to this node's tailnet address (for llm-d); reachable over the tailnet only", fix)
 	default:
-		// Calling any non-loopback address "tailnet only" was a claim doctor
-		// had not checked: a LAN address here exposes unauthenticated engines
-		// to the LAN, which is exactly what the wildcard case warns about.
+		// A non-loopback address may be a LAN address, not a tailnet address.
+		// Warn when unauthenticated engines are exposed beyond the tailnet.
 		d.add(s, "engines", StatusWarn,
 			"engine_bind "+bind+" is not a tailnet address (100.64.0.0/10 or fd7a:115c:a1e0::/48); engines take no key",
 			"set engine_bind to \"tailnet\", or leave it unset for loopback")
@@ -717,7 +700,6 @@ func (d *doctor) checkSecurity() {
 	}
 }
 
-// checkEntrypoint reports what a model-less entrypoint can route to.
 func (d *doctor) checkEntrypoint() {
 	const s = "Entrypoint"
 	var mesh struct {
@@ -771,10 +753,8 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// writable proves a file can be written where this directory is or would be,
-// without creating it. doctor is a diagnostic: it said it changes nothing, but
-// this used to MkdirAll every path it checked, so running it created
-// $MFSH_HOME and the models and runtime directories as a side effect.
+// writable tests write access without creating the target directory,
+// so diagnostics do not create missing model or runtime roots.
 func writable(dir string) error {
 	probe := dir
 	for {
@@ -794,8 +774,6 @@ func writable(dir string) error {
 		}
 		probe = parent
 	}
-	// The temp file is created and removed in a directory that already
-	// existed, so nothing is left behind and nothing new is made.
 	f, err := os.CreateTemp(probe, ".mfsh-doctor-*")
 	if err != nil {
 		return err
@@ -813,9 +791,6 @@ func freeBytes(dir string) (uint64, error) {
 	return st.Bavail * uint64(st.Bsize), nil
 }
 
-// humanBytes formats a size for a person. There are already copies of this in
-// cmd/mfsh and internal/server; a fourth home for it would be worth having,
-// but moving a helper used across the CLI is not this change.
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -829,14 +804,10 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// plural is the CLI's, kept here so a check can phrase its own count.
 func plural(n int, word string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, word)
 	}
-	// A bare "s" gave "3 processs". Only the endings that actually appear in
-	// this report are handled; a general pluralizer here would be a lie about
-	// how much English it knows.
 	suffix := "s"
 	switch {
 	case strings.HasSuffix(word, "s"), strings.HasSuffix(word, "x"),
@@ -848,7 +819,7 @@ func plural(n int, word string) string {
 
 // waitHealthy reports whether a node answers /healthz within the timeout. A
 // malformed listen address makes the request constructor fail and return nil,
-// which Do would dereference — so the error is checked rather than the check
+// which Do would dereference; so the error is checked rather than the check
 // panicking on a broken config.
 func waitHealthy(base string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
@@ -875,7 +846,6 @@ func waitHealthy(base string, timeout time.Duration) error {
 	return last
 }
 
-// shimJobs says in a line what a shim does to a request on its way through.
 func shimJobs(kv, tokens bool, ceiling int, cache bool) string {
 	var jobs []string
 	if kv {

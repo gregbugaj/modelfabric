@@ -4,9 +4,7 @@ import { tick } from "./polling.js";
 import { el, fillTable } from "./rendering.js";
 import { buildRuntime, formatBytes } from "./ui-model.js";
 
-/* ---------- runtime ---------- */
-
-export let available = null; // /api/v1/runtimes/available, fetched on demand
+export let available = null;
 export let checking = false;
 let lastRuntime = buildRuntime(null);
 export let runtimesApi = null;
@@ -17,7 +15,6 @@ function fitCell(r) {
   const td = el("td");
   const pill = el("span", `pill fit-${r.fit}`, r.fit === "yes" ? "yes" : r.fit === "no" ? "no" : "unknown");
   td.append(pill);
-  // Anything short of a clean yes says why.
   if (r.fit !== "yes") for (const why of r.reasons) td.append(el("div", "reason", why));
   return td;
 }
@@ -32,7 +29,7 @@ export function progressBar(fraction) {
 
 export function renderRuntime(v) {
   lastRuntime = v;
-  if (!runtimesApi && !v.managed && operations.length === 0 && !lastPolled) return; // first poll pending
+  if (!runtimesApi && !v.managed && operations.length === 0 && !lastPolled) return;
   const hw = $("hw-grid");
   hw.replaceChildren();
   if (v.hardware) {
@@ -68,8 +65,6 @@ export function renderRuntime(v) {
     (r) => {
       const tr = el("tr");
       const name = el("td");
-      // The human name first, as LM Studio shows it; the exact package id
-      // (what `mfsh runtime select` takes) underneath.
       name.append(el("div", "rt-name", r.displayName), el("div", "rt-id mono", r.name));
       const status = el("td");
       if (r.isDefault) status.append(el("span", "self-tag", v.selection.auto ? "default" : "pinned"));
@@ -95,7 +90,6 @@ export function renderRuntime(v) {
       return tr;
     });
 
-  // Installs in progress.
   const inst = $("rt-installing");
   inst.replaceChildren();
   for (const i of v.installing) {
@@ -160,7 +154,6 @@ export function renderRuntime(v) {
     } else {
       const b = el("button", "btn primary", u.installing ? "Updating…" : `Update · ${formatBytes(u.downloadBytes)}`);
       b.disabled = u.installing;
-      // Same variant, newer build: the server says exactly which.
       b.addEventListener("click", () =>
         installRuntime(u.backend, u.latestName, u.backend === "cuda" ? u.backendVersion : ""));
       act.append(b);
@@ -187,7 +180,7 @@ export async function checkAvailable(refresh) {
   }
 }
 
-// Install operations this page started, to announce when each settles.
+// Track operations started here so completion can be announced.
 const watchedInstalls = new Map();
 
 async function installRuntime(backend, name, cuda = "") {
@@ -216,7 +209,7 @@ async function removeRuntime(name) {
   try {
     await post("/api/v1/runtimes/remove", { name });
     showNotice(`Removed ${name}`, "success");
-    available = null; // installed/update state changed
+    available = null;
     checkAvailable(false);
   } catch (err) {
     showNotice(`Remove failed: ${err.message}`, "error");
@@ -239,18 +232,8 @@ export function settleWatchedInstalls(ops) {
   }
 }
 
-
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and operations is written by the poll
-// loop and read here.
 export function setOperations(v) { operations = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and runtimesApi is written by the poll
-// loop and read here.
 export function setRuntimesApi(v) { runtimesApi = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and lastPolled is written by the poll
-// loop and read here.
 export function setLastPolled(v) { lastPolled = v; }

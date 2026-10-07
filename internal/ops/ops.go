@@ -28,7 +28,6 @@ const (
 	StateRunning   State = "running"
 	StateSucceeded State = "succeeded"
 	StateFailed    State = "failed"
-	// StateCancelled is an operation stopped on request; not a failure.
 	StateCancelled State = "cancelled"
 )
 
@@ -36,7 +35,6 @@ func (s State) Terminal() bool {
 	return s == StateSucceeded || s == StateFailed || s == StateCancelled
 }
 
-// Operation is one unit of long-running work.
 type Operation struct {
 	ID    string `json:"id"`
 	Kind  string `json:"kind"`  // "load" | "unload" | "runtime-get"
@@ -48,9 +46,8 @@ type Operation struct {
 	Message   string `json:"message,omitempty"`
 	// Fraction is completed work in [0,1] when the operation can measure it
 	// (a download), so a UI can draw a real progress bar.
-	Fraction float64 `json:"fraction,omitempty"`
-	Error    string  `json:"error,omitempty"`
-	// InstanceID is set once a load succeeds.
+	Fraction   float64    `json:"fraction,omitempty"`
+	Error      string     `json:"error,omitempty"`
 	InstanceID string     `json:"instance_id,omitempty"`
 	StartedAt  time.Time  `json:"started_at"`
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
@@ -60,7 +57,6 @@ type Operation struct {
 	PersistError string `json:"persist_error,omitempty"`
 }
 
-// Journal stores operations in memory and on disk.
 type Journal struct {
 	dir string
 
@@ -155,7 +151,6 @@ func (j *Journal) Begin(kind, model, dedupeKey string) (*Operation, bool) {
 	return op.clone(), true
 }
 
-// Progress records a human-readable step without ending the operation.
 func (j *Journal) Progress(id, message string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -176,13 +171,10 @@ func (j *Journal) Report(id, message string, fraction float64) {
 	}
 }
 
-// Succeed settles an operation successfully.
 func (j *Journal) Succeed(id, instanceID string) { j.finish(id, StateSucceeded, instanceID, nil) }
 
-// Fail settles an operation with an error.
 func (j *Journal) Fail(id string, err error) { j.finish(id, StateFailed, "", err) }
 
-// Cancelled records an operation stopped on request.
 func (j *Journal) Cancelled(id string) { j.finish(id, StateCancelled, "", nil) }
 
 func (j *Journal) finish(id string, state State, instanceID string, failure error) {
@@ -295,12 +287,8 @@ func (j *Journal) Prune() {
 
 func (j *Journal) path(id string) string { return filepath.Join(j.dir, id+".json") }
 
-// persist must be called with the lock held.
-//
-// The journal is what lets an operation survive a restart, so a write that
-// fails silently is worse than no journal at all: the in-memory index reports
-// the operation as recorded while nothing reached disk. Failures are reported
-// on the operation itself and logged, rather than dropped.
+// persist requires the lock. Report and log write failures so the in-memory
+// operation is not mistaken for a durable journal entry.
 func (j *Journal) persist(op *Operation) {
 	if err := j.write(op); err != nil {
 		op.PersistError = err.Error()
@@ -335,7 +323,6 @@ func (j *Journal) SetLogger(l *slog.Logger) {
 	j.logger = l
 }
 
-// log returns the journal's logger, or a discarding one when it has none.
 func (j *Journal) log() *slog.Logger {
 	if j.logger != nil {
 		return j.logger

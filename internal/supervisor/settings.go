@@ -14,25 +14,16 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/runtime"
 )
 
-// Per-model defaults and presets — LM Studio's gear icon and Presets.
-//
-//	~/.modelfabric/model-defaults/<model>.json  load and inference settings for one
-//	                                     model, applied on every load of it
-//	~/.modelfabric/presets/<name>.json          named inference settings, for any model
-//
-// As in LM Studio, a preset holds inference settings only (sampling,
-// thinking, template variables); load settings belong to the model.
-// Precedence at load, lowest first: runtime, model.yaml, the model's default
-// preset, the model's default settings, a preset named at load, settings
-// given at load.
+// Per-model defaults live in ~/.modelfabric/model-defaults/<model>.json;
+// inference-only presets live in ~/.modelfabric/presets/<name>.json.
+// Load precedence, lowest first: runtime, model.yaml, default preset, model
+// defaults, named load preset, explicit load settings.
 
-// ModelDefaults are what an operator saved for one model.
 type ModelDefaults struct {
 	Preset   string           `json:"preset,omitempty"`
 	Settings runtime.Settings `json:"settings"`
 }
 
-// Preset is a named bundle of inference settings.
 type Preset struct {
 	Name        string           `json:"name"`
 	Description string           `json:"description,omitempty"`
@@ -41,14 +32,12 @@ type Preset struct {
 
 var presetName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$`)
 
-// inferenceFields are the settings a preset may hold.
 var inferenceFields = map[string]bool{
 	"temperature": true, "top_k": true, "top_p": true, "min_p": true,
 	"repeat_penalty": true, "presence_penalty": true, "frequency_penalty": true,
 	"enable_thinking": true, "chat_template_kwargs": true, "seed": true,
 }
 
-// checkInference refuses load settings in a preset, naming them.
 func checkInference(s runtime.Settings) error {
 	b, _ := json.Marshal(s)
 	var fields map[string]any
@@ -82,50 +71,17 @@ func (s *Supervisor) visionPath() string {
 	return filepath.Join(s.cfg.DataDir, "vision-defaults.json")
 }
 
-// DefaultVisionSettings is what a model carrying an image projector loads with
-// when the node has saved nothing of its own: 32k of context and one slot.
-//
-// It used to turn speculation off as well. That was a workaround for a llama.cpp
-// defect in how it chunks images — the drafter had no representation for image
-// positions, and a prompt carrying one failed the whole request with "failed to
-// process mtmd chunk". The defect is gone from the builds this fleet runs:
-// re-tested 2026-09-24 at the benchmark's own context and slot count with the
-// projector loaded, two concurrent image requests of 986KB and 827KB succeeded
-// with drafting live throughout, on CUDA and on Metal.
-//
-// It applied to every load of a model that has a projector, so on this fleet it
-// was every load, and what it cost depends entirely on the work: measured on a
-// 5090 with predictable output, 66 tok/s decoding against 134 with the model's
-// own MTP head. On unpredictable output drafting costs a little instead —
-// measured 2026-09-25 on the tuner's own summarise-this-nonsense prompts, 78
-// against 83 on the 5090 and 22 against 24 on the Mac. So ModelFabric stops deciding:
-// the head is used when the model has one, and a node that wants otherwise
-// saves spec_mode off for itself, which is also the escape for an older build
-// that still has the defect.
-//
-// The slot count stays. It is not only about the defect: -c is per-slot ×
-// parallel, so four slots ask a GPU for four times the KV cache to serve work
-// the vision encoder runs one image at a time anyway.
-//
-// The context is here because the slot count changes what it means. -c is
-// ContextLength × Parallel and llama.cpp divides it back per slot, so dropping
-// four slots to one without saying anything about context quartered the KV
-// pool — correct, and the point — but it also meant a load that named no
-// context fell to the 8k runtime default. An image prompt does not fit in 8k:
-// one of 18107 tokens came back "exceeds the available context size (8192)"
-// within minutes of the slot change. 32k is what an image prompt actually
-// needs, and at one slot it still asks the GPU for a quarter of what four
-// slots of 32k did.
+// DefaultVisionSettings supplies 32k context and one slot for image models.
+// One slot reduces KV allocation while the vision encoder processes images
+// serially. Explicit context prevents fallback to 8k, which rejected an
+// 18,107-token image prompt. Speculation remains independently configurable.
 func DefaultVisionSettings() runtime.Settings {
 	one, ctx := 1, 32768
 	return runtime.Settings{ContextLength: &ctx, Parallel: &one}
 }
 
-// VisionDefaults are this node's settings for every model that takes images.
-//
-// Per node, because capacity is: a Mac serving a 27B over Metal and a CUDA box
-// do not have the same room for slots, and the fleet is deliberately mixed.
-// A node that has saved nothing gets DefaultVisionSettings.
+// VisionDefaults returns this node's image-model settings, or
+// DefaultVisionSettings when none are saved. Capacity varies by node.
 func (s *Supervisor) VisionDefaults() (runtime.Settings, error) {
 	b, err := os.ReadFile(s.visionPath())
 	if os.IsNotExist(err) {
@@ -156,9 +112,6 @@ func (s *Supervisor) SetVisionDefaults(v runtime.Settings) error {
 	return writeJSONFile(s.visionPath(), v)
 }
 
-// isVision reports whether a model carries an image projector. An unknown
-// model is not vision: the settings below it still apply, and a model this
-// node cannot see is one it is not about to load.
 func (s *Supervisor) isVision(model string) bool {
 	// The catalog is nil before the first scan, and in any test that does not
 	// need one; resolveSettings runs in both.
@@ -238,7 +191,6 @@ func (s *Supervisor) Presets() ([]Preset, error) {
 	return out, nil
 }
 
-// Preset reads one preset.
 func (s *Supervisor) Preset(name string) (Preset, error) {
 	if !presetName.MatchString(name) {
 		return Preset{}, fmt.Errorf("invalid preset name %q", name)
@@ -264,7 +216,6 @@ func (s *Supervisor) Preset(name string) (Preset, error) {
 	return p, nil
 }
 
-// SavePreset validates and stores a preset.
 func (s *Supervisor) SavePreset(p Preset) error {
 	if !presetName.MatchString(p.Name) {
 		return fmt.Errorf("preset names are letters, digits, space, dot, dash, underscore (max 64); got %q", p.Name)
@@ -278,13 +229,8 @@ func (s *Supervisor) SavePreset(p Preset) error {
 	return writeJSONFile(s.presetPath(p.Name), p)
 }
 
-// DeletePreset removes a preset that no model's defaults name.
-//
-// The comment here used to say a model naming a deleted preset "keeps loading,
-// without it". It does not: resolveSettings treats a missing named preset as
-// an error, deliberately, so deleting one in use broke that model's next load
-// with a message about a preset the operator had just removed. Refusing, and
-// naming the models, is the honest half of that contract.
+// DeletePreset removes a preset only if no model defaults reference it;
+// a missing named preset would fail that model's next load.
 func (s *Supervisor) DeletePreset(name string) error {
 	if !presetName.MatchString(name) {
 		return fmt.Errorf("invalid preset name %q", name)
@@ -304,7 +250,6 @@ func (s *Supervisor) DeletePreset(name string) error {
 	return err
 }
 
-// modelsUsingPreset lists the models whose saved defaults name this preset.
 func (s *Supervisor) modelsUsingPreset(name string) ([]string, error) {
 	dir := filepath.Join(s.cfg.DataDir, "model-defaults")
 	entries, err := os.ReadDir(dir)
@@ -341,11 +286,8 @@ func (s *Supervisor) modelsUsingPreset(name string) ([]string, error) {
 // was asked to apply.
 func (s *Supervisor) resolveSettings(model string, reqPreset string, req runtime.Settings) (runtime.Settings, error) {
 	var out runtime.Settings
-	// The lowest layer, and only for a model that takes images: a preset, the
-	// model's own defaults and the load request all still win over it. A load
-	// that asked for the model without its projector is not image work, so
-	// none of it applies — otherwise -vision off would still inherit the one
-	// slot and the speculation-off that exist only for images.
+	// Vision defaults have the lowest precedence and apply only when the
+	// projector is enabled.
 	if s.isVision(model) && (req.Vision == nil || *req.Vision) {
 		v, err := s.VisionDefaults()
 		if err != nil {
@@ -412,8 +354,6 @@ func writeJSONFile(path string, v any) error {
 	return nil
 }
 
-// lmStudioPredictionKeys map LM Studio's preset and model.yaml field keys
-// onto Settings.
 var lmStudioPredictionKeys = map[string]string{
 	"llm.prediction.temperature":              "temperature",
 	"llm.prediction.topKSampling":             "top_k",
@@ -430,9 +370,8 @@ var lmStudioPredictionKeys = map[string]string{
 // LM Studio's unchecked {checked: false} means.
 var neutral = map[string]float64{"top_p": 1, "min_p": 0, "repeat_penalty": 1, "presence_penalty": 0, "frequency_penalty": 0}
 
-// ImportLMStudioPreset converts an LM Studio preset file (config-presets/*.json)
-// into a ModelFabric preset. Load settings in it are reported, not imported —
-// LM Studio moved those out of presets too. Unknown keys are listed.
+// ImportLMStudioPreset converts config-presets/*.json into an inference preset.
+// Load settings are reported but excluded; unknown keys are listed.
 func ImportLMStudioPreset(data []byte, name string) (Preset, []string, error) {
 	var lm struct {
 		Name      string `json:"name"`

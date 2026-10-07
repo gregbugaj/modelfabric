@@ -14,9 +14,7 @@ import {
 
 const docsComponents = getDocsMDXComponents();
 
-// Registered globally rather than imported per page: nearly every page here
-// uses at least one of them, and an import line at the top of 30 MDX files is
-// 30 places to forget.
+// Register shared components globally so MDX pages need no repeated imports.
 export function useMDXComponents(components?: Record<string, React.ComponentType>) {
   return {
     ...docsComponents,

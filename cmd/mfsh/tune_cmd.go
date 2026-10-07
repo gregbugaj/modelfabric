@@ -16,26 +16,13 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tuner"
 )
 
-// `mfsh tune`: how many slots this machine should actually run.
-//
-// The sweep itself is internal/tuner, shared with the dashboard. What lives
-// here is the command: parsing, an Engine that drives a node over its own
-// management API, and printing.
-
 func tuneCmd(args []string) error {
 	fs := flag.NewFlagSet("tune", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the ModelFabric node")
-	// Both default to nothing rather than to a number. A tuning tool that asks
-	// which slot counts to try is asking for part of the answer it was run to
-	// find, and a default context of "32768 because that is a round number"
-	// tunes a configuration nobody is running.
 	slotList := fs.String("slots", "", "slot counts to try (default: 1, doubling until the engine will not load)")
 	ctxLen := fs.Int("context", 0, "per-request context (default: what the model is loaded with)")
 	promptTok := fs.Int("prompt", 3000, "approximate prompt tokens per request")
 	outTok := fs.Int("output", 300, "tokens to generate per request")
-	// The comparison is the answer. One node's number says what that machine
-	// does; the table says whether the fleet's uniform slot count is costing
-	// anything, which is the question that gets asked.
 	fleet := fs.Bool("fleet", false, "tune every node serving the model and print them side by side")
 	yes := fs.Bool("y", false, "skip the confirmation before a fleet sweep")
 	if err := fs.Parse(args); err != nil {
@@ -73,9 +60,6 @@ func tuneCmd(args []string) error {
 			return fmt.Errorf("no model is loaded here and none was named: `mfsh tune <model>`")
 		}
 	}
-	// What the machine is running now is the best statement of intent there
-	// is: it is what the operator chose, and it is what the benchmark or the
-	// application is using.
 	here := httpEngine{addr: *addr}.instanceOf(context.Background(), model)
 	ctxNow := *ctxLen
 	if ctxNow == 0 {
@@ -92,10 +76,7 @@ func tuneCmd(args []string) error {
 	defer stop()
 
 	if *fleet {
-		// Each node runs the sweep itself, through its own /api/v1/tune. The
-		// alternative — this process driving three engines over the network —
-		// would make every measurement include a tailnet round trip and leave a
-		// half-swept node behind whenever the command was interrupted.
+		// Run sweeps on each node to exclude CLI network latency and restore settings after disconnects.
 		nodes, err := fleetNodes(ctx, *addr, cfg.Model)
 		if err != nil {
 			return err
@@ -121,8 +102,6 @@ func tuneCmd(args []string) error {
 	fmt.Println(dim("  Nothing else should be using this node while it runs."))
 	fmt.Println()
 
-	// Printed as each row lands: a sweep runs for minutes, and a silent
-	// terminal is indistinguishable from a stuck one.
 	rep, err := tuner.Run(ctx, httpEngine{addr: *addr}, cfg, printTuneRow)
 	if err != nil {
 		return err
@@ -136,11 +115,7 @@ func tuneCmd(args []string) error {
 type httpEngine struct{ addr string }
 
 func (h httpEngine) Reload(ctx context.Context, model string, contextLen, slots int) error {
-	// The instance, by id. Unload takes "instance_id"; an earlier version sent
-	// {"all": true}, which the API ignored — so the model stayed up, every
-	// load returned in 0s as already-loaded, and the sweep measured one
-	// configuration three times while reporting three. The ops journal gave it
-	// away: real loads take about three seconds.
+	// Unload by instance_id; the API ignores {"all": true}, leaving the old configuration loaded.
 	before := h.instanceOf(ctx, model)
 	if before.found() {
 		if err := call(ctx, h.addr, http.MethodPost, "/api/v1/models/unload",
@@ -148,20 +123,9 @@ func (h httpEngine) Reload(ctx context.Context, model string, contextLen, slots 
 			return fmt.Errorf("could not unload %s: %w", before.ID, err)
 		}
 	}
-	// Settings go inline, not nested: supervisor.LoadRequest embeds
-	// runtime.Settings, so a {"settings": {...}} object is silently ignored and
-	// the load falls back to the model's saved defaults. That is what happened
-	// here — every row loaded at the saved vision defaults (32768 x 4) while
-	// reporting the context and slots asked for.
-	//
-	// vision and spec_mode are stated rather than left out for the same
-	// reason: a saved default for either would otherwise decide them, and a
-	// sweep that silently changes two things at once measures neither.
-	//
-	// They are carried over from what was running rather than asserted. These
-	// used to read `true` and `"mtp"` — this fleet's settings — which meant
-	// tuning a node serving the model text-only would quietly load the
-	// projector and measure a configuration the operator does not run.
+	// LoadRequest embeds Settings: nested settings are ignored and saved defaults
+	// would replace the sweep values. Preserve the loaded vision and spec_mode
+	// settings explicitly so only slot count varies.
 	body := map[string]any{
 		"model":          model,
 		"context_length": contextLen,
@@ -170,10 +134,7 @@ func (h httpEngine) Reload(ctx context.Context, model string, contextLen, slots 
 	if before.found() {
 		body["vision"] = before.Vision
 		body["spec_mode"] = before.SpecMode
-		// Which weights and which engine. Without these a sweep on a machine
-		// holding the same model as GGUF and as MLX would reload into whichever
-		// runtime is the node's default, and report the numbers as the other
-		// engine's.
+		// Preserve weights and runtime so mixed GGUF/MLX catalogs do not reload into the default engine.
 		if before.Format != "" {
 			body["format"] = before.Format
 		}
@@ -184,13 +145,7 @@ func (h httpEngine) Reload(ctx context.Context, model string, contextLen, slots 
 	if err := call(ctx, h.addr, http.MethodPost, "/api/v1/models/load", body, nil); err != nil {
 		return err
 	}
-	// Then wait for it to be ready, and confirm it actually restarted. The
-	// load API answers when the operation is accepted, not when the engine is
-	// serving — checking immediately reported "the engine reports 0 slots" for
-	// every row, which looks like a failed load rather than an early look.
-	//
-	// A measurement of an engine that was never reloaded is worse than no
-	// measurement: it looks like data.
+	// Wait for readiness and verify a restart; load acceptance alone does not prove the new configuration is serving.
 	deadline := time.Now().Add(90 * time.Second)
 	for {
 		after := h.instanceOf(ctx, model)
@@ -215,11 +170,7 @@ func (h httpEngine) Reload(ctx context.Context, model string, contextLen, slots 
 	}
 }
 
-// engineState is a struct rather than five unnamed returns because it was
-// five unnamed returns: `after, _, _, got, _ := ...` bound the slot count to
-// inflight, which is always zero on an idle engine, so every row of every
-// sweep waited out its full timeout while the mesh reported the engine ready
-// the whole time.
+// engineState uses named fields to prevent confusing slot count with inflight count when checking readiness.
 type engineState struct {
 	ID       string
 	Addr     string
@@ -231,10 +182,7 @@ type engineState struct {
 	// reproduce them instead of imposing its own.
 	Vision   bool
 	SpecMode string
-	// Format and Runtime are which weights and which engine. A Mac holds the
-	// same model as GGUF and as MLX and can serve either, so a sweep that did
-	// not carry these would measure llama.cpp while reporting a sweep of MLX —
-	// the load would fall back to the node's default runtime on the first row.
+	// Preserve format and runtime; otherwise a mixed GGUF/MLX model reloads using the node default.
 	Format  string
 	Runtime string
 	// Served is the id this engine answers to when it is not the catalog key.
@@ -321,12 +269,9 @@ func (h httpEngine) loadedConfig(ctx context.Context, instanceID string) (contex
 	return 0, false, "", ""
 }
 
-// formatFor is the weights an engine family serves.
-//
-// Taken from the family rather than from the model list, because an instance is
-// listed under its model's primary entry whichever variant it loaded: reading
-// the entry's format sent runtime=mlx with format=gguf, and the load refused it
-// — correctly, and only because that refusal exists.
+// formatFor derives the weight format from the engine family. Catalog entries
+// use the model's primary format even for other loaded variants, which can
+// produce invalid pairs such as runtime=mlx with format=gguf.
 func formatFor(engine string) string {
 	switch engine {
 	case "mlx":
@@ -358,7 +303,6 @@ func (h httpEngine) Current(ctx context.Context, model string) (int, int, error)
 	return e.Slots, e.Context, nil
 }
 
-// modelHere is what to tune when none was named.
 func modelHere(ctx context.Context, addr string) string {
 	var mesh struct {
 		Self struct {
@@ -383,22 +327,16 @@ func printTuneRow(r tuner.Row) { fmt.Println("  " + tuneRowLine(r)) }
 func tuneRowLine(r tuner.Row) string {
 	label := fmt.Sprintf("%-9s", plural(r.Slots, "slot"))
 	if r.Starved {
-		// Distinct from a load the engine refused: here ModelFabric refused, because
-		// running the row would have taken the machine with it.
 		return fmt.Sprintf("%s %s  %s", label, yellow("not attempted"), dim(r.Error))
 	}
 	if !r.Fit {
 		return fmt.Sprintf("%s %s  %s", label, red("did not run"), dim(r.Error))
 	}
-	// Flagged rather than buried: a context that is not what was asked for has
-	// already cost this project a benchmark.
 	note := ""
 	if r.GotContext > 0 && r.GotContext != r.AskedContext {
 		note = "  " + yellow(fmt.Sprintf("engine reports n_ctx %d, asked for %d", r.GotContext, r.AskedContext))
 	}
-	// Decode is printed beside the aggregate because the two answer different
-	// questions, and the aggregate alone reads as a slower machine than it is:
-	// it carries the prefill, which on a Mac is most of the wall clock.
+	// Show decode separately; aggregate throughput includes potentially dominant prefill time.
 	return fmt.Sprintf("%s %s  %s  %s  %s%s", label,
 		cyan(fmt.Sprintf("%6.0f tok/s together", r.Aggregate)),
 		dim(fmt.Sprintf("%5.0f decode", r.DecodeTokS)),
@@ -424,12 +362,6 @@ func printTuneSummary(rep tuner.Report, cfg tuner.Config) {
 	fmt.Printf("\n  %s\n", dim(fmt.Sprintf("apply with: mfsh load %s -context %d -parallel %d",
 		cfg.Model, cfg.Context, rep.Recommended)))
 	fmt.Printf("  %s\n", dim("Run this on each node; the answer is the machine's, not the fleet's."))
-	// Said every time, because the decode column invites exactly the wrong
-	// conclusion about drafting. The sweep's prompts are pseudorandom words to
-	// be summarised, so the model's output is unpredictable and a drafter
-	// guesses it badly: measured 2026-09-25 at one slot, MTP read as 8% slower
-	// than no speculation on both a 5090 and a Mac, where the same 5090 on
-	// predictable output decodes 134 tok/s against 66 with drafting off.
 	fmt.Printf("  %s\n", dim("Slots and context only. Decode here understates speculative decoding, "+
 		"which pays on predictable output and not on these prompts."))
 	if rep.RestoredTo > 0 {

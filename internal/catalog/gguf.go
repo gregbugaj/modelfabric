@@ -13,18 +13,14 @@ import (
 	"strings"
 )
 
-// Minimal GGUF metadata reader.
-//
-// Filenames are a guess; the header is a fact. Reading it gives the real
-// architecture, context length and parameter count, and tells embedding models
-// apart from LLMs properly instead of by substring matching on the name.
+// Read architecture, context length, parameter count, and model kind from GGUF
+// metadata rather than inferring them from filenames.
 //
 // Layout: magic "GGUF", uint32 version, uint64 tensor_count,
 // uint64 metadata_kv_count, then that many key/value pairs.
 
 const ggufMagic = 0x46554747 // "GGUF" little-endian
 
-// ggufValue types, per the GGUF spec.
 const (
 	ggufUint8 = iota
 	ggufInt8
@@ -41,7 +37,6 @@ const (
 	ggufFloat64
 )
 
-// ggufMeta is the subset we care about.
 type ggufMeta struct {
 	Architecture  string
 	Name          string
@@ -62,12 +57,8 @@ type ggufMeta struct {
 	// counts with these.
 	BlockCount  int
 	ExpertCount int
-	// ReasoningEfforts are the levels this model's chat template accepts, read
-	// from the template itself. llama.cpp advertises a generic list
-	// (minimal, low, medium, high, xhigh, max) that is not what any given
-	// template takes: Qwen3.8-27B raises a Jinja exception on "minimal" and
-	// answers 500. The template is the only thing that knows, so the levels
-	// come from it or not at all.
+	// ReasoningEfforts lists levels accepted by the chat template. Generic engine
+	// levels may raise template errors; absent template evidence means unknown.
 	ReasoningEfforts []string
 }
 
@@ -203,8 +194,7 @@ func readGGUF(path string) (*ggufMeta, error) {
 			n, err = readGGUFUint(r, vtype)
 			meta.NextNLayers = int(n)
 		case key == "tokenizer.chat_template" && vtype == ggufString:
-			// Read for its reasoning levels and discarded: the template runs to
-			// tens of kilobytes and nothing else here needs it.
+			// Retain only reasoning levels; chat templates can occupy tens of kilobytes.
 			var tpl string
 			tpl, err = readGGUFString(r)
 			meta.ReasoningEfforts = parseReasoningEfforts(tpl)
@@ -222,8 +212,6 @@ func readGGUF(path string) (*ggufMeta, error) {
 	return meta, nil
 }
 
-// nonNegative passes a signed GGUF value through as unsigned, refusing one
-// that cannot be a count.
 func nonNegative(v int64, err error) (uint64, error) {
 	if err != nil {
 		return 0, err
@@ -292,7 +280,6 @@ func readGGUFUint(r *bufio.Reader, vtype uint32) (uint64, error) {
 	}
 }
 
-// scalarSize is the on-disk width of each fixed-size GGUF type.
 var scalarSize = map[uint32]int64{
 	ggufUint8: 1, ggufInt8: 1, ggufBool: 1,
 	ggufUint16: 2, ggufInt16: 2,
@@ -319,11 +306,8 @@ func skipGGUFValue(r *bufio.Reader, vtype uint32) error {
 			return err
 		}
 		if size, ok := scalarSize[elemType]; ok {
-			// Fixed-width elements skip in one seek rather than per element —
-			// this is what keeps a 150k-token vocabulary cheap. The length is
-			// checked first: a malformed count could wrap the multiplication
-			// negative, and CopyN then returns having skipped nothing, so the
-			// parser carried on reading array data as metadata.
+			// Skip fixed-width arrays in one seek. Check multiplication overflow first;
+			// a negative CopyN length would leave array data to be parsed as metadata.
 			if count > uint64(math.MaxInt64)/uint64(size) {
 				return fmt.Errorf("array of %d elements is not a real length", count)
 			}
@@ -344,7 +328,6 @@ func skipGGUFValue(r *bufio.Reader, vtype uint32) error {
 	}
 }
 
-// humanParams renders a parameter count the way model cards do.
 func humanParams(n uint64) string {
 	switch {
 	case n == 0:

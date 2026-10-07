@@ -1,11 +1,5 @@
-// Copies the repo's install.sh into public/ so the site serves it at
-// /install.sh — which is what `curl -fsSL https://modelfabric.sh/install.sh | sh`
-// fetches.
-//
-// Copied rather than redirected on purpose: a redirect to raw.githubusercontent
-// only works once the repo is public, and the install command should work the
-// moment the site is up. Copied at build time rather than committed, so the
-// published script can never drift from the one in the repo.
+// Copy install.sh during build to keep /install.sh synchronized with the
+// repo and avoid depending on raw.githubusercontent access.
 import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

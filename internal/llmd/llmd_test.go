@@ -26,7 +26,7 @@ func ep(name, addr string, port int, model string) discovery.Endpoint {
 }
 
 // The EPP assumes every endpoint serves the requested model, and llama-server
-// answers with whatever it has loaded — so an engine of another model in the
+// answers with whatever it has loaded; so an engine of another model in the
 // list would silently answer with the wrong model. Only the model's engines
 // may be written.
 func TestEndpointListHoldsOnlyTheModel(t *testing.T) {
@@ -51,7 +51,7 @@ func TestEndpointListHoldsOnlyTheModel(t *testing.T) {
 		t.Fatalf("status endpoints = %v", got)
 	}
 
-	// A model with no engines yields an empty, valid list — the EPP then
+	// A model with no engines yields an empty, valid list; the EPP then
 	// answers 503 rather than routing anywhere.
 	if _, err := l.syncEndpoints("nobody/serves-this", path); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestInstalledNeedsBothExecutables(t *testing.T) {
 	}
 }
 
-// A pidfile naming a process that is not ModelFabric's own binary — a reused pid —
+// A pidfile naming a process that is not ModelFabric's own binary; a reused pid ;
 // must never lead to a kill.
 func TestReapOrphansOnlyStopsOurBinaries(t *testing.T) {
 	dir := t.TempDir()
@@ -102,7 +102,6 @@ func TestReapOrphansOnlyStopsOurBinaries(t *testing.T) {
 		t.Fatal("stale pidfile kept")
 	}
 
-	// Our own binary (a copy of sleep at the EPP path) is stopped.
 	os.MkdirAll(filepath.Dir(c.EPPPath()), 0o755)
 	sleepBin, _ := exec.LookPath("sleep")
 	b, _ := os.ReadFile(sleepBin)
@@ -134,7 +133,7 @@ func TestReapOrphansOnlyStopsOurBinaries(t *testing.T) {
 }
 
 // Engines are usually fresh when llm-d starts, so a measurement saved during
-// an earlier run must be what the next start uses — per model.
+// an earlier run must be what the next start uses; per model.
 func TestPrefillCalibrationIsSavedPerModel(t *testing.T) {
 	l := New(Config{Dir: t.TempDir()}, quiet())
 	if got := l.savedPrefill("m"); got != 0 {
@@ -201,7 +200,7 @@ func TestUniformSlots(t *testing.T) {
 	}
 }
 
-// Another node's engine on its own loopback cannot be scheduled from here —
+// Another node's engine on its own loopback cannot be scheduled from here ;
 // the EPP would dial this machine's port of the same number. This node's own
 // loopback engines, and anything on a routable address, stay.
 func TestEndpointListDropsOtherNodesLoopback(t *testing.T) {

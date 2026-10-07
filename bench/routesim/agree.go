@@ -14,16 +14,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// agree replays a recorded run call by call and asks the router's placement
-// where it would have sent each one, given exactly what the recording says
-// every engine was doing at that moment. It then lets the call go where it
-// really went, so the next question starts from the recorded state and not
-// from this placement's own earlier answers.
-//
-// It is for comparing placement with another scheduler on that scheduler's
-// own run. A port of llm-d's rule was run live twice on 2026-10-06 and was a
-// third slower than llm-d each time, with no way to see which decisions
-// differed: this prints them. It uses no model of an engine, only the record.
+// agree compares router placement with recorded decisions using the recorded engine
+// state for every call. Earlier simulated choices do not alter later inputs.
 var debugAgree = false
 
 // sharedTools stands in for the tool definitions every request carries: about
@@ -55,11 +47,8 @@ func agree(tasks []task, engines []*engine, model, nodes string, homeSlot, noRoo
 			if !ok {
 				continue
 			}
-			// A recorded trajectory keeps the messages and not the tool
-			// definitions sent ahead of them, which every task shares: 321
-			// tokens in these runs, read off the engines. Without them every
-			// first call looks like a prompt cached nowhere, which it was not,
-			// and placement answers a different question than llm-d was asked.
+			// Trajectories omit shared tool definitions. Restore their 321-token prefix
+			// so cache-aware placement receives the same shared context as the live run.
 			body := tn.body
 			if !bytes.Contains(body, []byte(`"tools":`)) {
 				body = bytes.Replace(body, []byte(`"messages":[`), []byte(`"messages":[{"role":"system","content":"`+sharedTools+`"},`), 1)

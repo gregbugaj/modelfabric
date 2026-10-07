@@ -19,8 +19,6 @@ type prompter struct {
 
 const charsPerToken = 4 // the estimate when the engine cannot count
 
-// calibrate measures the template's overhead: one request with a known
-// message, whose prompt length the engine reports.
 func (p *prompter) calibrate(ctx context.Context) error {
 	probe := "Reply with one word."
 	toks, err := p.c.tokenize(ctx, probe)
@@ -37,9 +35,8 @@ func (p *prompter) calibrate(ctx context.Context) error {
 	return nil
 }
 
-// build returns a prompt of n tokens: an opening that makes it unique (so it
-// shares no prefix with any other prompt unless that is the point), the corpus
-// cut to fit, and the instruction.
+// build combines a tagged opening, corpus text, and instruction into n tokens.
+// Distinct tags prevent prefix reuse between independent requests.
 func (p *prompter) build(ctx context.Context, n int, tag string) (string, error) {
 	opening := fmt.Sprintf("Reference text %q follows.\n\n", tag)
 	ask := "\n\n" + p.corpus.Ask
@@ -65,8 +62,6 @@ func (p *prompter) build(ctx context.Context, n int, tag string) (string, error)
 	return opening + body + ask, nil
 }
 
-// ensure tokenizes enough of the corpus for n tokens. Once: the 64K test needs
-// about 250 KB of text, which is worth tokenizing a single time per run.
 func (p *prompter) ensure(ctx context.Context, n int) error {
 	if len(p.toks) >= n {
 		return nil

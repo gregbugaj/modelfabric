@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// profileBody returns one scheduling profile's plugin list from a generated
-// config.
 func profileBody(t *testing.T, cfg, name string) string {
 	t.Helper()
 	at := strings.Index(cfg, "  - name: "+name+"\n    plugins:\n")
@@ -14,7 +12,6 @@ func profileBody(t *testing.T, cfg, name string) string {
 		t.Fatalf("no %q profile in:\n%s", name, cfg[strings.Index(cfg, "schedulingProfiles:"):])
 	}
 	body := cfg[at+len("  - name: "+name+"\n    plugins:\n"):]
-	// Up to the next profile or the next top-level key.
 	if end := strings.Index(body, "\n  - name: "); end >= 0 {
 		return body[:end+1]
 	}

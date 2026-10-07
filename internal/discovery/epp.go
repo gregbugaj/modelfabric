@@ -6,28 +6,16 @@ import (
 	"strings"
 )
 
-// Configuration for running llm-d's EPP against a ModelFabric mesh.
+// EPP metric mappings for llama.cpp:
 //
-// The EPP chooses how to read an endpoint's Prometheus metrics from the
-// endpoint's engine-type label, and ships mappings for vLLM, SGLang and the
-// TensorRT-LLM family — not llama.cpp. Supporting llama.cpp is configuration,
-// not code: an extra engine entry for the core-metrics-extractor.
+// 	llamacpp:requests_deferred   -> queued requests
+// 	llamacpp:requests_processing -> running requests
 //
-// The mapping below is taken from what this llama.cpp build actually serves on
-// /metrics, not from documentation:
-//
-//	llamacpp:requests_deferred    -> queued requests
-//	llamacpp:requests_processing  -> running requests
-//
-// There is no KV-cache utilisation metric in this build (older write-ups name
-// llamacpp:kv_cache_usage_ratio; it is not present). The engine shim supplies
-// the KV utilization gauge instead. The generated config maps that gauge;
-// a KV utilization filter or scorer is included when its option is enabled.
+// The shim supplies KV utilization from /slots because supported llama.cpp
+// builds lack that gauge. KV filtering and scoring require explicit options.
 
 const (
-	// EngineTypeLabel is the endpoint label the EPP reads to pick a mapping.
-	EngineTypeLabel = "llm-d.ai/engine-type"
-	// EngineTypeLlamaCPP names the mapping defined in EPPConfig.
+	EngineTypeLabel    = "llm-d.ai/engine-type"
 	EngineTypeLlamaCPP = "llamacpp"
 	// SlotsLabel is the engine's concurrent request capacity (--parallel).
 	SlotsLabel = "modelfabric.sh/slots"
@@ -39,7 +27,7 @@ const (
 	KVUsageLabel = "modelfabric.sh/kv-usage"
 	// ServedModelLabel is the id this engine answers to, when it is not the
 	// model's own name (mlx-lm). Anything that dials the engine directly must
-	// send that id instead — so a scheduler that cannot rewrite the request
+	// send that id instead; so a scheduler that cannot rewrite the request
 	// must not dial it at all. See Endpoint.NeedsRewrite.
 	ServedModelLabel = "modelfabric.sh/served-model"
 	// VisionLabel is "true" when the engine was loaded with its image
@@ -53,12 +41,9 @@ const (
 // gets the default profile.
 const ProfileHeader = "x-fabric-profile"
 
-// VisionProfile is the profile for a request carrying an image.
 const VisionProfile = "vision"
 
-// EPPOptions shapes the generated EPP config.
 type EPPOptions struct {
-	// EndpointsPath is where ModelFabric writes the endpoint list.
 	EndpointsPath string
 	// Profile names the scheduling profile (see Profiles). Empty means
 	// ProfileLoadAware.
@@ -73,8 +58,7 @@ type EPPOptions struct {
 	// llama.cpp on one workstation GPU is several times slower, and a too-high
 	// value makes every queue look short. Zero means DefaultPeakPrefill.
 	PeakPrefillThroughput float64
-	// RoomFilter puts roomFilter ahead of every profile's own decisions.
-	RoomFilter bool
+	RoomFilter            bool
 	// Slots is the per-engine request capacity when every engine in the pool
 	// has the same one; zero when they differ or are unknown. It sets the
 	// room filter's in-flight cap (see roomFilter).
@@ -89,13 +73,11 @@ type EPPOptions struct {
 	KVCeiling float64
 	// KVScorer adds llm-d's kv-cache-utilization-scorer at this weight, which
 	// prefers the emptier cache. Zero leaves it out. On llama.cpp that pulls
-	// against prefix affinity for the same reason as KVCeiling — measure it
+	// against prefix affinity for the same reason as KVCeiling; measure it
 	// before trusting it.
 	KVScorer int
 }
 
-// Scheduling profiles ModelFabric offers, named after llm-d's well-lit paths where
-// one applies. Each is plain EPP configuration, runnable with llama.cpp.
 const (
 	ProfileLoadAware         = "load-aware"
 	ProfileOptimizedBaseline = "optimized-baseline"
@@ -106,7 +88,6 @@ const (
 // llama.cpp on one GPU, used until an engine's own counters say otherwise.
 const DefaultPeakPrefill = 2000
 
-// ProfileInfo describes a profile for the CLI and dashboard.
 type ProfileInfo struct {
 	Name      string `json:"name"`
 	Title     string `json:"title"`
@@ -121,7 +102,7 @@ type ProfileInfo struct {
 
 const wellLit = "https://github.com/llm-d/llm-d/blob/main/docs/well-lit-paths/"
 
-// Profiles lists what can be selected, and — so the choice is informed — the
+// Profiles lists what can be selected, and; so the choice is informed; the
 // well-lit paths that llama.cpp cannot run, with the reason.
 var Profiles = []ProfileInfo{
 	{Name: ProfileLoadAware, Title: "Load + prefix (classic)", Available: true,
@@ -146,17 +127,8 @@ var Profiles = []ProfileInfo{
 		Reason:  "needs vLLM expert parallelism across GPUs"},
 	{Name: "predicted-latency", Title: "Route by Predicted Latency",
 		WellLit: wellLit + "foundations/predicted-latency.md",
-		// The EPP binary ModelFabric ships already carries this path's plugins
-		// (predicted-latency-producer, latency-scorer, latency-slo-admitter and
-		// the predictor client). What is missing is ours to run: llm-d's
-		// latency-predictor, a Python service (FastAPI + XGBoost, no pip
-		// package) that trains on live traffic — a training server and a
-		// prediction server ModelFabric would have to supervise, as it does Envoy.
-		//
-		// Its KV-cache feature is no longer an obstacle: two of the model's six
-		// inputs are KV-cache usage, which ModelFabric now publishes (see kvUsage).
-		// What remains is that the predictor is documented as requiring one GPU
-		// type per pool, and this mesh is deliberately mixed.
+		// Predictive scheduling requires a separately supervised latency-predictor
+		// service and a homogeneous GPU pool; this integration supplies neither.
 		Reason: "ModelFabric does not run llm-d's latency-predictor service yet; the predictor also assumes one GPU type per pool"},
 	{Name: "flow-control", Title: "Flow Control and Fairness",
 		WellLit: wellLit + "foundations/flow-control.md",
@@ -166,20 +138,10 @@ var Profiles = []ProfileInfo{
 		Reason:  "ModelFabric runs llm-d for one model at a time for now"},
 }
 
-// kvUsage names a metric llama.cpp does not publish: measured on b11026 and
-// b11040, its whole set is the token and request counters plus
-// n_busy_slots_per_decode. ModelFabric computes utilization from /slots and
-// republishes it on the port llm-d scrapes (internal/engineshim), which is why
-// the spec can name it at all.
-//
-// It is read, not ranked on. llm-d has a kv-cache-utilization-scorer and the
-// utilization filter takes a kv-cache-utilization condition — both load
-// cleanly against this gauge — but on llama.cpp a full cache means warm, not
-// busy: the tokens counted are the prefixes kept for reuse. Preferring the
-// emptier cache would steer away from exactly the engine prefix affinity wants,
-// so neither is enabled until a benchmark says otherwise.
+// kvUsage names the shim gauge computed from llama.cpp /slots.
+// Retained prefixes count toward utilization even while idle, so KV scoring
+// and filtering are opt-in to avoid steering requests away from warm engines.
 
-// kvScorerRef adds the KV scorer to a profile's plugin list when asked.
 func kvScorerRef(o EPPOptions) string {
 	if o.KVScorer <= 0 {
 		return ""
@@ -187,23 +149,9 @@ func kvScorerRef(o EPPOptions) string {
 	return fmt.Sprintf("      - pluginRef: kv-scorer\n        weight: %d\n", o.KVScorer)
 }
 
-// roomFilter keeps only engines with a free slot, ahead of every other
-// scheduling decision, so prefix affinity can never pick an engine where the
-// request would queue while another has room. On llama.cpp a queued request
-// waits for a slot and then evicts another conversation from the shared KV
-// pool; with long agent conversations that turned into minutes-long
-// re-prefill on one GPU while the other idled (the 2026-09-19 SWE-bench runs).
-//
-// Two conditions, both must hold:
-//   - waiting-queue <= 0: the engine's own count of deferred requests
-//     (llamacpp:requests_deferred). Correct for any slot count, so it holds on
-//     a mixed fleet, but it only trips once a request has queued.
-//   - active-requests <= slots-1: the EPP's own count of what it has
-//     dispatched, so it trips before anything queues. It is one cap for the
-//     pool, so it is used only when every engine has the same slot count.
-//
-// fallbackOnEmpty keeps routing when every engine is full; then the usual
-// scoring picks among them.
+// roomFilter excludes engines with queued requests. When every engine has
+// the same slot count, it also caps EPP-tracked active requests at slots-1.
+// fallbackOnEmpty retains routing when all engines are full.
 func roomFilter(slots int, o EPPOptions) string {
 	var b strings.Builder
 	b.WriteString(`  - name: room-filter
@@ -233,30 +181,10 @@ func roomFilter(slots int, o EPPOptions) string {
 	return b.String()
 }
 
-// visionProfile is the plugins that make a request carrying an image reach only
-// an engine that can read one.
-//
-// An engine loaded without its projector answers to a multimodal model's name
-// and fails the whole request inside llama.cpp with "failed to process mtmd
-// chunk". Which machine is idle must not decide whether an image can be read,
-// so this is a filter and not a scorer: a scorer would only prefer, and under
-// load it would still hand the image to an engine that cannot serve it.
-//
-// It cannot be unconditional, or a text request would be confined to the
-// engines that happen to hold a projector while the others idled. So llm-d
-// picks the profile from a header ModelFabric sets, and the vision profile is the
-// default profile's plugins with the filter in front — identical scheduling,
-// minus the engines that would fail.
-//
-// Measured against EPP v0.10.0 with two stub engines, one labelled
-// modelfabric.sh/vision=false and one =true (2026-09-25):
-//
-//   - x-fabric-profile: vision  → the vision-capable engine, 8 requests of 8.
-//   - no header                → either engine, unfiltered, as before.
-//   - a profile name that does not exist → every request fails with
-//     "ResourceExhausted - failed to find target endpoint". So ModelFabric sends
-//     only names it generated here, and defaultProfile covers the absent case:
-//     without it, a request with no header failed the same way.
+// visionProfile adds a capability filter before the default scheduling stages.
+// ModelFabric selects it by header only for image requests, since engines without
+// a projector still serve text. The default profile handles absent headers;
+// unknown profile names cause EPP to reject the request.
 func visionProfile() string {
 	return fmt.Sprintf(`  - name: vision-filter
     type: label-selector-filter
@@ -285,7 +213,6 @@ schedulingProfiles:
 %s`, refs, VisionProfile, refs)
 }
 
-// ProfileByName finds an available profile.
 func ProfileByName(name string) (ProfileInfo, bool) {
 	for _, p := range Profiles {
 		if p.Name == name && p.Available {
@@ -299,10 +226,8 @@ func ProfileByName(name string) (ProfileInfo, bool) {
 // from a ModelFabric endpoints file, for the chosen profile.
 func EPPConfig(o EPPOptions) []byte {
 	var unknownProfile strings.Builder
-	// An unknown name falls back to the default, and says so where it can be
-	// seen: the API validates the profile before it gets here, so reaching
-	// this means a caller skipped that — and silently generating a different
-	// scheduler than the one asked for is the worst way to find out.
+	// API validation normally rejects unknown profiles. Direct callers get
+	// a logged fallback to the default.
 	profile := o.Profile
 	if _, ok := ProfileByName(profile); !ok {
 		if profile != "" {
@@ -463,12 +388,11 @@ dataLayer:
 	return []byte(b.String())
 }
 
-// EnvoyOptions shapes the generated Envoy config.
 type EnvoyOptions struct {
-	// ListenAddress is where Envoy accepts requests; loopback when empty.
-	// Engines behind it take no key, so wider exposure is a deliberate act.
+	// ListenAddress defaults to loopback. A wider bind exposes engines without
+	// engine-level authentication.
 	ListenAddress string
-	ListenPort    int // user-facing port
+	ListenPort    int
 	EPPPort       int // EPP gRPC ext_proc port
 	AdminPort     int
 }
@@ -485,7 +409,6 @@ const (
 	defaultEPPPort     = 9002
 )
 
-// portOr returns p when it is a usable TCP port, else fallback.
 func portOr(p, fallback int) int {
 	if p < 1 || p > 65535 {
 		return fallback
@@ -495,7 +418,7 @@ func portOr(p, fallback int) int {
 
 func EnvoyConfig(o EnvoyOptions) []byte {
 	// These land in port_value fields, where an out-of-range number produces a
-	// bootstrap Envoy refuses — surfacing far from the setting that caused it.
+	// bootstrap Envoy refuses; surfacing far from the setting that caused it.
 	// The node calls this, so a bad value falls back to the default rather
 	// than taking the process down; `mfsh llmd init` rejects one up front.
 	o.ListenPort = portOr(o.ListenPort, defaultEnvoyListen)
@@ -530,30 +453,18 @@ static_resources:
                         - match: {prefix: "/"}
                           route:
                             cluster: original_destination_cluster
-                            # timeout is the whole request, not silence. At
-                            # 600s it cut any turn longer than ten minutes: 2
-                            # of 729 calls in the 2026-10-05 SWE run exceeded
-                            # that (the longest was 821s), on a path whose
-                            # agent waits 1800s. idle_timeout is what catches
-                            # an engine that has stopped sending.
+                            # Bound total duration separately from inactivity during streaming.
                             timeout: 1800s
                             idle_timeout: 600s
-                          # The address Envoy dialled, back to ModelFabric's
-                          # front door, which maps it to a node and an engine.
-                          # Without it a request the EPP placed was recorded
-                          # with no serving node at all. Overwritten, so an
-                          # engine cannot claim to be another.
+                          # Report the serving address and overwrite engine-supplied values
+                          # to prevent spoofed node attribution.
                           response_headers_to_add:
                             - header:
                                 key: x-fabric-upstream
                                 value: "%%UPSTREAM_REMOTE_ADDRESS%%"
                               append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 http_filters:
-                  # The ORIGINAL_DST cluster below takes its destination from
-                  # x-gateway-destination-endpoint. That header is the EPP's to
-                  # set, so a client-supplied one is removed here, before
-                  # ext_proc runs — otherwise a caller could name the address
-                  # Envoy forwards to.
+                  # Remove client-supplied destinations before EPP selects an endpoint.
                   - name: envoy.filters.http.header_mutation
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.header_mutation.v3.HeaderMutation
@@ -583,12 +494,8 @@ static_resources:
       type: STATIC
       connect_timeout: 86400s
       lb_policy: LEAST_REQUEST
-      # The EPP serves ext_proc over TLS by default (--secure-serving, with a
-      # self-signed certificate). Speaking plaintext here — as llm-d's own
-      # no-Kubernetes example does — makes the handshake fail and every request
-      # 500 with nothing in the EPP's log. Encryption without verification is
-      # the honest match for a self-signed cert; supply --cert-path and a
-      # validation_context to also authenticate the EPP.
+      # EPP uses TLS by default with a self-signed certificate.
+      # Configure --cert-path and validation_context to authenticate it.
       transport_socket:
         name: envoy.transport_sockets.tls
         typed_config:

@@ -8,24 +8,13 @@ import (
 	"strings"
 )
 
-// The project was called llm-z until September 2026, when its domain was
-// registered by someone else and it became ModelFabric. Every directory it
-// writes was renamed with it, as a clean break: `llmz` became `mfsh`, LLMZ_*
-// became MFSH_*, and each llm-z directory below became a modelfabric one.
-//
-// Moving a directory is not enough on its own. Checksum pins record absolute
-// paths (~/.llmz/models/...), configs name them, and a systemd unit or a
-// hand-started node may still be using the old ones. So each old directory is
-// renamed and a symlink is left at the old path pointing to the new one: every
-// recorded path keeps resolving, and nothing is copied.
-//
-// It runs at the start of every command, not only when a node starts:
-// `mfsh get` reads the config before any node is running, and would otherwise
-// download into a default models root instead of the configured one.
+// Migrate legacy llm-z directories to ModelFabric names, leaving symlinks so
+// absolute paths in pins, configs and running services continue to resolve.
+// Run before every command: commands such as get read config without starting a node.
 
 type renamedDir struct {
 	from, to string
-	env      string // set, and the operator has chosen a location; leave it
+	env      string // preserve explicitly configured locations
 }
 
 func renamedDirs() []renamedDir {
@@ -69,8 +58,6 @@ func migrateRename() {
 			fmt.Fprintln(os.Stderr, "ModelFabric: "+msg)
 		}
 	}
-	// The old variables are not read any more. Ignoring one silently would put
-	// models, state or config somewhere other than where it was set to go.
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
 		if rest, ok := strings.CutPrefix(name, "LLMZ_"); ok {
@@ -98,9 +85,7 @@ func moveRenamed(from, to string) string {
 		return fmt.Sprintf("could not move %s: %v", from, err)
 	}
 	if err := os.Rename(from, to); err != nil {
-		// Typically a different filesystem. Point the new name at the old
-		// directory instead: nothing moves, and everything reads through the
-		// new path. Copying models is not something to do unasked.
+		// If rename fails across filesystems, link the new path to the old directory without copying model data.
 		if lerr := os.Symlink(from, to); lerr != nil {
 			return fmt.Sprintf("could not move %s to %s (%v), or link it (%v); move it by hand", from, to, err, lerr)
 		}

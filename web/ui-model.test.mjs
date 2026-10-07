@@ -52,8 +52,7 @@ test("counts only live nodes as online", () => {
 });
 
 test("excludes dead peers from in-flight total", () => {
-  // sites-01 last reported 9 in flight but is down; counting it would leave a
-  // permanently inflated number on the dashboard.
+  // Exclude the down peer's last reported load to avoid stale totals.
   assert.equal(buildView(mesh).stats.inflight, 3);
 });
 
@@ -85,7 +84,7 @@ test("survives an empty or partial payload", () => {
   for (const input of [{}, { self: {} }, { peers: null, models: undefined }]) {
     const v = buildView(input);
     assert.equal(v.stats.models, 0);
-    assert.equal(v.nodes.length, 1); // self is always present
+    assert.equal(v.nodes.length, 1);
     assert.deepEqual(v.engines, []);
   }
 });
@@ -99,8 +98,6 @@ test("relativeTime formats and handles missing values", () => {
   assert.equal(relativeTime("not a date", now), "—");
   assert.equal(relativeTime("0001-01-01T00:00:00Z", now), "—");
 });
-
-// --- local model management ---
 
 import { buildLocal, formatBytes } from "./ui-model.js";
 
@@ -124,7 +121,6 @@ const api = {
 test("distinguishes a route-only node from one with no models", () => {
   // No supervisor at all: /api/v1/models 404s and we get null.
   assert.equal(buildLocal(null).supervised, false);
-  // Supervised, but the models root is empty.
   const empty = buildLocal({ models: [] });
   assert.equal(empty.supervised, true);
   assert.deepEqual(empty.models, []);
@@ -141,8 +137,7 @@ test("reports loaded state and instances", () => {
   assert.equal(v.loadedCount, 1);
 });
 
-// A second click during a load would start a duplicate load of a 19GB model,
-// so an in-flight operation must mark its model busy.
+// An in-flight operation must block duplicate model loads.
 test("marks a model busy while an operation is running", () => {
   const ops = [
     { kind: "load", model: "nomic/nomic-embed-text-v1.5.Q8_0", state: "running", message: "starting engine" },
@@ -153,7 +148,6 @@ test("marks a model busy while an operation is running", () => {
   assert.equal(nomic.busy, true);
   assert.equal(nomic.busyKind, "load");
   assert.equal(nomic.busyMessage, "starting engine");
-  // A settled operation must not leave its model stuck as busy.
   assert.equal(v.models[0].busy, false);
 });
 
@@ -264,8 +258,7 @@ test("routing: llm-d off shows no active profile; install progress surfaces", ()
   assert.equal(v.llmd.on, false);
   assert.equal(v.profiles.some((p) => p.active), false);
   assert.equal(v.installing.fraction, 0.4);
-  // A node whose /api/v1/llmd answers 501 schedules nothing: the page says so
-  // rather than offering controls that cannot act.
+  // A 501 llm-d response must disable scheduling controls.
   assert.equal(buildRouting(null).available, false);
 });
 
@@ -317,9 +310,7 @@ test("buildView marks the preferred node, and whether it is online", () => {
 
 import { buildFront } from "./ui-model.js";
 
-// The front door is the address apps point at, and whether it wants a key is
-// the part that must never be guessed: with no source the panel used to fall
-// back to "no key needed", which is a lie on a node that requires one.
+// An unreadable front-door endpoint must not imply "no key needed".
 test("buildFront says where apps connect and what it asks of them", () => {
   const f = buildFront({ listen: "127.0.0.1:1234", require_api_key: true, public_listen: "100.69.171.44:1235" });
   assert.equal(f.url, "http://127.0.0.1:1234/v1");
@@ -328,8 +319,7 @@ test("buildFront says where apps connect and what it asks of them", () => {
   const loopback = buildFront({ listen: "127.0.0.1:1234", require_api_key: false, public_listen: "" });
   assert.equal(loopback.requireKey, false);
   assert.equal(loopback.publicListen, "");
-  // Unreadable: no address, so the caller falls back to the page's own origin.
-  // Nothing is claimed about the key either way.
+  // The caller may use its own origin, but authentication remains unknown.
   assert.deepEqual(buildFront(null), { url: "", requireKey: false, publicListen: "" });
 });
 
@@ -417,18 +407,11 @@ test("downloadTargets says what each node can do with a download", () => {
 
 import { buildEdges } from "./ui-model.js";
 
-// Where a request goes is derived from where the engines are, not from a route
-// table. This node's own engines are dialled straight; another node's are
-// reached through that node's tailnet listener, however they are bound; and
-// llm-d's model only through Envoy.
-//
-// Rewritten: it used to expect "sites-01.front>minion.e2:direct" for an engine
-// bound to minion's tailnet address. The router never does that — a peer's
-// only routing candidate is its mesh listener (mesh.Candidates) — so the
-// diagram drew a path no request takes.
+// Only local engines are dialled directly; peer candidates are mesh
+// listeners, and the llm-d model goes through Envoy. The previous
+// expectation drew direct peer-engine paths the router never takes.
 test("buildEdges reaches engines directly, through a peer's ModelFabric, and through llm-d", () => {
   const topos = [
-    // An entrypoint with no engines of its own, preferring xpredator.
     { node: "sites-01", preferred: "xpredator", listeners: [{ name: "front", addr: "127.0.0.1:1234" }, { name: "mesh", addr: "100.69.171.44:1234" }], engines: [] },
     { node: "xpredator", listeners: [{ name: "front", addr: "127.0.0.1:1234" }, { name: "mesh", addr: "100.107.225.6:1234" }, { name: "llmd", addr: "127.0.0.1:8090" }],
       engines: [{ id: "e1", model: "small", addr: "127.0.0.1", port: 18000 }],
@@ -438,20 +421,15 @@ test("buildEdges reaches engines directly, through a peer's ModelFabric, and thr
   ];
   const e = buildEdges(topos, "sites-01").map((x) => `${x.from.node}.${x.from.id}>${x.to.node}.${x.to.id}:${x.style}`);
   assert.deepEqual(e, [
-    "sites-01.front>xpredator.mesh:preferred",   // through xpredator's ModelFabric
+    "sites-01.front>xpredator.mesh:preferred",
     "xpredator.mesh>xpredator.e1:forwarded",
-    "sites-01.front>minion.mesh:forwarded",      // tailnet-bound or not, through minion's
+    "sites-01.front>minion.mesh:forwarded",
     "minion.mesh>minion.e2:forwarded",
   ]);
-  // On xpredator itself, llm-d owns "small", so its own engine is reached
-  // through Envoy rather than placed by the router — while "big" on minion is
-  // still the router's to place, through minion's ModelFabric.
+  // The local scheduler owns "small"; "big" still routes through the peer.
   const l = buildEdges(topos, "xpredator").map((x) => `${x.from.id}>${x.to.node}.${x.to.id}:${x.style}`);
   assert.deepEqual(l, ["front>xpredator.llmd:llmd", "llmd>xpredator.e1:llmd", "front>minion.mesh:forwarded", "mesh>minion.e2:forwarded",
     "front>sites-01.mesh:peer"]);
-  // minion reaches its own engine straight, and xpredator's only through
-  // xpredator's ModelFabric: llm-d is xpredator's scheduler, not minion's.
-  // sites-01 holds nothing, but minion can reach it, so it is linked.
   const m = buildEdges(topos, "minion").map((x) => `${x.from.node}.${x.from.id}>${x.to.node}.${x.to.id}:${x.style}`);
   assert.deepEqual(m, [
     "minion.front>xpredator.mesh:forwarded",
@@ -462,8 +440,6 @@ test("buildEdges reaches engines directly, through a peer's ModelFabric, and thr
   assert.deepEqual(buildEdges(topos, "nobody"), [], "a node that did not answer has no paths");
 });
 
-// With nothing loaded anywhere the page drew no line between nodes, and a
-// whole mesh read as three unconnected machines.
 test("buildEdges links every reachable peer even with no models loaded", () => {
   const topos = ["sites-01", "minion", "xpredator"].map((node, i) => ({
     node, engines: [], listeners: [{ name: "front", addr: "127.0.0.1:1234" }, { name: "mesh", addr: `100.64.0.${i + 1}:1234` }],
@@ -472,9 +448,7 @@ test("buildEdges links every reachable peer even with no models loaded", () => {
   assert.deepEqual(e, ["front>minion.mesh:peer", "front>xpredator.mesh:peer"]);
 });
 
-// A peer's loopback engine is only reachable through that peer's own ModelFabric, so
-// without its mesh listener there is no hop to draw — and drawing the engine
-// anyway would claim a path this node cannot take.
+// Without a peer mesh listener, a loopback engine has no reachable path.
 test("buildEdges cannot reach a peer's loopback engine with no tailnet listener", () => {
   const topos = [
     { node: "sites-01", listeners: [{ name: "front", addr: "127.0.0.1:1234" }], engines: [] },
@@ -498,11 +472,8 @@ test("constellation puts a model at the centre with who serves and who routes to
   assert.equal(c.model, "big");
   assert.deepEqual(c.models, ["big", "small"]);
   assert.deepEqual(c.serving.map((s) => [s.node, s.slots, s.inflight]), [["minion", 2, 1]]);
-  // Every node's front door routes "big" to minion, minion's own included: any
-  // node that can reach the model is an entry point for it. Only minion dials
-  // its engine straight; the others go through minion's ModelFabric, though
-  // the engine is tailnet-bound. (Rewritten: it expected "direct" from every
-  // node, a path the router never takes to another node's engine.)
+  // Rewritten to require peer mesh listeners: the earlier expectation
+  // drew direct paths to tailnet engines that the router never takes.
   assert.deepEqual(c.entries.map((e) => [e.node, e.public, e.links.map((l) => `${l.to}:${l.style}`)]),
     [["sites-01", true, ["minion:forwarded"]], ["minion", false, ["minion:direct"]], ["xpredator", false, ["minion:forwarded"]]]);
   assert.deepEqual(c.others, [], "a node that can reach the model is an entry point, not an outsider");
@@ -540,11 +511,8 @@ test("constellationAll: every model, who serves each, and who routes where", () 
   assert.deepEqual(c.models.map((m) => [m.model, m.nodes, m.slots, m.inflight]),
     [["big", ["minion"], 2, 1], ["small", ["minion", "xpredator"], 6, 2]]);
   assert.deepEqual(c.nodes.map((n) => [n.node, n.serves.map((s) => s.model)]), [["minion", ["big", "small"]], ["xpredator", ["small"]]]);
-  // Every node is an entry point, and its links are the engines it can reach
-  // elsewhere, each through that node's ModelFabric, however the engine is
-  // bound. A node's own engines are not links — they are where it serves.
-  // (Rewritten: minion's tailnet-bound engines were drawn "direct" from the
-  // other nodes, which the router never does.)
+  // Peer links use mesh listeners regardless of engine binding; local
+  // engines are serving nodes. The prior direct-peer expectation was wrong.
   assert.deepEqual(c.entries.map((e) => [e.node, e.links.map((l) => `${l.to}:${l.style}:${l.models.join("+")}`)]),
     [["sites-01", ["minion:forwarded:big+small", "xpredator:forwarded:small"]],
      ["minion", ["xpredator:forwarded:small"]],
@@ -565,7 +533,7 @@ test("platformBadge reads a node's platform, and says so when it cannot", () => 
   assert.match(linux.title, /llm-d/);
   assert.equal(platformBadge("windows/amd64").key, "windows");
 
-  // A peer running a build from before platforms were reported, and junk.
+  // Cover old peers without platform metadata and invalid values.
   for (const p of ["", null, undefined, "plan9/386"]) {
     const b = platformBadge(p);
     assert.equal(b.key, "unknown");
@@ -578,11 +546,8 @@ test("platformBadge prefers the OS version a node reports", () => {
   assert.equal(mac.version, "macOS 26.6.2");
   assert.match(mac.title, /^macOS 26\.6\.2 \(Apple silicon\) — runs Metal and MLX$/);
 
-  // Two Linux boxes are only told apart by this.
   assert.match(platformBadge("linux/amd64", "Ubuntu 24.04.1 LTS").title, /^Ubuntu 24\.04\.1 LTS — runs/);
-  // Without one, the OS name still reads correctly.
   assert.match(platformBadge("linux/amd64").title, /^Linux — runs/);
-  // A version from a node whose platform we do not recognise is still shown.
   assert.equal(platformBadge("", "Ubuntu 24.04").title, "Ubuntu 24.04");
 });
 
@@ -607,22 +572,17 @@ test("kvBadge distinguishes an idle cache from an unmeasured one", () => {
 test("presetDrift counts overrides, not inherited fields", () => {
   const preset = { temperature: 0.3, top_p: 0.9 };
 
-  // Selecting a preset and touching nothing is not a change: the empty fields
-  // inherit it. This read as "unsaved" the moment you picked a preset.
+  // Empty fields inherit a newly selected preset; they must not mark it unsaved.
   assert.deepEqual(presetDrift({}, preset), { dirty: false, changed: [] });
 
-  // Overriding one field names that field.
   assert.deepEqual(presetDrift({ temperature: "0.85" }, preset),
     { dirty: true, changed: ["temperature"] });
 
-  // Setting a field to the preset's own value is not an override.
   assert.equal(presetDrift({ temperature: "0.3" }, preset).dirty, false);
   assert.equal(presetDrift({ temperature: "0.30" }, preset).dirty, false);
 
-  // A field the preset says nothing about still counts once it is set.
   assert.deepEqual(presetDrift({ top_k: "40" }, preset), { dirty: true, changed: ["top_k"] });
 
-  // With no preset, any setting is the model's own.
   assert.equal(presetDrift({}, {}).dirty, false);
   assert.equal(presetDrift({ temperature: "0.5" }, {}).dirty, true);
 });
@@ -652,14 +612,12 @@ test("buildView lists every engine in the mesh, not just this node's", () => {
   assert.equal(self.inflight, 2);
   assert.equal(self.healthy, true);
   assert.equal(self.isSelf, true);
-  // A peer's come from what it published.
   assert.equal(minion.inflight, 1);
   assert.equal(minion.address, "100.100.69.3:18000");
   assert.equal(minion.engine, "llama.cpp");
   // An engine that cannot report KV stays unknown rather than reading as idle.
   assert.equal(helion.kvUsage, -1);
   assert.equal(helion.engine, "mlx");
-  // A node with no engines contributes nothing.
   assert.deepEqual(buildView({ self: { node: "n" }, peers: [] }).meshEngines, []);
 });
 
@@ -678,7 +636,6 @@ test("groupByModel answers where a model lives, not just what a node holds", () 
     "this node first, then alphabetical");
   assert.equal(big.loaded, 2, "loaded on two of three nodes");
   assert.equal(big.bytes, 29, "disk across every copy");
-  // A node that knows less must not blank the group's identity.
   assert.equal(big.arch, "qwen35");
   assert.equal(big.params, "27B");
   assert.equal(big.mtp, true);
@@ -705,12 +662,9 @@ test("a download target does not repeat what the tile already shows", () => {
   assert.equal(ready.state, "ready");
   assert.equal(ready.note, "", "free space is on the spec line; the note repeated it");
   assert.equal(ready.freeBytes, 155e9, "the tile still knows the free space");
-  // A node that cannot take it still explains why.
   assert.equal(targets.find((t) => t.node === "sites-01").note, "entrypoint — runs no models");
 });
 
-// Every quantization of one repo is the same format and usually carries the
-// same projector, so the badges that repeat are lifted out of the rows.
 test("quantRows states what is constant once and keeps what differs", () => {
   const options = [
     { quant: "Q4_K_M", bytes: 17741860192, recommended: true, projector: "mmproj-f16.gguf", files: ["a"] },
@@ -729,7 +683,6 @@ test("quantRows states what is constant once and keeps what differs", () => {
   assert.equal(rows[2].fileCount, 2, "a sharded option still says how many files");
 });
 
-// The opposite case: a projector on some options only is the reason to show it.
 test("quantRows keeps a badge that tells two rows apart", () => {
   const { rows, common } = quantRows([
     { quant: "Q4_K_M", bytes: 1e9, projector: "mmproj.gguf" },
@@ -745,10 +698,7 @@ test("quantRows survives an empty repository", () => {
   assert.equal(common.count, 0);
 });
 
-// An engine bound to loopback is private to its machine: llm-d dials engines
-// directly and cannot reach it, so the node looks like part of the pool while
-// contributing nothing to it. The dashboard has to say so, because nothing
-// else in the UI would.
+// llm-d dials engines directly and cannot reach a peer's loopback engine.
 test("buildView flags nodes whose engines are loopback-bound", () => {
   const view = buildView({
     self: {
@@ -769,8 +719,6 @@ test("buildView flags nodes whose engines are loopback-bound", () => {
         instances: [{ id: "c", model: "q", state: "ready", address: "127.0.0.1", port: 18000 }],
         engines: [],
       },
-      // No engines at all says nothing about binding, so it must not be
-      // flagged — an entrypoint that only routes is not misconfigured.
       { node: "sites-01", addr: "100.69.171.44", alive: true, models: [], instances: [], engines: [] },
     ],
   });
@@ -781,20 +729,15 @@ test("buildView flags nodes whose engines are loopback-bound", () => {
   assert.equal(by.helion, true, "a peer on loopback cannot be scheduled by llm-d");
   assert.equal(by["sites-01"], false, "a node with no engines is not misconfigured");
 
-  // The scope is shown for every node, not only the broken ones: a mesh whose
-  // premise is the tailnet should confirm it, not merely fail to warn.
   const scope = Object.fromEntries(view.nodes.map((n) => [n.name, n.engineScope]));
   assert.equal(scope.minion, "tailnet");
   assert.equal(scope.helion, "loopback");
   assert.equal(scope.xpredator, "loopback");
   assert.equal(scope["sites-01"], "", "no engines is neither reading");
 
-  // And this node shows the address peers reach it on, not the word "local".
   assert.equal(view.nodes.find((n) => n.name === "xpredator").addr, "100.107.225.6");
 });
 
-// A node part-way through a load is not yet serving anything, so its binding
-// says nothing until an instance is ready.
 test("buildView ignores instances that are not ready when judging binding", () => {
   const view = buildView({
     self: { node: "a", models: [], instances: [{ id: "x", model: "q", state: "loading", address: "127.0.0.1" }], engines: [] },
@@ -803,10 +746,8 @@ test("buildView ignores instances that are not ready when judging binding", () =
   assert.equal(view.nodes[0].loopbackEngines, false);
 });
 
-// An engine's vision flag comes from the instance, not from the model file:
-// the same model can run with images on one node and not another, and the
-// Serving page reads it back from the launched process. A peer too old to
-// report it reads as false, exactly as its engines behaved before.
+// Vision comes from the launched instance and may differ by node.
+// Missing flags from older peers default to false.
 test("meshEngines carry each instance's vision flag", () => {
   const view = buildView({
     self: {
@@ -826,10 +767,8 @@ test("meshEngines carry each instance's vision flag", () => {
   assert.equal(scribe.vision, false, "an engine that says nothing is not a vision engine");
 });
 
-// The levels a chat template accepts belong to the model file, so a node that
-// reports them answers for every node holding that model. The fleet runs
-// different builds by design, and a node too old to report them was showing a
-// typed box for the same model that offered pills on its neighbour.
+// Share model template levels with older peers so the same model
+// has consistent controls across nodes.
 test("reasoning levels carry across nodes holding the same model", () => {
   const view = buildCatalog([
     { node: "new", self: true, api: { models: [{ key: "seer", reasoning_efforts: ["xhigh", "low"] }] } },
@@ -841,10 +780,8 @@ test("reasoning levels carry across nodes holding the same model", () => {
   assert.deepEqual(other.reasoningEfforts, [], "a model nobody described gets no invented levels");
 });
 
-// Every request enters a front door, whoever routes it afterwards. Engine
-// counts miss what is queued in Envoy, and under llm-d miss what is being
-// served too — the dashboard read 0 in flight through an 8000-word request
-// whose KV cache was visibly climbing.
+// Front-door counts must include Envoy queues and llm-d requests
+// that engine counts omit.
 test("mesh load counts what the front doors accepted", () => {
   const view = buildView({
     self: { node: "a", inflight: 0, accepted: 2, engines: [], instances: [] },
@@ -857,10 +794,6 @@ test("mesh load counts what the front doors accepted", () => {
   assert.equal(view.stats.accepted, 5, "a dead peer's last figure is stale and must not be counted");
 });
 
-// Prefill rate is what decides whether an even share of requests is an even
-// share of work: 228 tok/s on a Mac against 1989 on a 5090 is the same
-// request costing nine times as much. The Serving table could not show it
-// because the view model dropped it.
 test("meshEngines carry each engine's measured prefill rate", () => {
   const view = buildView({
     self: { node: "a", instances: [{ id: "i1", model: "m", slots: 2, prefill_tok_s: 1989.4, state: "ready" }] },
@@ -868,14 +801,12 @@ test("meshEngines carry each engine's measured prefill rate", () => {
     models: [],
   });
   assert.equal(view.meshEngines.find((e) => e.id === "i1").prefillTokS, 1989.4);
-  // Unmeasured is zero, not missing: the table renders a dash for it rather
-  // than claiming an engine is infinitely slow.
+  // Zero means unmeasured; the table renders a dash.
   assert.equal(view.meshEngines.find((e) => e.id === "i2").prefillTokS, 0);
 });
 
-// The node computes the rolling average itself so it covers a whole run, not
-// only the time a dashboard happened to be open. -1 means too few samples,
-// which must not read as an idle engine.
+// Prefer the node average, which covers time before the dashboard opened.
+// -1 means insufficient samples, not an idle engine.
 test("meshEngines carry the node's own load average", () => {
   const view = buildView({
     self: { node: "a", instances: [
@@ -891,10 +822,7 @@ test("meshEngines carry the node's own load average", () => {
   assert.equal(by.i3, -1, "a peer too old to publish it reads as unmeasured");
 });
 
-// The node that schedules is not always the node you are looking at. With an
-// entrypoint, llm-d runs on a machine with no GPUs while every engine is
-// elsewhere — and a view reading only the local node reported "not running"
-// through an entire benchmark that ran through it.
+// Find schedulers on peers; llm-d can run on an entrypoint without GPUs.
 test("the mesh names whichever node is scheduling", () => {
   const view = buildView({
     self: { node: "xpredator", instances: [], engines: [] },
@@ -911,7 +839,6 @@ test("the mesh names whichever node is scheduling", () => {
   assert.equal(view.scheduler.isSelf, false, "so the rail can say where, and act there");
 });
 
-// No scheduler anywhere is null, not a half-filled object the rail would tick.
 test("no scheduler in the mesh reads as none", () => {
   const view = buildView({
     self: { node: "a", instances: [], engines: [] },
@@ -932,9 +859,6 @@ test("an offline node is not the scheduler", () => {
   assert.equal(view.scheduler, null);
 });
 
-// One rate served two purposes: routing needs a settled figure, but waiting
-// for 20,000 prompt tokens left a visibly busy engine showing a dash for
-// minutes. It is now reported early and marked, and only trusted late.
 test("a rough prefill rate is carried with its trust flag", () => {
   const view = buildView({
     self: { node: "a", instances: [
@@ -961,7 +885,6 @@ test("buildTokens lists the node key first, then tokens newest first, never a se
   assert.deepEqual(rows.map((r) => r.name), ["Node key", "ci", "laptop"]);
   assert.equal(rows[0].builtin, true);
   assert.equal(rows[0].masked, "sk-mfsh-…ab12");
-  // Only a node that says it can rotate gets the button: an older peer has no route for it.
   assert.equal(rows[0].rotatable, false);
   assert.equal(buildTokens({ node_key: "ab12", rotatable: true })[0].rotatable, true);
   assert.equal(rows[1].lastUsed, "never");
@@ -1017,12 +940,10 @@ test("the form speaks ports and switches; the config keeps its hosts", () => {
   const form = { ...serverToForm(saved), port: "3000", front_on: true, front_port: "3001", peer_admin: false, jit_unload: false };
   const out = formToServer(form, saved);
   assert.equal(out.listen, "127.0.0.1:3000"); // a port change never widens the bind
-  // The public front door is for Funnel or a proxy on this machine: loopback.
-  // Tailnet devices already reach the mesh listener and never need it.
+  // Default the public listener to loopback for Funnel or a local proxy.
   assert.equal(out.public_listen, "127.0.0.1:3001");
   assert.equal(out.mesh_admin, "off");
-  assert.equal(out.jit_ttl, "0"); // auto unload off
-  // A host chosen by hand in config.json is kept.
+  assert.equal(out.jit_ttl, "0");
   assert.equal(formToServer({ front_on: true, front_port: "9000" }, { public_listen: "100.64.0.7:1235" }).public_listen, "100.64.0.7:9000");
 });
 
@@ -1060,7 +981,6 @@ test("the router form round-trips, and only what changed is sent", () => {
   assert.deepEqual(settingsChanges(saved, formToRouter(routerToForm(saved), saved), ROUTER_SETTINGS), {});
   const on = { ...routerToForm(saved), cache_on: true, cache_gb: "50", prefix_affinity: false };
   assert.deepEqual(settingsChanges(saved, formToRouter(on, saved), ROUTER_SETTINGS), { prefix_affinity: false, cache_disk_mib: 51200 });
-  // A size with the switch off is not a cache.
   assert.equal(formToRouter({ ...routerToForm(saved), cache_on: false, cache_gb: "50" }, saved).cache_disk_mib, 0);
   // 0 is "no ceiling", and survives the round trip as 0, not the default.
   assert.equal(formToRouter({ ...routerToForm(saved), max_output_tokens: "0" }, saved).max_output_tokens, 0);
@@ -1107,9 +1027,8 @@ test("turning an MCP switch on is warned about, and both round-trip through the 
 
 import { slotUse, meshCapacity } from "./ui-model.js";
 
-// The dashboard showed "2 / 1" for a one-slot engine with a request queued
-// behind the one running, and through a benchmark nobody could see that work
-// was waiting on the slowest machine while a GPU had slots open.
+// Separate running and queued requests instead of showing "2 / 1"
+// for a one-slot engine with a queued request.
 test("slotUse separates running from waiting and counts free slots", () => {
   for (const [name, inflight, slots, want] of [
     ["one queued behind a one-slot engine", 2, 1, { running: 1, waiting: 1, free: 0 }],
@@ -1124,12 +1043,10 @@ test("slotUse separates running from waiting and counts free slots", () => {
 
 test("meshCapacity flags work waiting on one engine while another has a slot free", () => {
   const e = (inflight, slots, healthy = true) => ({ healthy, slots, ...slotUse(inflight, slots) });
-  // The screenshot of 2026-10-05: xpredator 1/2, helion 2/1, minion 0/4.
   assert.deepEqual(meshCapacity([e(1, 2), e(2, 1), e(0, 4)]),
     { slots: 7, running: 2, waiting: 1, free: 5, waitingBesideFree: true });
   assert.equal(meshCapacity([e(3, 2), e(2, 1)]).waitingBesideFree, false, "waiting, but nothing free");
   assert.equal(meshCapacity([e(1, 2), e(0, 4)]).waitingBesideFree, false, "free, and nothing waiting");
-  // An engine that is down has no slots to offer.
   assert.equal(meshCapacity([e(0, 4, false), e(2, 1)]).free, 0);
   assert.deepEqual(meshCapacity(undefined), { slots: 0, running: 0, waiting: 0, free: 0, waitingBesideFree: false });
 });
@@ -1175,7 +1092,7 @@ test("an engine row carries its RAM cache, what it dropped, and its machine's me
       instances: [{ id: "i1", model: "m", state: "ready", slots: 4, cache_ram_mib: 8192, cache_dropped: 12, memory_mb: 7372 }],
     },
     peers: [
-      // A peer too old to report any of it: unknown, not zero.
+      // Missing cache statistics from older peers remain unknown.
       { node: "old", alive: true, instances: [{ id: "i2", model: "m", state: "ready", slots: 2 }] },
       { node: "xpredator", alive: true, mem_total_mb: 128000, mem_available_mb: 87000,
         instances: [{ id: "i3", model: "m", state: "ready", slots: 2, cache_ram_mib: 32768, memory_mb: 17300 }] },
@@ -1185,7 +1102,6 @@ test("an engine row carries its RAM cache, what it dropped, and its machine's me
   assert.deepEqual(
     [by.minion.cacheRamMib, by.minion.cacheDropped, by.minion.memoryMb, by.minion.hostMemTotalMb, by.minion.hostMemAvailableMb],
     [8192, 12, 7372, 15853, 4795]);
-  // A cache that has dropped nothing says 0, which is an answer.
   assert.deepEqual([by.xpredator.cacheRamMib, by.xpredator.cacheDropped], [32768, 0]);
   assert.deepEqual(
     [by.old.cacheRamMib, by.old.cacheDropped, by.old.memoryMb, by.old.hostMemTotalMb],

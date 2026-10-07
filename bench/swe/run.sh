@@ -1,22 +1,13 @@
 #!/bin/bash
-# One benchmark run through ModelFabric's front door, into $WORK/runs/NAME.
-# Whatever routing is in force (ModelFabric's own router, or llm-d scheduling this
-# model) is what gets measured — set it first (see README). Usage: run.sh NAME
+# Run the benchmark through the configured routing into $WORK/runs/NAME.
+# Set the routing mode first. Usage: run.sh NAME
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 NAME=${1:?usage: run.sh NAME}
 cd "$WORK"
-# ModelFabric's front door, never an engine's own port. ModelFabric records what it carried
-# — trace id, model, status, latency, and the node and engine that served it —
-# and that per-request placement data is what this benchmark exists to produce.
-# Pointed at anything downstream the agent bypasses ModelFabric, and a run of three
-# engines over hours produced not one line in `mfsh log`: the requests were
-# never ModelFabric's to see.
-# The key belongs to whichever node the agent talks to, not to this one. With
-# an entrypoint the two differ, and the local key authenticates against the
-# wrong node — a 401 on every call, after the model had loaded and the run
-# looked ready to go. A key is read from its own node's disk and is deliberately
-# not served over the network, so it comes over ssh.
+# Use the ModelFabric entrypoint so request placement is recorded. Direct
+# engine requests bypass the router log. Fetch the entrypoint's key over SSH;
+# a local key cannot authenticate another node and keys are not API-accessible.
 AGENT_KEY_NODE=${SWE_AGENT_KEY_NODE:-$ENTRYPOINT}
 
 # The model config carries the node's API key, so it is written at run time,
@@ -31,8 +22,7 @@ elif [ -n "$AGENT_KEY_NODE" ]; then
 else
   KEY=$("$MFSH" key)
 fi
-# Sampling, when pinned (see SWE_TEMPERATURE in env.sh). Left out entirely
-# otherwise, so an unpinned run sends exactly what it always sent.
+# Send sampling parameters only when explicitly pinned in the environment.
 SAMPLING=""
 [ -n "$TEMPERATURE" ] && SAMPLING="$SAMPLING
     temperature: $TEMPERATURE"

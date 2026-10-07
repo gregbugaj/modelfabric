@@ -79,8 +79,6 @@ func TestMoveRenamed(t *testing.T) {
 	}
 }
 
-// A location chosen by environment variable is the operator's; the rename
-// does not move what they pointed somewhere on purpose.
 func TestMigrateRenameRespectsTheOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -101,10 +99,7 @@ func TestMigrateRenameRespectsTheOverride(t *testing.T) {
 	}
 }
 
-// Each directory the rename moves has to be the one the code then reads. The
-// automated rename once turned the config path into ~/.config/ModelFabric
-// while the migration moved it to ~/.config/modelfabric, so every node would
-// have started on defaults and ignored its config.
+// Migration and readers must use identical capitalization; a mismatch previously caused configs to be ignored.
 func TestRenamedDirsAreWhereTheCodeLooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -77,7 +77,6 @@ func TestClusterLoadRecordsWhereRequestsWent(t *testing.T) {
 	}
 }
 
-// A front door that asks for a key must get the one it was given.
 func TestClusterSendsTheKey(t *testing.T) {
 	engine := (&fakeLlama{}).handler()
 	var bad atomic.Int64

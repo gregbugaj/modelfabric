@@ -22,9 +22,8 @@ const testKey = "sk-node-key"
 // sent.
 type frontFixture struct {
 	srv *Server
-	// schedAuth is the Authorization the scheduler received per request. It must
-	// always be empty: Envoy is on loopback and needs no credential, and
-	// forwarding the caller's key to anything downstream is never right.
+	// schedAuth records upstream Authorization. It must remain empty because
+	// caller credentials must not reach loopback Envoy.
 	schedAuth []string
 	// schedProfile is the scheduling profile the scheduler was told to use per
 	// request. llm-d picks its profile from this, so a request carrying an image
@@ -69,11 +68,8 @@ func newFrontFixture(t *testing.T, scheduled, requireKey bool) *frontFixture {
 	f.srv = New(m, router.New(m, log), nil, log, nil)
 	f.srv.SetAuth(func() (string, error) { return testKey, nil }, requireKey)
 	u, _ := url.Parse(sched.URL)
-	// Gated on the model, as the real one is: llm-d serves one model, and
-	// llmdTarget declines anything else — including the empty string a body ModelFabric
-	// could not read yields. A stand-in that ignored the model would pass a
-	// request the real scheduler refuses, which is how a body too large to peek
-	// went unnoticed.
+	// Match llmdTarget's model check: a fixture accepting an empty model would
+	// hide failures to extract the model from oversized bodies.
 	f.srv.scheduler = func(model string) (*url.URL, bool) { return u, scheduled && model == "m" }
 	return f
 }
@@ -104,7 +100,6 @@ func TestFrontDoorHandsOffToTheScheduler(t *testing.T) {
 		t.Errorf("the scheduler got Authorization %q; the caller's credential must stop "+
 			"at ModelFabric, and Envoy on loopback needs none", f.schedAuth[0])
 	}
-	// Whoever chose the engine is named, so a graph can separate the paths.
 	if rec.Header().Get("X-Fabric-Via") != "llm-d" {
 		t.Errorf("X-Fabric-Via = %q, want llm-d", rec.Header().Get("X-Fabric-Via"))
 	}
@@ -142,7 +137,7 @@ func TestFrontDoorWithoutASchedulerUsesTheRouter(t *testing.T) {
 	}
 }
 
-// require_api_key: OpenAI-style Bearer auth, checked by ModelFabric itself —
+// require_api_key: OpenAI-style Bearer auth, checked by ModelFabric itself -
 // including a request that claims to have been forwarded already.
 func TestRequireAPIKeyOnTheFrontDoor(t *testing.T) {
 	f := newFrontFixture(t, true, true)
@@ -191,7 +186,6 @@ func TestPublicListener(t *testing.T) {
 			t.Errorf("%s on the public listener: %d, want 404", path, rec.Code)
 		}
 	}
-	// Anthropic clients send x-api-key.
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"m"}`))
 	req.Header.Set("X-Api-Key", testKey)
 	rec := httptest.NewRecorder()
@@ -247,9 +241,7 @@ func TestMatchEngineAcceptsBothEnginePorts(t *testing.T) {
 			}
 		})
 	}
-	// A port belonging to neither still identifies the machine — that is the
-	// documented fallback, "minion, engine unknown" beating "not recorded" —
-	// but it must not be attributed to this engine.
+	// An unmatched port identifies the node but must leave the engine unknown.
 	node, engine, ok := matchEngine("http://100.64.0.2:9999/v1", self, nil)
 	if !ok || node != "minion" {
 		t.Errorf("unknown port lost the machine: %q/%q/%v", node, engine, ok)
@@ -259,11 +251,8 @@ func TestMatchEngineAcceptsBothEnginePorts(t *testing.T) {
 	}
 }
 
-// Under llm-d the node that served a request is known only from the address
-// Envoy reports. The front door used to look for a header that nothing
-// sends any more, so every scheduled request was recorded with no
-// node. The address is turned into the node's name, and is not passed on: a
-// caller is told which machine, not where its engine listens.
+// Use Envoy's upstream-address header for attribution; the old header was
+// never sent. Return the node name without exposing the engine address.
 func TestScheduledRequestNamesTheNodeThatServedIt(t *testing.T) {
 	tests := []struct {
 		name, upstream, wantNode string

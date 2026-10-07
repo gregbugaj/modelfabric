@@ -1,10 +1,6 @@
-# Cutting a release.
+# Release tags use make dist, the same build target as mesh deployment.
 #
 #   git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
-#
-# The binaries come from `make dist`, the same target used to deploy to the
-# mesh by hand, so what ships is what has been run here. Nothing is built by a
-# tool that only CI knows how to drive.
 name: Release
 
 on:
@@ -21,7 +17,6 @@ permissions:
   contents: read
 
 jobs:
-  # A tag that cannot pass CI is not a release.
   verify:
     uses: ./.github/workflows/ci.yml
 
@@ -53,9 +48,7 @@ jobs:
       - name: Show what shipped
         run: cat dist/checksums.txt
 
-      # Provenance: a signed record of which workflow, from which commit, built
-      # these exact bytes. install.sh already checks the SHA-256, which proves
-      # the download was not altered in flight; this proves where it came from.
+      # Verify build provenance with:
       #
       #   gh attestation verify mfsh-linux-amd64 -R gregbugaj/modelfabric
       - name: Attest the binaries
@@ -70,8 +63,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        # A dispatch run builds and attests but does not publish, so a release
-        # can be rehearsed on a real tag without announcing it.
+        # Manual dispatch builds and attests without publishing.
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           gh release create "$TAG" \

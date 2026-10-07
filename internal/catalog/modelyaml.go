@@ -9,22 +9,14 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/yamlite"
 )
 
-// model.yaml (modelyaml.org) sits beside manifest.json in each hub entry and
-// says what the publisher recommends: sampling, capabilities, a memory floor,
-// and chat-template variables. LM Studio applies these when it loads a model;
-// without them llama.cpp's generic defaults (temperature 0.8, top-k 40,
-// min-p 0.05) replace the model's own (Qwen3.8: 1.0, 20, off).
-//
-// It is read with yamlite, which rejects anything outside the plain subset LM
-// Studio writes. A file that does not parse is ignored — the model still
-// loads, just with engine defaults, as it did before model.yaml was read.
+// model.yaml (modelyaml.org) supplies publisher sampling defaults, capabilities,
+// memory requirements, and chat-template variables. Unsupported YAML is ignored,
+// leaving engine defaults in effect.
 
-// ModelSpec is what ModelFabric uses from a model.yaml.
 type ModelSpec struct {
-	Vision    *bool `json:"vision,omitempty"`
-	Reasoning *bool `json:"reasoning,omitempty"`
-	ToolUse   *bool `json:"tool_use,omitempty"`
-	// MinMemoryBytes is the publisher's estimate of what a load needs.
+	Vision         *bool    `json:"vision,omitempty"`
+	Reasoning      *bool    `json:"reasoning,omitempty"`
+	ToolUse        *bool    `json:"tool_use,omitempty"`
 	MinMemoryBytes int64    `json:"min_memory_bytes,omitempty"`
 	Sampling       Sampling `json:"sampling"`
 	// TemplateVars are chat-template variables with the publisher's defaults
@@ -45,13 +37,12 @@ type Sampling struct {
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 }
 
-// IsZero reports whether no sampler setting is specified.
 func (s Sampling) IsZero() bool { return s == Sampling{} }
 
 // samplerFields maps LM Studio's config keys to a setter and the value that
 // turns the sampler off. LM Studio stores optional samplers as
 // {checked, value}; unchecked means the sampler is not applied, which for
-// llama.cpp is the neutral value — not llama.cpp's own default, which is on.
+// llama.cpp is the neutral value; not llama.cpp's own default, which is on.
 var samplerFields = map[string]struct {
 	off float64
 	set func(*Sampling, float64)
@@ -65,7 +56,6 @@ var samplerFields = map[string]struct {
 	"llm.prediction.llama.frequencyPenalty": {0, func(s *Sampling, v float64) { s.FrequencyPenalty = &v }},
 }
 
-// ReadModelYAML reads and interprets a model.yaml.
 func ReadModelYAML(path string) (*ModelSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -202,7 +192,6 @@ func wholeInRange(v float64, lo, hi int) (int, bool) {
 	return int(v), true
 }
 
-// setTopK stores a top-k that llama.cpp could accept.
 func setTopK(s *Sampling, v float64) {
 	if k, ok := wholeInRange(v, 0, 1<<20); ok {
 		s.TopK = &k
@@ -216,7 +205,6 @@ func boolPtr(v any) *bool {
 	return nil
 }
 
-// readHubSpec loads the model.yaml beside a hub manifest, if any.
 func readHubSpec(dir string) (*ModelSpec, error) {
 	spec, err := ReadModelYAML(filepath.Join(dir, "model.yaml"))
 	if os.IsNotExist(err) {

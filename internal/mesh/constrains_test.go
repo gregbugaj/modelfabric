@@ -6,8 +6,8 @@ func peerWith(insts ...InstanceState) *Peer {
 	return &Peer{alive: true, instances: insts}
 }
 
-// A peer is judged by the engines it has for the model in question — and the
-// optimistic readings are also the backwards-compatible ones.
+// Evaluate peers by engines serving the requested model; missing capability
+// fields retain backward-compatible defaults.
 func TestPeerConstrains(t *testing.T) {
 	const model = "qwen/qwen3-0.6b"
 	ready := func(engine string) InstanceState {
@@ -24,16 +24,14 @@ func TestPeerConstrains(t *testing.T) {
 		// A mix is capable: forwarding reaches that node's router, which
 		// applies this same rule to its own engines.
 		{"a mix", peerWith(ready(EngineMLX), ready(EngineLlamaCPP)), true},
-		// Empty means llama.cpp — it is what every node ran before the field
+		// Empty means llama.cpp; it is what every node ran before the field
 		// existed, so an older peer is not penalised.
 		{"peer too old to say", peerWith(ready("")), true},
-		// No instance list says nothing either way, so it is not held against
-		// them; the peer's own router still filters.
+		// Without an instance list, defer capability filtering to the peer.
 		{"no instances reported", peerWith(), true},
 		// An instance that is not ready cannot serve, so it neither qualifies
 		// nor disqualifies the peer.
 		{"mlx not ready", peerWith(InstanceState{Model: model, State: "loading", Engine: EngineMLX}), true},
-		// Another model's MLX engine is irrelevant to this one.
 		{"mlx for a different model", peerWith(InstanceState{Model: "other", State: "ready", Engine: EngineMLX}), true},
 	} {
 		t.Run(c.name, func(t *testing.T) {

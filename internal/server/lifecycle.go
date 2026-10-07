@@ -13,15 +13,12 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/supervisor"
 )
 
-// The model-management surface:
+// Model management routes:
 //
-//	GET  /api/v1/models         prepared models and loaded_instances
-//	POST /api/v1/models/load    {"model", "context_length", "echo_load_config"}
-//	POST /api/v1/models/unload  {"instance_id"}
-//
-// Deliberately not OpenAI's shape: "The list uses `models`, each model's `key`,
-// and `loaded_instances` containing `id` and applied `config`; it is not
-// OpenAI's `data` list."
+// GET /api/v1/models lists models and loaded_instances;
+// POST /api/v1/models/load accepts model, context_length and echo_load_config;
+// POST /api/v1/models/unload accepts instance_id.
+// The list uses models/key and loaded_instances/id/config, not OpenAI's data.
 
 // loadWaitTimeout bounds how long the load route blocks. The operation stays
 // observable after a timeout or disconnect, so callers can reattach instead
@@ -30,8 +27,6 @@ const loadWaitTimeout = 10 * time.Minute
 
 type modelEntry struct {
 	catalog.Model
-	// File and Modified describe the weights on disk, as LM Studio's model
-	// list does.
 	File     string     `json:"file,omitempty"`
 	Modified *time.Time `json:"modified,omitempty"`
 	// Spec is the publisher's recommended settings (model.yaml): what a
@@ -41,17 +36,14 @@ type modelEntry struct {
 }
 
 type loadedInstance struct {
-	ID     string          `json:"id"`
-	Config runtime.Applied `json:"config"`
-	// Beyond LM Studio's shape: how the instance got here and when its idle
-	// TTL, if any, will unload it.
-	Origin     string     `json:"origin,omitempty"`
-	TTLSeconds int        `json:"ttl,omitempty"`
-	LastUsed   *time.Time `json:"last_used,omitempty"`
-	PID        int        `json:"pid,omitempty"`
-	Port       int        `json:"port,omitempty"`
-	// Shim is the proxy in front of the engine, and what it does there.
-	Shim *supervisor.ShimInfo `json:"shim,omitempty"`
+	ID         string               `json:"id"`
+	Config     runtime.Applied      `json:"config"`
+	Origin     string               `json:"origin,omitempty"`
+	TTLSeconds int                  `json:"ttl,omitempty"`
+	LastUsed   *time.Time           `json:"last_used,omitempty"`
+	PID        int                  `json:"pid,omitempty"`
+	Port       int                  `json:"port,omitempty"`
+	Shim       *supervisor.ShimInfo `json:"shim,omitempty"`
 }
 
 type loadResponse struct {
@@ -65,9 +57,8 @@ type loadResponse struct {
 }
 
 func (s *Server) registerLifecycle(mux *http.ServeMux) {
-	// Registered even without a supervisor. Leaving them unregistered let the
-	// UI's catch-all serve index.html for /api/v1/models, so clients got HTML
-	// and a bewildering "invalid character '<'" JSON error.
+	// Register without a supervisor so the UI catch-all cannot return HTML
+	// for API requests and cause JSON decode errors.
 	mux.HandleFunc("GET /api/v1/models", s.handleListPrepared)
 	mux.HandleFunc("POST /api/v1/models/load", s.handleLoad)
 	mux.HandleFunc("POST /api/v1/models/unload", s.handleUnload)
@@ -86,7 +77,6 @@ func (s *Server) registerLifecycle(mux *http.ServeMux) {
 	s.registerBench(mux)
 	s.registerBenchCluster(mux)
 	mux.HandleFunc("GET /api/v1/llmd", s.handleLLMDStatus)
-	// The front door's own shape, which the Overview reads.
 	mux.HandleFunc("GET /api/v1/front", s.handleFront)
 	mux.HandleFunc("POST /api/v1/llmd/enable", s.handleLLMDEnable)
 	mux.HandleFunc("POST /api/v1/llmd/disable", s.handleLLMDDisable)
@@ -96,8 +86,6 @@ func (s *Server) registerLifecycle(mux *http.ServeMux) {
 	mux.HandleFunc("POST /z/preferred", s.handlePreferred)
 }
 
-// requireSupervisor answers with an actionable message on a node that only
-// routes, instead of failing somewhere less obvious.
 func (s *Server) requireSupervisor(w http.ResponseWriter) bool {
 	if s.sup != nil {
 		return true
@@ -148,10 +136,8 @@ func (s *Server) handleListPrepared(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": entries})
 }
 
-// waitForLoad waits for a load to settle, giving up early if the caller
-// disconnects. The operation itself is unaffected — it is journalled and
-// pollable — but the handler used to hold its goroutine and connection for the
-// full ten minutes even after nobody was listening.
+// waitForLoad stops waiting on disconnect while the journalled operation
+// continues and remains pollable.
 func (s *Server) waitForLoad(r *http.Request, opID string) (*ops.Operation, bool) {
 	type result struct {
 		op   *ops.Operation
@@ -197,7 +183,6 @@ func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 		return // the client went away; the load carries on without it
 	}
 	if !done {
-		// Still running: hand back the operation so the caller can poll.
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"operation": settled,
 			"message":   "load is still running; poll /api/v1/operations",
@@ -222,7 +207,6 @@ func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 		if inst.ID == settled.InstanceID {
 			found = true
 			resp.Instance = loadedInstance{ID: inst.ID, Config: inst.Config}
-			// "Only applied settings appear in effective configuration."
 			if req.EchoConfig {
 				cfg := inst.Config
 				resp.EffectiveConfig = &cfg
@@ -231,7 +215,7 @@ func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		// The load succeeded but the instance is already gone — unloaded, or
+		// The load succeeded but the instance is already gone - unloaded, or
 		// it exited between the journal settling and this snapshot. An empty
 		// instance object read as "loaded, with no configuration".
 		resp.Instance = loadedInstance{ID: settled.InstanceID}
@@ -313,9 +297,8 @@ func (s *Server) handleRepin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"model": key, "pinned": true})
 }
 
-// handleRecover settles an unresolved launch window. Explicit by design: the
-// window exists precisely because ModelFabric cannot prove whether an orphan is
-// running, and only an operator can confirm that.
+// handleRecover settles a launch window after operator confirmation;
+// ModelFabric cannot determine whether an orphan is running.
 func (s *Server) handleRecover(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSupervisor(w) {
 		return
@@ -355,9 +338,8 @@ type runtimeView struct {
 	PackageDir  string   `json:"package_dir,omitempty"`
 	// Managed is true for runtimes ModelFabric installed itself, the only ones
 	// `mfsh runtime remove` will touch.
-	Managed bool `json:"managed,omitempty"`
-	// InUse lists loaded instances running on this runtime.
-	InUse []string `json:"in_use,omitempty"`
+	Managed bool     `json:"managed,omitempty"`
+	InUse   []string `json:"in_use,omitempty"`
 }
 
 func (s *Server) handleRuntimes(w http.ResponseWriter, _ *http.Request) {
@@ -403,7 +385,6 @@ func (s *Server) handleRuntimes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleSelectRuntime sets the default runtime and persists it.
 func (s *Server) handleSelectRuntime(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSupervisor(w) {
 		return
@@ -445,12 +426,8 @@ func (s *Server) handleSelectRuntime(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"selected": req.Name, "default": name})
 }
 
-// LoadSelectedRuntime reads a persisted runtime choice.
-// SetRuntimeReloader supplies how to rediscover installed runtimes, for
-// POST /api/v1/runtimes/rescan.
 func (s *Server) SetRuntimeReloader(fn func() error) { s.reloadRuntimes = fn }
 
-// handleRuntimeRescan picks up runtimes installed or removed since start.
 func (s *Server) handleRuntimeRescan(w http.ResponseWriter, _ *http.Request) {
 	if !s.requireSupervisor(w) {
 		return
@@ -489,13 +466,8 @@ func LoadSelectedRuntime(path string) string {
 	return v.Runtime
 }
 
-// handlePreferred reports or sets the preferred node for model resolution.
-//
-// Mirrors LM Link's preferred device: "When the same model is available on
-// multiple devices in the link, LM Link uses the preferred device to load and
-// use the model." Fallback is not specified there, so ModelFabric degrades to its
-// normal load-based choice rather than failing — a preference should never
-// make a request impossible.
+// handlePreferred reports or sets the preferred node. When unavailable,
+// resolution falls back to the normal load-based selection.
 func (s *Server) handlePreferred(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, map[string]any{"preferred_node": s.m.Preferred()})
@@ -532,8 +504,6 @@ func (s *Server) handlePreferred(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"preferred_node": req.Node})
 }
 
-// SetPreferredStore sets where the preferred node is persisted, so the choice
-// outlives a restart without editing the operator's config file.
 func (s *Server) SetPreferredStore(path string) { s.prefStore = path }
 
 func (s *Server) persistPreferred(node string) error {
@@ -550,7 +520,6 @@ func (s *Server) persistPreferred(node string) error {
 	return writeState(s.prefStore, map[string]string{"preferred_node": node})
 }
 
-// LoadPreferred reads a persisted preference, returning "" when none is set.
 func LoadPreferred(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {

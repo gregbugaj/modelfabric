@@ -7,23 +7,19 @@ import { buildRouting } from "./ui-model.js";
 import { disableLLMD, enableLLMD, installLLMD } from "./vision.js";
 import { renderPresets, routingView, setRoutingView } from "./workload-presets.js";
 
-/* ---------- routing ---------- */
-
-export let profilesApi = null; // static: fetched once
+export let profilesApi = null;
 export let llmdApi = null;
-let routingBusy = "";   // an action in flight, shown instead of buttons
+let routingBusy = "";
 let chosenModel = "";
 let chosenProfile = "";
 
 export function renderRouting(v) {
-  // The router's half renders on every node; only llm-d's depends on it
-  // being available here.
+  // Router controls work on every node; llm-d controls require local support.
   renderRouter();
   $("rt-na").hidden = v.available;
   $("routing-body").hidden = !v.available;
   if (!v.available) return;
 
-  // llm-d state and controls.
   const st = $("rg-llmd-state");
   const pill = el("span", `status ${v.llmd.running ? "up" : v.llmd.error ? "down" : "muted"}`);
   pill.append(el("span", "dot"), v.llmd.installed ? v.llmd.state : "not installed");
@@ -48,8 +44,6 @@ export function renderRouting(v) {
     box.append(row);
   } else {
     if (v.llmd.on) {
-      // Four facts about a running scheduler read as one line; as four
-      // bordered cells they read as a dashboard that is not one.
       const info = el("div", "meta-line");
       info.append(
         meta(v.llmd.model, "", "mono"),
@@ -91,14 +85,10 @@ export function renderRouting(v) {
     box.append(row, kvControls(Boolean(routingBusy)));
   }
 
-  // Profiles.
   const grid = $("rg-profiles");
   grid.replaceChildren();
   for (const p of v.profiles) {
     const chosen = p.name === chosenProfile;
-    // A label with a real radio: picking a profile is local until Apply, which
-    // is what a radio group means. (A <button> row would also carry the UA's
-    // background and make a poor grid container.)
     const card = el("label", "choice" + (chosen ? " active" : ""));
     const radio = el("input", "choice-radio");
     radio.type = "radio";
@@ -141,16 +131,12 @@ export function renderRouting(v) {
   }
 }
 
-// choiceMark is the dot beside a row in a pick-one list: filled when chosen.
-// It marks the selection on the row itself, so the state does not rest on a
-// background tint alone.
+// Mark selection explicitly so it does not depend on background color.
 function choiceMark(on) {
   const m = el("span", "choice-mark" + (on ? " on" : ""));
   return m;
 }
 
-// meta is one fact on a metadata line: the value, then its label in small
-// muted type. A handful of these reads faster than the same facts in boxes.
 export function meta(value, label, cls) {
   const box = el("span", "meta");
   box.append(el("span", "meta-v" + (cls ? " " + cls : ""), value));
@@ -159,22 +145,18 @@ export function meta(value, label, cls) {
 }
 
 export function rerenderRouting() {
-  // The models carried over from the last poll, not an empty list: this repaint
-  // is an optimistic one between an action and the tick that follows it, and
-  // handing it nothing emptied the Model select and disabled Apply for as long
-  // as the action took.
+  // Retain the last model list during optimistic renders; an empty list
+  // would clear the selection and disable Apply until polling catches up.
   setRoutingView(buildRouting(llmdApi, profilesApi, operations, routingView?.models ?? []));
   renderRouting(routingView);
   renderPresets();
 }
 
-// KV options, off by default. On llama.cpp a full KV cache means warm, not
-// busy — the tokens counted are prefixes kept for reuse — so neither of these
-// is a load-balancing knob, and the panel says so.
+// llama.cpp KV occupancy includes reusable prefixes, not just active work.
+// These options are not load-balancing controls.
 export const kvOpts = { ceiling: 0, scorer: 0 };
 const KV_CEILING_DEFAULT = 0.97;
 
-// kvControls renders the two switches and keeps kvOpts in step.
 function kvControls(disabled) {
   const box = el("div", "kv-opts");
   const guard = el("label", "kv-opt");
@@ -227,18 +209,8 @@ function kvControls(disabled) {
   return box;
 }
 
-
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and routingBusy is written by the poll
-// loop and read here.
 export function setRoutingBusy(v) { routingBusy = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and llmdApi is written by the poll
-// loop and read here.
 export function setLLMDApi(v) { llmdApi = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and profilesApi is written by the poll
-// loop and read here.
 export function setProfilesApi(v) { profilesApi = v; }

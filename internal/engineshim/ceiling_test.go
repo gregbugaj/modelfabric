@@ -38,9 +38,8 @@ func bodyOf(t *testing.T, r *http.Request) map[string]any {
 	return out
 }
 
-// The path the incident took: the shim was dialled directly, so the router
-// never saw the request. A ceiling that lives only in the router would have
-// missed exactly the case it was written for.
+// Requests sent directly to the shim bypass the router. Enforce the output
+// ceiling on this path as well.
 func TestShimCapsARequestThatNamesNoLimit(t *testing.T) {
 	r := request(t, "/v1/chat/completions", `{"model":"m","messages":[]}`)
 	if !capOutput(r, 2048) {
@@ -116,7 +115,7 @@ func TestShimCapsOnlyGeneratingPaths(t *testing.T) {
 	}
 }
 
-// Off by default, so an operator who wants the old behaviour gets it exactly.
+// A zero ceiling leaves requests unchanged.
 func TestShimZeroCeilingChangesNothing(t *testing.T) {
 	r := request(t, "/v1/chat/completions", `{"model":"m"}`)
 	if capOutput(r, 0) {

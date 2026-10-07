@@ -7,28 +7,13 @@ import (
 	"strconv"
 )
 
-// Asking the engine for a stream even when the caller did not, on ModelFabric's own
-// router path.
+// The router path upgrades non-streaming requests for live token capture.
+// The tap must read SSE before reassembly into JSON:
 //
-// Otherwise a client that sends "stream": false (aider does, and so does anything built
-// on a plain OpenAI SDK call) produces nothing to watch: the engine writes one
-// JSON body at the end, and a live view of the reply is a live view of nothing
-// happening for two minutes.
-//
-// The order of the wrapping is the whole trick. The router writes an event
-// stream, the token tap reads it as it passes, and only then is it reassembled
-// into the single body the caller asked for:
-//
-//	router ──SSE──► tap (publishes tokens live) ──► unstreamer ──JSON──► caller
-//
-// Wrapped the other way round the tap would see one finished JSON body, which is
-// exactly the nothing this exists to fix.
+// router -> tap -> unstreamer -> caller
 
-// maxAssemble bounds what is held to reassemble one answer. Measured on a real
-// run, an event stream is about 98% envelope: 588,697 bytes carried 11,727 bytes
-// of text. Even a very long reply stays well under this, and a stream that
-// somehow does not is passed through untouched rather than buffered without
-// limit — a runaway generation must not become a runaway allocation.
+// maxAssemble bounds response buffering. Oversized streams pass through
+// without reassembly to avoid unbounded allocation.
 const maxAssemble = 32 << 20
 
 // unstreamWriter collects an event stream and answers with one JSON body.
@@ -40,7 +25,7 @@ type unstreamWriter struct {
 	http.ResponseWriter
 	buf    bytes.Buffer
 	status int
-	// raw is set when reassembly is impossible — an oversized stream, or a
+	// raw is set when reassembly is impossible - an oversized stream, or a
 	// non-2xx whose body is the engine's own error to deliver verbatim. From
 	// then on bytes go straight to the caller.
 	raw bool
@@ -61,10 +46,6 @@ func (u *unstreamWriter) Write(p []byte) (int, error) {
 		return u.ResponseWriter.Write(p)
 	}
 	if u.buf.Len()+len(p) > maxAssemble {
-		// Give up on reassembly rather than grow without bound: flush what was
-		// held and stream the rest. The caller asked for one body and gets a
-		// stream, which is worse than promised but better than a node that
-		// falls over.
 		u.raw = true
 		u.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 		u.ResponseWriter.WriteHeader(u.statusOr(http.StatusOK))
@@ -94,7 +75,6 @@ func (u *unstreamWriter) statusOr(def int) int {
 	return def
 }
 
-// finish assembles what was collected and writes the caller's single body.
 func (u *unstreamWriter) finish() {
 	if u.raw {
 		return
@@ -122,18 +102,11 @@ func (u *unstreamWriter) finish() {
 	_, _ = u.ResponseWriter.Write(body)
 }
 
-// unstreamed upgrades a non-streaming request so the reply can be watched as it
-// is written, and returns the writer to hand the router plus a finish func.
-//
-// When there is nothing to upgrade — a streaming request, a path that does not
-// generate, a body that cannot be parsed — the request and writer are returned
-// untouched, so the ordinary path costs one function call.
+// unstreamed upgrades eligible non-streaming requests and returns a writer
+// and completion function. Ineligible requests and writers pass through unchanged.
 func (s *Server) unstreamed(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, func()) {
-	// Only worth doing when somebody is watching. The upgrade is cheap but not
-	// free: it buffers the whole answer, which changes when the caller's first
-	// byte arrives, and a path that behaves differently when observed is one
-	// whose bugs appear only when observed — so this is the one place that
-	// trade is made deliberately.
+	// Upgrade only while watched to avoid buffering otherwise. This changes
+	// when the caller receives its first byte.
 	if !s.tokens.Active() {
 		return w, func() {}
 	}

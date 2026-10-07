@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// Helpers that write the GGUF wire format, so the tests exercise the real
-// parser rather than a mock.
-
 func ggufStr(s string) []byte {
 	b := make([]byte, 8+len(s))
 	binary.LittleEndian.PutUint64(b, uint64(len(s)))
@@ -82,7 +79,7 @@ func TestReadGGUFMetadata(t *testing.T) {
 	}
 }
 
-// A large token vocabulary must be skipped without blowing up — this is the
+// A large token vocabulary must be skipped without blowing up; this is the
 // only unbounded structure in the header.
 func TestReadGGUFSkipsLargeArrays(t *testing.T) {
 	dir := t.TempDir()
@@ -113,7 +110,6 @@ func TestReadGGUFSkipsLargeArrays(t *testing.T) {
 	}
 }
 
-// Embedding models declare a pooling type; that beats guessing from the name.
 func TestPoolingTypeMarksEmbedding(t *testing.T) {
 	dir := t.TempDir()
 	path := writeGGUF(t, dir, "mystery-name.gguf",
@@ -159,7 +155,6 @@ func TestReadGGUFRejectsImplausibleCounts(t *testing.T) {
 
 func TestScanUsesHeaderOverFilename(t *testing.T) {
 	dir := t.TempDir()
-	// The filename says nothing useful; the header says everything.
 	writeGGUF(t, dir, "publisher/mystery.gguf",
 		ggufKV("general.architecture", ggufString, ggufStr("qwen35")),
 		ggufKV("general.parameter_count", ggufUint64, u64(4_000_000_000)),
@@ -206,11 +201,9 @@ func TestScanPairsProjectorAndSkipsShards(t *testing.T) {
 	if m.Projector == "" {
 		t.Fatal("mmproj sibling was not paired; the model would silently run text-only")
 	}
-	// The projector is not itself a loadable model.
 	if _, ok := c.Lookup("org/mmproj-vision-f16"); ok {
 		t.Fatal("projector was indexed as a loadable model")
 	}
-	// A sharded model is one entry, not three.
 	if _, ok := c.Lookup("org/big-00001-of-00003"); !ok {
 		t.Fatal("first shard should be indexed")
 	}
@@ -267,7 +260,6 @@ func TestScanPrefersHubIDAndKeepsPathAlias(t *testing.T) {
 	if _, ok := c.Lookup("qwen/qwen3.8-27b"); !ok {
 		t.Fatalf("hub id not used as the key; have %v", c.Models())
 	}
-	// The path still addresses it, so nothing that used the old key breaks.
 	if m, err := c.Resolve("lmstudio-community/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M"); err != nil {
 		t.Fatalf("path key should still resolve: %v", err)
 	} else if m.Key != "qwen/qwen3.8-27b" {
@@ -295,7 +287,6 @@ func TestQuantizationVariantsShareAHubID(t *testing.T) {
 	if m.Variants != 1 {
 		t.Fatalf("variants = %d, want 1", m.Variants)
 	}
-	// Both files remain reachable by path.
 	for _, q := range []string{"Q4_K_M", "Q8_0"} {
 		if _, err := c.Resolve("repo/Qwen3.8-27B-" + q); err != nil {
 			t.Fatalf("variant %s unreachable: %v", q, err)

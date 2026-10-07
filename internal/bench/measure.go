@@ -19,7 +19,7 @@ type sample struct {
 	start, first, end time.Time
 
 	promptTokens int // as the engine counted them, the chat template included
-	cachedTokens int // of those, reused from the prompt cache rather than read
+	cachedTokens int
 	outTokens    int
 
 	// From llama-server's "timings". Zero when the engine reports none (an
@@ -61,7 +61,6 @@ func (s sample) tgTPS() float64 {
 	return 0
 }
 
-// tpotMs is time per output token.
 func (s sample) tpotMs() float64 {
 	if tg := s.tgTPS(); tg > 0 {
 		return 1000 / tg
@@ -81,10 +80,8 @@ func newClient(base, model string) *client {
 	return &client{base: strings.TrimRight(base, "/"), model: model, http: &http.Client{Timeout: 30 * time.Minute}}
 }
 
-// generate sends one chat request for exactly out tokens and measures it.
-// Exactly: ignore_eos keeps the engine generating past a natural end, so
-// every run produces the same amount of work whatever the model would have
-// said. Temperature 0 and a fixed seed make what it says repeatable too.
+// generate measures one request with ignore_eos to produce exactly out tokens.
+// Temperature zero and a fixed seed reduce output variation between runs.
 func (c *client) generate(ctx context.Context, prompt string, out int) sample {
 	body, _ := json.Marshal(map[string]any{
 		"model":          c.model,

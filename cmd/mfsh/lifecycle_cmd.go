@@ -15,12 +15,7 @@ import (
 	"unicode/utf8"
 )
 
-// These mirror the lms verbs against the local node's /api/v1 surface.
-
-// parsePositional parses flags that may appear before or after positional
-// arguments. Go's flag package stops at the first non-flag, which would
-// silently ignore `mfsh load some-model -addr ...` — so we resume parsing
-// after each positional instead.
+// parsePositional resumes flag parsing after each positional argument; Go's flag package stops at the first non-flag.
 func parsePositional(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
@@ -49,8 +44,6 @@ type apiModel struct {
 	LoadedInstances []apiInstance `json:"loaded_instances"`
 }
 
-// apiInstance is one running engine for a model. It is named rather than
-// anonymous so callers and tests can build one.
 type apiInstance struct {
 	ID         string         `json:"id"`
 	Config     map[string]any `json:"config"`
@@ -60,9 +53,7 @@ type apiInstance struct {
 }
 
 func call(ctx context.Context, addr, method, path string, body any, out any) error {
-	// Every API call goes through here, so this is the one place auto-start
-	// cannot be forgotten. It was previously only reached via listing, which
-	// meant `mfsh load <name>` failed against a stopped node.
+	// Auto-start here so direct API commands such as load also work when the node is stopped.
 	if err := ensureNode(addr); err != nil {
 		return err
 	}
@@ -117,7 +108,6 @@ func fetchModels(ctx context.Context, addr string) ([]apiModel, error) {
 	return body.Models, nil
 }
 
-// lsCmd lists models available on disk, like `lms ls`.
 func lsCmd(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -174,8 +164,6 @@ func lsCmd(args []string) error {
 				}
 			}
 			name := m.Key
-			// Other files that are the same model (another quantization, an
-			// import) are folded under one name; say so, or they look lost.
 			if m.Variants > 0 {
 				name += dim(fmt.Sprintf(" (%s)", plural(m.Variants+1, "variant")))
 			}
@@ -189,7 +177,6 @@ func lsCmd(args []string) error {
 	return nil
 }
 
-// dimDash renders an optional value, dimmed, with a placeholder when absent.
 func dimDash(s string) string {
 	if s == "" {
 		return dim("—")
@@ -258,13 +245,8 @@ func pickModel(ctx context.Context, addr string, positional []string, wantLoaded
 	return value, "", nil
 }
 
-// unloadTargets resolves an unload argument to the instances it names.
-//
-// The argument is whatever the user typed: an instance id, or — far more
-// likely, since that is what `mfsh ps` and every other command call a model —
-// a model key. A key names every instance of that model, so `unload <key>`
-// unloads the model rather than one replica of it, which is what `-all` does
-// for the whole node and what `lms unload <model>` does.
+// unloadTargets resolves an instance ID or model key.
+// A model key selects every loaded replica of that model.
 func unloadTargets(models []apiModel, arg string) ([]string, error) {
 	var byKey []string
 	var loaded []string
@@ -289,7 +271,6 @@ func unloadTargets(models []apiModel, arg string) ([]string, error) {
 		arg, strings.Join(dedupe(loaded), ", "))
 }
 
-// dedupe keeps the first of each value, so a model with replicas is named once.
 func dedupe(in []string) []string {
 	seen := make(map[string]bool, len(in))
 	out := in[:0:0]
@@ -302,7 +283,6 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// psCmd lists models resident in memory, like `lms ps`.
 func psCmd(args []string) error {
 	fs := flag.NewFlagSet("ps", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -347,14 +327,10 @@ func psCmd(args []string) error {
 	return nil
 }
 
-// loadCmd loads a model, like `lms load`.
 func loadCmd(args []string) error {
 	fs := flag.NewFlagSet("load", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
 	preset := fs.String("preset", "", "apply a saved preset's inference settings to this load")
-	// A model held in two formats — the same weights as GGUF and as MLX — is
-	// one entry in the catalog with two sets of files behind it. This is how
-	// you say which, without knowing its path.
 	format := fs.String("format", "", "which weights to load when the model has variants: gguf or mlx")
 	collect := settingsFromFlags(fs)
 	replicas := fs.Int("replicas", 1, "ensure this many instances of the model on this node")
@@ -370,8 +346,7 @@ func loadCmd(args []string) error {
 	if len(positional) > 1 {
 		return fmt.Errorf("usage: mfsh load [model] [setting flags] [-preset NAME]   (mfsh load -h lists them)")
 	}
-	// -replicas promises that many instances. Zero or negative still loaded
-	// one and then skipped the loop, which is not what the flag says.
+	// Reject nonpositive replica counts; otherwise the initial load still creates one instance.
 	if *replicas < 1 {
 		return fmt.Errorf("-replicas must be at least 1 (got %d)", *replicas)
 	}
@@ -405,8 +380,7 @@ func loadCmd(args []string) error {
 		req["ttl"] = ttl
 	}
 
-	// Generous: a cold 27B load is minutes, and the server holds the request
-	// until the engine is actually serving.
+	// Allow for cold loads that take minutes; the server waits until the engine is ready.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -513,7 +487,6 @@ func configValue(v any) string {
 	return strings.Join(parts, " ")
 }
 
-// unloadCmd stops an instance, like `lms unload`.
 func unloadCmd(args []string) error {
 	fs := flag.NewFlagSet("unload", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -571,7 +544,6 @@ func unloadCmd(args []string) error {
 	return nil
 }
 
-// opsCmd shows the operation journal.
 func opsCmd(args []string) error {
 	fs := flag.NewFlagSet("ops", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -680,7 +652,6 @@ func truncate(s string, n int) string {
 	return string(out[:n-1]) + "…"
 }
 
-// repinCmd accepts changed model files as the new pinned state.
 func repinCmd(args []string) error {
 	fs := flag.NewFlagSet("repin", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -705,7 +676,6 @@ func repinCmd(args []string) error {
 	return nil
 }
 
-// recoverCmd reports or settles unresolved launch windows.
 func recoverCmd(args []string) error {
 	fs := flag.NewFlagSet("recover", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -737,11 +707,6 @@ func recoverCmd(args []string) error {
 	return nil
 }
 
-// endpointsCmd prints the mesh in llm-d's file-discovery format.
-//
-// llm-d's EPP takes endpoints from any source that can enumerate them, so this
-// is the whole integration: point the file-discovery plugin at this output and
-// the EPP schedules across the mesh ModelFabric already tracks.
 func endpointsCmd(args []string) error {
 	fs := flag.NewFlagSet("endpoints", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -783,7 +748,6 @@ func endpointsCmd(args []string) error {
 	return nil
 }
 
-// runtimeCmd mirrors `lms runtime`: what engines this node can launch.
 func runtimeCmd(args []string) error {
 	sub := "ls"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -913,7 +877,7 @@ func runtimeCmd(args []string) error {
 			var choices []Choice
 			for _, r := range body.Runtimes {
 				if r.Fit == "no" {
-					continue // never offer what cannot run here
+					continue
 				}
 				note := r.Backend
 				if r.Default {
@@ -944,8 +908,6 @@ func runtimeCmd(args []string) error {
 	return fmt.Errorf("usage: mfsh runtime [ls | survey | select [name] | select -auto | get [backend] | update | remove [name]]")
 }
 
-// preferCmd sets the preferred node for model resolution, mirroring
-// `lms link set-preferred-device`.
 func preferCmd(args []string) error {
 	fs := flag.NewFlagSet("prefer", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -958,8 +920,6 @@ func preferCmd(args []string) error {
 		return fmt.Errorf("usage: mfsh prefer [node]   (or -none to clear)")
 	}
 	if *clear && len(positional) == 1 {
-		// Clearing and naming a node are different intentions; doing the
-		// first while ignoring the second made a mistake look like success.
 		return fmt.Errorf("-none clears the preference, so it takes no node (got %q)", positional[0])
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -968,7 +928,6 @@ func preferCmd(args []string) error {
 		return err
 	}
 
-	// No argument and no flag: report what is set.
 	if len(positional) == 0 && !*clear {
 		var cur struct {
 			Node string `json:"preferred_node"`
@@ -1007,6 +966,5 @@ func preferCmd(args []string) error {
 	return nil
 }
 
-// preferScope says where a preference applies.
 const preferScope = `  Applies to requests at this node's front door; with
   llm-d on, llm-d schedules only what the preferred node does not take.`

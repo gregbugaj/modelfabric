@@ -13,15 +13,10 @@ import (
 	"sync"
 )
 
-// ErrChanged reports that pinned inputs no longer match what is on disk.
 var ErrChanged = errors.New("inputs changed since they were pinned")
 
-// Store persists prepared inputs so verification is meaningful across runs.
-//
-// Without it, verification is self-referential: building a manifest from the
-// current files and checking the files against that manifest always succeeds,
-// however the files were modified. Preparation must happen once, and every
-// later load is checked against that pin.
+// Store pins prepared inputs across runs so later verification detects file
+// changes rather than building a new manifest from modified files.
 type Store struct {
 	// prep serializes first-time pinning; mu guards the files themselves.
 	prep sync.Mutex
@@ -41,16 +36,8 @@ type pin struct {
 	// Manifest is retained verbatim so a later load can be checked against the
 	// original, not against a freshly computed one.
 	Manifest string `json:"manifest"`
-	// Stamps record each file's size and modification time at pin time. They
-	// make a repeat load cheap: re-hashing a 16GB model on every load costs
-	// seconds, and a file whose size and mtime are unchanged has almost
-	// certainly not changed.
-	//
-	// This is a deliberate trade. It catches corruption, truncation, a partial
-	// re-download or a swapped file — the failures that actually happen. It
-	// does not catch an edit that preserves both size and mtime. Anyone able to
-	// do that can usually also rewrite this pin file, so full hashing every
-	// load would buy little; set VerifyFull when that assumption does not hold.
+	// Stamps cache file size and mtime to avoid repeated full hashes.
+	// Edits preserving both are undetectable; VerifyFull disables this shortcut.
 	Stamps []stamp `json:"stamps,omitempty"`
 }
 
@@ -89,8 +76,6 @@ func stampsFor(root string, files []string) []stamp {
 	return out
 }
 
-// unchanged reports whether every stamped file still has its recorded size and
-// modification time.
 func (p *pin) unchanged(root string) bool {
 	if len(p.Stamps) == 0 {
 		return false
@@ -114,9 +99,9 @@ func NewStore(dir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
-// path names a key's pin file. The readable part is lossy — "a/b", "a:b" and
+// path names a key's pin file. The readable part is lossy; "a/b", "a:b" and
 // "a_b" all mapped to "a_b.pin.json", so one model or runtime could be
-// verified against another's pin — so a digest of the full key is appended.
+// verified against another's pin; so a digest of the full key is appended.
 func (s *Store) path(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(s.dir, safeName(key)+"-"+hex.EncodeToString(sum[:4])+".pin.json")
@@ -139,7 +124,6 @@ func safeName(key string) string {
 	}, key)
 }
 
-// Pin records prepared inputs as the accepted state for key.
 func (s *Store) Pin(key string, vi *VerifiedInput, manifest []byte, files ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,10 +163,8 @@ func (s *Store) Unpin(key string) error {
 	return err
 }
 
-// get reads a key's pin. A missing pin is "not pinned yet"; anything else is
-// an error. Treating a corrupt or unreadable pin as missing meant Prepare
-// re-pinned whatever was on disk, which is exactly the silent re-blessing the
-// pin exists to prevent.
+// get returns a missing pin as unpinned. Corrupt or unreadable pins are errors
+// so Prepare cannot silently replace them with a manifest of changed files.
 func (s *Store) get(key string) (*pin, bool, error) {
 	b, err := os.ReadFile(s.path(key))
 	if os.IsNotExist(err) {
@@ -225,8 +207,6 @@ func (s *Store) Prepare(key, root string, files []string, revision string) (*Ver
 	if ok {
 		manifest := []byte(p.Manifest)
 		if !s.VerifyFull && p.unchanged(p.Root) {
-			// Nothing has been touched since the pin, so the recorded digest
-			// still describes what is on disk.
 			return &VerifiedInput{
 				Root:           p.Root,
 				ManifestSHA256: p.ManifestSHA256,

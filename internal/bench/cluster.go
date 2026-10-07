@@ -10,14 +10,8 @@ import (
 	"time"
 )
 
-// The cluster benchmark: the whole setup measured as one system. Requests go
-// through the front door, so the router — or llm-d, for the model it
-// schedules — places them across every node holding the model, as real
-// traffic is placed. Nothing is reloaded: it measures the cluster as it is
-// configured, and records which nodes did the work.
-//
-// The node benchmark asks how fast a model is on one machine; this asks how
-// much the cluster serves, and how that holds as requests pile up.
+// Cluster benchmarks send requests through the inference front door and record
+// which nodes served them. Engines retain their current configuration.
 
 // ClusterConfig is what to run. Zero values are the standard cluster suite.
 type ClusterConfig struct {
@@ -37,7 +31,6 @@ var (
 	StandardClusterConcurrency = []int{1, 2, 4, 8, 16}
 )
 
-// Fill supplies the standard cluster suite where nothing was chosen.
 func (c *ClusterConfig) Fill() {
 	if c.Prompts == "" {
 		c.Prompts = "prose"
@@ -61,14 +54,11 @@ func (c *ClusterConfig) Fill() {
 	sort.Ints(c.Concurrency)
 }
 
-// ClusterSingle is one request through the front door, and where it landed.
 type ClusterSingle struct {
 	Single
 	Node string `json:"node"`
 }
 
-// Load is one level of the sweep: n requests at once, all through the front
-// door.
 type Load struct {
 	N         int     `json:"n"`
 	TGTPS     float64 `json:"tg_tps"`  // generated tokens, all requests, per second of generation
@@ -85,7 +75,6 @@ type Load struct {
 	Error  string         `json:"error,omitempty"`
 }
 
-// ClusterReport is a cluster run, with what is needed to run it again.
 type ClusterReport struct {
 	Model   string          `json:"model"`
 	At      time.Time       `json:"at"`
@@ -105,7 +94,6 @@ type ClusterReport struct {
 	Partial bool            `json:"partial,omitempty"`
 }
 
-// ClusterNode is one node holding the model: what it is and how it runs it.
 type ClusterNode struct {
 	Node     string `json:"node"`
 	Platform string `json:"platform,omitempty"`
@@ -246,7 +234,7 @@ func runLoad(ctx context.Context, c *client, pb *prompter, mode string, n int, c
 		ok = append(ok, s)
 		node := s.node
 		if node == "" {
-			node = "unknown" // the front door did not say; recorded as such, not guessed
+			node = "unknown"
 		}
 		l.Spread[node]++
 	}

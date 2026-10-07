@@ -10,7 +10,7 @@
 // One model only, as llm-d is designed: an inference pool is one model's
 // replicas, and the EPP assumes every endpoint it is given serves the model
 // requested. Given engines for two models it could answer a 27B request from
-// a 0.6B engine — llama-server serves whatever it has loaded, whatever the
+// a 0.6B engine; llama-server serves whatever it has loaded, whatever the
 // request says. So the endpoint list is filtered to the one model, and every
 // other model keeps its direct route.
 //
@@ -43,7 +43,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/rtpkg"
 )
 
-// Pinned builds.
 const (
 	EPPVersion   = "v0.10.0"
 	EnvoyVersion = "1.33.14"
@@ -62,13 +61,10 @@ var envoyBinaries = map[string]struct{ name, sum string }{
 	"arm64": {"envoy-1.33.14-linux-aarch_64", "6d02f3fbb1cfa552c67605d44345e2e44eed07dae9edea4239f269e9823bf9b2"},
 }
 
-// ModelLabel is the endpoint label naming the model an engine serves.
 const ModelLabel = "modelfabric.sh/model"
 
-// NodeLabel names the node an endpoint belongs to.
 const NodeLabel = "modelfabric.sh/node"
 
-// Config places llm-d.
 type Config struct {
 	Dir       string // ~/.modelfabric/llmd: generated configs, endpoint list, pidfiles
 	Tools     string // ~/.modelfabric/tools: where the binaries live
@@ -77,7 +73,6 @@ type Config struct {
 	EPPPort   int    // ext_proc gRPC; health is EPPPort+1
 	Metrics   int    // EPP Prometheus metrics
 	AdminPort int    // Envoy admin, loopback only
-	// Endpoints lists every ready engine in the mesh.
 	Endpoints func() []discovery.Endpoint
 	// Self is this node's name. Another node's engine advertised on its own
 	// loopback cannot be scheduled from here: the EPP would dial this
@@ -85,7 +80,6 @@ type Config struct {
 	Self func() string
 }
 
-// EPPPath and EnvoyPath are where the pinned binaries are installed.
 func (c Config) EPPPath() string {
 	return filepath.Join(c.Tools, "llmd", "epp-"+EPPVersion, "epp")
 }
@@ -93,9 +87,6 @@ func (c Config) EnvoyPath() string {
 	return filepath.Join(c.Tools, "llmd", "envoy-"+EnvoyVersion, "envoy")
 }
 
-// Installed reports whether both pinned binaries are present.
-// usableBinary reports whether p is an executable file, which is what
-// Installed() asks of it.
 func usableBinary(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 && fi.Size() > 0
@@ -115,10 +106,8 @@ func (c Config) Install(ctx context.Context, progress func(what string, done, to
 	if goruntime.GOOS != "linux" {
 		return fmt.Errorf("llm-d binaries are fetched for Linux; this is %s", goruntime.GOOS)
 	}
-	// Installed() requires an executable file, so "the path exists" is the
-	// wrong test here: a truncated or non-executable leftover satisfied Stat,
-	// Install skipped it, and Installed then said it was not installed —
-	// forever, with nothing to fix it.
+	// Use Installed's executable check so an incomplete or non-executable
+	// file does not permanently prevent reinstallation.
 	if !usableBinary(c.EPPPath()) {
 		if err := oci.ExtractFile(ctx, eppImage, goruntime.GOARCH, "app/epp", c.EPPPath(),
 			func(done, total int64) { progress("EPP", done, total) }); err != nil {
@@ -152,7 +141,6 @@ func (c Config) Install(ctx context.Context, progress func(what string, done, to
 	return nil
 }
 
-// Status is what the CLI, dashboard and doctor show.
 type Status struct {
 	State       string  `json:"state"` // disabled | starting | running | restarting
 	Model       string  `json:"model,omitempty"`
@@ -180,7 +168,6 @@ type Status struct {
 	Installed  bool      `json:"installed"`
 }
 
-// LLMD supervises the EPP and Envoy for one model.
 type LLMD struct {
 	cfg Config
 	log *slog.Logger
@@ -196,26 +183,22 @@ type LLMD struct {
 
 // Timings; variables so tests can shorten them.
 var (
-	readyTimeout = 2 * time.Minute
-	pollEvery    = 2 * time.Second
-	// recalibrateEvery is how often the prefill rate is re-measured.
+	readyTimeout     = 2 * time.Minute
+	pollEvery        = 2 * time.Second
 	recalibrateEvery = time.Minute
 	stopTimeout      = 15 * time.Second
 	maxBackoff       = time.Minute
 )
 
-// New returns a stopped supervisor.
 func New(cfg Config, log *slog.Logger) *LLMD {
 	return &LLMD{cfg: cfg, log: log, status: Status{State: "disabled"}}
 }
 
-// Config returns where llm-d lives, for install and status commands.
 func (l *LLMD) Config() Config { return l.cfg }
 
 // URL is the OpenAI base the front door sends the model to.
 func (l *LLMD) URL() string { return "http://" + l.cfg.Listen + "/v1" }
 
-// Status reports the current state.
 func (l *LLMD) Status() Status {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -233,16 +216,12 @@ func (l *LLMD) set(f func(*Status)) {
 	f(&l.status)
 }
 
-// Options choose how llm-d schedules.
 type Options struct {
 	// Profile names a scheduling profile (discovery.Profiles); empty is
 	// load-aware.
-	Profile string
-	// PrefixCache adds prefix-cache scoring to the load-aware profile.
+	Profile     string
 	PrefixCache bool
-	// RoomFilter keeps only engines with a free slot ahead of every other
-	// decision (discovery.roomFilter).
-	RoomFilter bool
+	RoomFilter  bool
 	// KVCeiling refuses engines whose KV cache is fuller than this share, and
 	// KVScorer weights llm-d's kv-cache-utilization-scorer. Both read the
 	// gauge ModelFabric synthesizes; see discovery.EPPOptions for why neither is a
@@ -273,7 +252,6 @@ func (l *LLMD) Start(model string, o Options) {
 	go l.run(ctx, model, o, done)
 }
 
-// Stop ends both processes and waits.
 func (l *LLMD) Stop() {
 	l.opMu.Lock()
 	defer l.opMu.Unlock()
@@ -375,7 +353,7 @@ func (l *LLMD) serve(ctx context.Context, model string, o Options) error {
 		"--grpc-port", strconv.Itoa(l.cfg.EPPPort), "--grpc-health-port", strconv.Itoa(l.cfg.EPPPort + 1),
 		"--metrics-port", strconv.Itoa(l.cfg.Metrics)}
 	if p, _ := discovery.ProfileByName(profile); p.Experimental || o.RoomFilter {
-		// Only when an Alpha plugin is in use — a profile that says so, or
+		// Only when an Alpha plugin is in use; a profile that says so, or
 		// the room filter (utilization-filter is Alpha in v0.10.0).
 		args = append(args, "--allow-experimental-plugins")
 	}
@@ -434,7 +412,7 @@ func (l *LLMD) serve(ctx context.Context, model string, o Options) error {
 // calibratePrefill measures how fast this model's engines prefill, from
 // llama.cpp's own counters (prompt_tokens_total / prompt_seconds_total), for
 // the affinity filter's TTFT estimate. llm-d's default is calibrated for a
-// 32B model on two H100s — several times faster than a workstation GPU under
+// 32B model on two H100s; several times faster than a workstation GPU under
 // llama.cpp, which would make every queue look short. Too little history
 // yields the conservative default.
 func (l *LLMD) calibratePrefill(model string) (float64, bool) {
@@ -462,7 +440,7 @@ func (l *LLMD) calibratePrefill(model string) (float64, bool) {
 }
 
 // uniformSlots is the slot count every engine serving model shares, or zero
-// when they differ or any is unknown — the EPP's in-flight cap is one number
+// when they differ or any is unknown; the EPP's in-flight cap is one number
 // for the pool, so a mixed fleet gets only the per-engine queue condition.
 func (l *LLMD) uniformSlots(model string) int {
 	if l.cfg.Endpoints == nil {
@@ -484,7 +462,6 @@ func (l *LLMD) uniformSlots(model string) int {
 
 func (l *LLMD) calibrationPath() string { return filepath.Join(l.cfg.Dir, "prefill-calibration.json") }
 
-// savedPrefill returns an earlier run's measured prefill rate for a model.
 func (l *LLMD) savedPrefill(model string) float64 {
 	var saved map[string]float64
 	if b, err := os.ReadFile(l.calibrationPath()); err == nil {
@@ -493,7 +470,6 @@ func (l *LLMD) savedPrefill(model string) float64 {
 	return saved[model]
 }
 
-// savePrefill records a measured prefill rate for a model.
 func (l *LLMD) savePrefill(model string, rate float64) error {
 	saved := map[string]float64{}
 	if b, err := os.ReadFile(l.calibrationPath()); err == nil {
@@ -511,7 +487,6 @@ func (l *LLMD) savePrefill(model string, rate float64) error {
 	return os.Rename(tmp, l.calibrationPath())
 }
 
-// promCounters reads llama.cpp's prompt counters from a /metrics body.
 func promCounters(r interface{ Read([]byte) (int, error) }) (tokens, seconds float64) {
 	b := make([]byte, 0, 64<<10)
 	buf := make([]byte, 16<<10)
@@ -542,7 +517,7 @@ func promCounters(r interface{ Read([]byte) (int, error) }) (tokens, seconds flo
 }
 
 // syncEndpoints writes the model's engines to the EPP's endpoint list. Only
-// engines serving this model are included — the EPP assumes they all do.
+// engines serving this model are included; the EPP assumes they all do.
 func (l *LLMD) syncEndpoints(model, path string) (bool, error) {
 	var keep []discovery.Endpoint
 	var names []string
@@ -625,7 +600,6 @@ func (p *proc) stop() {
 	_ = os.Remove(p.pidPath)
 }
 
-// failure explains an exit with the end of the process's log.
 func (p *proc) failure() error {
 	b, _ := os.ReadFile(p.logPath)
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
@@ -636,7 +610,7 @@ func (p *proc) failure() error {
 }
 
 // reapOrphans stops an EPP or Envoy left by a node that was killed outright
-// — only when its command line runs ModelFabric's own binary, never another
+// ; only when its command line runs ModelFabric's own binary, never another
 // process that reused the pid.
 func (l *LLMD) reapOrphans() {
 	for name, bin := range map[string]string{"epp": l.cfg.EPPPath(), "envoy": l.cfg.EnvoyPath()} {

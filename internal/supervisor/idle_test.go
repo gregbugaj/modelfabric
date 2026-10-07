@@ -11,8 +11,6 @@ import (
 	"net/http/httptest"
 )
 
-// An instance expires only with a TTL, nothing in flight, and no use for that
-// long — and use is measured from the last request, not from the load.
 func TestInstanceExpiry(t *testing.T) {
 	m := mesh.New(config.Default(), "self")
 	eng := mesh.NewEngine("i1", "http://127.0.0.1:1")
@@ -20,7 +18,6 @@ func TestInstanceExpiry(t *testing.T) {
 	m.RegisterEngine(eng)
 	inst := &Instance{ID: "i1", Model: "m", TTLSeconds: 60, StartedAt: time.Now().Add(-time.Hour), engine: eng}
 
-	// Never used: measured from the load, long ago.
 	if !inst.expired(time.Now()) {
 		t.Fatal("an unused instance past its TTL did not expire")
 	}
@@ -45,11 +42,8 @@ func TestInstanceExpiry(t *testing.T) {
 	}
 }
 
-// Tearing a shim down must not need the instance lock. It did once: freeing
-// the port took s.mu, and both call sites held it, so every unload deadlocked
-// the node — engines stayed resident, `mfsh ps` hung, and the process would
-// not shut down. The port is freed by closing the listener now, so this holds
-// the lock while stopping a shim and expects it to finish regardless.
+// Stopping a shim while holding s.mu previously deadlocked on port release.
+// Closing the listener must complete without acquiring the instance lock.
 func TestStopShimDoesNotNeedTheInstanceLock(t *testing.T) {
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	defer engine.Close()
@@ -82,11 +76,8 @@ func TestStopShimDoesNotNeedTheInstanceLock(t *testing.T) {
 	}
 }
 
-// An engine that refuses to stop must not be forgotten. unload removes the
-// instance before it knows the stop worked — deliberately, so nothing routes
-// to it — so a Stop failure ("process survived SIGKILL") used to leave a live
-// process holding its VRAM that `mfsh ps` did not list and no unload could
-// reach.
+// A failed Stop must retain the instance for inspection and retry while
+// keeping it out of routing. Previously it left an untracked live process.
 func TestAStuckEngineStaysListedButUnroutable(t *testing.T) {
 	s := &Supervisor{
 		instances: map[string]*Instance{},
@@ -100,7 +91,6 @@ func TestAStuckEngineStaysListedButUnroutable(t *testing.T) {
 	if _, routable := s.byModel["m"]; routable {
 		t.Fatal("a stuck instance must not be routable again")
 	}
-	// A replacement that already took the id wins; the corpse never displaces it.
 	fresh := &Instance{ID: "i1", Model: "m"}
 	s.instances["i1"] = fresh
 	s.retainStuck("i1", inst)

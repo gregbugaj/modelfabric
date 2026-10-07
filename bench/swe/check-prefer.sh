@@ -1,24 +1,7 @@
 #!/bin/bash
-# Refuses to run when any node in the fleet has a preferred node set.
-#
-# A preference sends every request to one machine first, which is not the
-# routing under test — so a run with one set measures the preference, not the
-# mode, and says nothing about either.
-#
-# This exists because the check it replaces failed open, on every run for a
-# week. sequence.sh did:
-#
-#     if "$MFSH" prefer | grep -q '^Preferred node:'
-#
-# Two faults, and the second hides the first. `prefer` is not in the peer
-# allowlist, so with an entrypoint (MFSH_ADDR pointing at another node) it
-# answers "not available over the mesh" and exits 1 — and grep, finding no
-# match in an error message, reports success. A check that cannot run reads
-# exactly like a check that passed.
-#
-# It was also asking the wrong machine. What matters is the preference on the
-# node doing the routing, and on every node that resolves a model — so each is
-# asked on its own loopback interface, over ssh, where the answer is real.
+# Reject preferred-node settings on every routing and model-resolution node.
+# Query loopback over SSH because prefer is unavailable through the peer API.
+# Treat query failures as failures; matching output alone previously accepted API errors.
 set -uo pipefail
 source "$(dirname "$0")/env.sh"
 
@@ -40,8 +23,7 @@ check() { # name, output
       bad=1 ;;
     "No preferred node"*) ;;
     *)
-      # Anything else is a check that did not run. Saying so is the whole
-      # point: silence here is what cost the earlier runs.
+      # Reject unexpected output; it does not establish that the check passed.
       echo "$1: could not read the preferred node — ${2:-no answer}" >&2
       unreachable=1 ;;
   esac

@@ -14,10 +14,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/hub"
 )
 
-// Discover: search the model hub, read a model's page, and download it to
-// this node — LM Studio's model browser. The dashboard reaches another node's
-// endpoints through /api/v1/nodes/{node}/, so "download to minion" runs on
-// minion, into minion's models root.
+// Model hub search, metadata and downloads run on this node. The dashboard
+// uses /api/v1/nodes/{node}/ to download into another node's models root.
 
 type hubCache struct {
 	mu   sync.Mutex
@@ -25,10 +23,8 @@ type hubCache struct {
 	vals map[string]any
 }
 
-// cached keeps hub answers for a few minutes: the browser re-asks as people
-// click around, and Hugging Face rate-limits anonymous callers.
-// The hub cache holds answers from Hugging Face for a few minutes. It is keyed
-// by what the caller asked for, so it needs both an expiry and a ceiling.
+// cached stores hub responses by request with an expiry and size limit to
+// reduce repeated anonymous Hugging Face API calls.
 const (
 	hubCacheTTL = 5 * time.Minute
 	hubCacheMax = 512
@@ -50,10 +46,8 @@ func (c *hubCache) cached(key string, fetch func() (any, error)) (any, error) {
 		return nil, err
 	}
 	c.mu.Lock()
-	// Keys are built from request-controlled values (a search term, a repo, an
-	// org), and nothing used to leave this map: a node answering hub searches
-	// grew one entry per distinct query, for as long as it ran. Expired
-	// entries go on write, and the map is bounded.
+	// Request-controlled keys require eviction and a size bound to prevent
+	// unbounded growth from distinct queries.
 	for k, t := range c.at {
 		if time.Since(t) >= hubCacheTTL {
 			delete(c.at, k)
@@ -113,7 +107,6 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(a.data)
 }
 
-// cancellable tracks running downloads' cancel functions by operation id.
 type cancellable struct {
 	mu sync.Mutex
 	m  map[string]context.CancelFunc
@@ -155,8 +148,6 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"cancelled": id})
 }
 
-// handleStorage says where this node keeps models, how much room is left,
-// and what GPU it has: what a download to it needs to know.
 func (s *Server) handleStorage(w http.ResponseWriter, _ *http.Request) {
 	if !s.requireSupervisor(w) {
 		return
@@ -171,7 +162,7 @@ func (s *Server) handleStorage(w http.ResponseWriter, _ *http.Request) {
 			break
 		}
 		if root == "/" {
-			break // nothing above the root to fall back to
+			break
 		}
 		// Not created yet: measure where it will be. The loop used to stop
 		// before trying "/" itself, so a models root whose parents are all

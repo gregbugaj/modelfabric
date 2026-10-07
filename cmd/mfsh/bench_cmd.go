@@ -18,21 +18,12 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/bench"
 )
 
-// `mfsh bench` runs the standard benchmark on a node and prints it the way
-// the dashboard shows it. It is not `mfsh tune`: tuning asks how many slots a
-// machine should run; this asks how fast the model is there, in a fixed shape
-// anyone can repeat (internal/bench).
+// `mfsh bench` runs the standard benchmark through the measured node's
+// /api/v1/bench endpoint, excluding CLI network latency. The node owns the run
+// and restores engine settings if the CLI disconnects. Peers use the owner-only proxy.
 //
-// It always runs on the node being measured, through that node's own
-// /api/v1/bench: a benchmark driven from here would time this machine's
-// network as well as the node's GPU, and an interrupted one would leave the
-// node on the benchmark's settings. Another node is reached through the
-// owner-only node proxy, as the dashboard reaches it.
-//
-// -cluster is the other question: not how fast one machine is, but how much
-// the whole setup serves. The requests go through this node's front door and
-// are placed as an app's are, across every node holding the model; nothing is
-// reloaded (bench.RunCluster).
+// -cluster measures requests routed through this node across the mesh without
+// reloading engines (bench.RunCluster).
 
 func benchCmd(args []string) error {
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
@@ -180,10 +171,7 @@ func benchOne(ctx context.Context, addr, node string, cfg bench.Config) (bench.R
 			if ctx.Err() != nil {
 				continue
 			}
-			// The run is the node's, and goes on without us: losing sight of
-			// it for a moment — this node restarting, a peer briefly marked
-			// dead — is not a failed benchmark. One failed poll ended the CLI
-			// while helion carried on to its last test.
+			// Retry failed polls: the node owns the benchmark and continues through CLI or peer disconnects.
 			if lost.IsZero() {
 				lost = time.Now()
 				fmt.Printf("  %s\n", dim("lost contact ("+err.Error()+"); the run continues on the node, retrying"))
@@ -279,8 +267,6 @@ func benchCluster(addr string, cfg bench.ClusterConfig, out string) error {
 	}
 }
 
-// saveBench writes the report as JSON where reports are kept, so a number
-// quoted later can be traced to the run that produced it.
 func saveBench(rep bench.Report, dir string) (string, error) {
 	return saveJSON(rep, fmt.Sprintf("%s-%s-%s", rep.At.Format("20060102-150405"), rep.Node, rep.Model), dir)
 }

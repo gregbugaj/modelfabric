@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// The rules, without needing a tree.
 func TestScanTextRules(t *testing.T) {
 	for _, c := range []struct {
 		name, text string
@@ -62,7 +61,6 @@ func TestTailnetAddresses(t *testing.T) {
 	}
 }
 
-// The published docs were rewritten without em dashes; this keeps them that way.
 func TestEmDashes(t *testing.T) {
 	for _, c := range []struct {
 		name, path, text string
@@ -83,7 +81,6 @@ func TestEmDashes(t *testing.T) {
 	}
 }
 
-// A finding has to name the file and line, or it is a chore rather than a fix.
 func TestFindingPointsAtTheLine(t *testing.T) {
 	text := "First line.\n\nSecond line.\n\nThis one is simply wrong.\n"
 	got := scanText("docs/x.md", text)
@@ -98,9 +95,6 @@ func TestFindingPointsAtTheLine(t *testing.T) {
 	}
 }
 
-// The tree itself. This is the check that matters: it runs with every other
-// test, so prose written today is held to the same rule as prose audited by
-// hand after the fact.
 func TestRepositoryProseIsClean(t *testing.T) {
 	for _, root := range []string{"../../site/content", "../.."} {
 		found, err := Scan(root)

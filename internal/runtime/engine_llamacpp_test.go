@@ -108,7 +108,7 @@ func TestContextIsPerRequest(t *testing.T) {
 }
 
 // An engine bound to a specific address does not listen on loopback, so the
-// node must reach it — and probe its readiness — on that address.
+// node must reach it - and probe its readiness - on that address.
 func TestLocalURLFollowsBind(t *testing.T) {
 	cases := map[string]string{
 		"":             "http://127.0.0.1:18000",
@@ -128,8 +128,8 @@ func TestLocalURLFollowsBind(t *testing.T) {
 	}
 }
 
-// A model.yaml's recommendations become the engine's defaults — sampling as
-// flags, template variables as --chat-template-kwargs — and a model without
+// A model.yaml's recommendations become the engine's defaults - sampling as
+// flags, template variables as --chat-template-kwargs - and a model without
 // one gets neither, so its argv and fingerprint are unchanged.
 func TestModelYAMLDefaultsReachTheEngine(t *testing.T) {
 	data, err := os.ReadFile("../yamlite/testdata/qwen3.8-27b.model.yaml")
@@ -148,7 +148,7 @@ func TestModelYAMLDefaultsReachTheEngine(t *testing.T) {
 	got := argvString(llamaCPP{}.Argv(d, withSpec, llamaCPP{}.Apply(d, withSpec, Requested{}), "127.0.0.1", 8000))
 	for _, want := range []string{
 		"--temp 1 ", "--top-k 20 ", "--top-p 0.95 ",
-		// Unchecked in model.yaml means the sampler is off — not llama.cpp's
+		// Unchecked in model.yaml means the sampler is off - not llama.cpp's
 		// own default, which for min-p is 0.05.
 		"--min-p 0 ", "--repeat-penalty 1 ", "--presence-penalty 0 ",
 		`--chat-template-kwargs {"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"xhigh"}`,
@@ -187,8 +187,8 @@ func TestSlotSavePathIsOnlyPassedWhenSet(t *testing.T) {
 	}
 }
 
-// The prompt cache is always sized explicitly — llama-server's own 8 GiB
-// default is what OOM-killed an engine on a 15 GiB host — and an operator's
+// The prompt cache is always sized explicitly - llama-server's own 8 GiB
+// default is what OOM-killed an engine on a 15 GiB host - and an operator's
 // value, including 0 (off), wins over the fitted one.
 func TestCacheRAMIsFittedAndOverridable(t *testing.T) {
 	old := memTotal

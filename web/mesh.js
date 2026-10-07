@@ -5,17 +5,13 @@ import { el } from "./rendering.js";
 import { meta } from "./routing.js";
 import { buildEdges, constellation, constellationAll, formatBytes, kvBadge, platformBadge } from "./ui-model.js";
 
-/* ---------- Mesh: the architecture, live ---------- */
-
 const topo = { nodes: new Map(), from: "", view: "arch", model: "" }; // node -> topology or { error }
 
 export async function refreshTopology(peers) {
   const nodes = [selfNode, ...peers];
   await Promise.all(nodes.map(async (node) => {
-    // `node` is forced on rather than trusted from the body. renderMesh sorts
-    // on it, so a peer that answers 200 without one threw inside tick() — and
-    // because the whole poll shares that try, one odd peer response took the
-    // entire dashboard to "disconnected" instead of spoiling its own card.
+    // Force the node identity: a successful peer response without it breaks
+    // renderMesh sorting and would mark the entire dashboard disconnected.
     try {
       const t = await fetchJSON(nodeAPI(node, "/api/v1/topology"));
       topo.nodes.set(node, { ...t, node: t?.node || node });
@@ -42,8 +38,7 @@ function renderMesh() {
   $("mesh-from-wrap").hidden = star;
   $("mesh-model-wrap").hidden = !star;
   if (star) { renderConstellation(topos); return; }
-  // Any node that answered can be the entry point: ModelFabric's own router *is* the
-  // front door, so a request enters wherever it is sent.
+  // Any responding node can be an entry point; its front door is a router.
   if (!topo.from || !topos.find((t) => t.node === topo.from)) topo.from = (topos.find((t) => t.node === selfNode) ?? topos[0])?.node ?? "";
 
   const seg = $("mesh-from");
@@ -51,8 +46,6 @@ function renderMesh() {
   for (const t of topos) {
     const b = el("button", "seg-btn" + (t.node === topo.from ? " active" : ""));
     b.type = "button";
-    // What kind of node this is, at a glance: requests entering at an
-    // entrypoint come from outside; at a GPU node, from apps on that machine.
     const pub = t.listeners?.some((l) => l.name === "public");
     if (t.role === "entrypoint") {
       b.append(el("i", "dot-scope scope-public"), document.createTextNode(t.node), el("span", "seg-role role-entrypoint", pub ? "entrypoint · public" : "entrypoint"));
@@ -69,7 +62,6 @@ function renderMesh() {
   }
   if (!topos.length) seg.append(el("span", "muted small", "no node answered"));
 
-  // Where requests come from, for the chosen node.
   const entries = $("mesh-entries");
   entries.replaceChildren();
   const src = topos.find((t) => t.node === topo.from);
@@ -95,11 +87,7 @@ function renderMesh() {
   requestAnimationFrame(drawMeshEdges);
 }
 
-// kvMeter draws an engine's KV-cache utilization: a bar for how full the pool
-// is, and nothing at all when the engine could not be asked — an unmeasured
-// engine must not read as an empty one.
-// formatTokens keeps a million-token counter readable: the interesting part
-// is the magnitude and the ratio between engines, not the last three digits.
+// An unmeasured KV pool must not render as empty.
 export function formatTokens(n) {
   if (!n) return "—";
   if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
@@ -107,12 +95,9 @@ export function formatTokens(n) {
   return String(n);
 }
 
-// shareBar is one engine's share of the fleet's prefill, drawn rather than
-// written: the imbalance is the finding, and a row of percentages hides it.
 export function shareBar(fraction) {
   const wrap = el("span", "share");
-  // A track behind the fill, so a small share reads as "little of the whole"
-  // rather than as a stray dash with nothing to measure it against.
+  // The track gives small shares a visible scale.
   const track = el("span", "share-track");
   const fill = el("span", "share-fill");
   fill.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
@@ -143,8 +128,6 @@ function meshCard(t) {
   const card = el("div", "mesh-node" + (t.error ? " unreadable" : "") + (t.node === topo.from ? " from" : ""));
   const head = el("div", "mesh-node-head");
   const title = el("div", "mesh-node-title");
-  // The platform mark stands in for the generic server icon where the node
-  // reports one: what a node can run follows from it.
   const plat = platformTag(t.platform, t.os_version, 20);
   title.append(plat ?? icon("server", 16), el("span", null, t.node));
   if (t.node === selfNode) title.append(el("span", "self-tag", "this node"));
@@ -211,9 +194,7 @@ function drawMeshEdges() {
     edges.unshift({ from: { node: "_", kind: "entry", id: "apps" }, to: { node: src.node, kind: "listener", id: "front" }, style: "entry" });
     if (src.listeners.some((l) => l.name === "public")) {
       edges.unshift({ from: { node: "_", kind: "entry", id: "internet" }, to: { node: src.node, kind: "listener", id: "public" }, style: "entry" });
-      // The public listener is the same router as the front door, reached from
-      // outside: a request joins the paths below at that box, so without this
-      // hop the public listener sat unconnected to anything it feeds.
+      // The public listener feeds the same router as the front door.
       edges.push({ from: { node: src.node, kind: "listener", id: "public" }, to: { node: src.node, kind: "listener", id: "front" }, style: "entry" });
     }
   }
@@ -229,10 +210,8 @@ function drawMeshEdges() {
     const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
     const ax = ra.left - cr.left, ay = ra.top - cr.top, bx = rb.left - cr.left, by = rb.top - cr.top;
     let d;
-    // A line that would cross another node's card dips below the cards and
-    // runs through the tailnet band instead: drawn straight, the line from
-    // sites-01 to xpredator ran across minion's Front door and read as a
-    // connection to minion.
+    // Route crossing links below the cards so they do not imply
+    // a connection to an intervening node.
     const cards = [...canvas.querySelectorAll(".mesh-node")].map((n) => n.getBoundingClientRect());
     const lo = Math.min(ra.left, rb.left), hi = Math.max(ra.right, rb.right);
     const between = cards.some((c) => c.left > lo + 1 && c.right < hi - 1 && !(c.left <= ra.left && c.right >= ra.right) && !(c.left <= rb.left && c.right >= rb.right));
@@ -243,7 +222,7 @@ function drawMeshEdges() {
       const yb = Math.max(...cards.map((c) => c.bottom)) - cr.top + 10 + (seen.size % 3) * 5;
       const k = right ? 1 : -1;
       d = `M${x1},${y1} C${x1 + 28 * k},${y1} ${x1 + 28 * k},${yb} ${x1 + 56 * k},${yb} L${x2 - 56 * k},${yb} C${x2 - 28 * k},${yb} ${x2 - 28 * k},${y2} ${x2 - 2 * k},${y2}`;
-    } else if (Math.abs(ax - bx) < 8) { // same card: a loop on its right edge
+    } else if (Math.abs(ax - bx) < 8) {
       const x = ax + ra.width, y1 = ay + ra.height / 2, y2 = by + rb.height / 2, bulge = 26 + Math.min(60, Math.abs(y2 - y1) / 5);
       d = `M${x},${y1} C${x + bulge},${y1} ${x + bulge},${y2} ${x + 2},${y2}`;
     } else {
@@ -260,9 +239,6 @@ function drawMeshEdges() {
   svg.innerHTML = paths;
 }
 window.addEventListener("resize", () => requestAnimationFrame(drawMeshEdges));
-
-
-/* The Constellation: one model at the centre, drawn for the eye. */
 
 const STAR_STYLE = { direct: "direct", forwarded: "forwarded", llmd: "llmd", preferred: "preferred" };
 
@@ -296,8 +272,7 @@ function modelButton(m, active) {
   return b;
 }
 
-// The platform mark inside a node's circle. The node is filled with --surface,
-// which is exactly what the glyphs cut their holes in, so it needs no variant.
+// Match the node fill to the glyph cut-outs' --surface color.
 function starPlatform(x, y, platform, size = 16) {
   const glyph = PLATFORM_ICONS[platformBadge(platform).key];
   if (!glyph) return "";
@@ -306,12 +281,10 @@ function starPlatform(x, y, platform, size = 16) {
   return `<g transform="translate(${x - size / 2},${y - size / 2}) scale(${s})" class="plat-star">${glyph}</g>`;
 }
 
-// Colours for models in the all-models view, apart from the route colours.
 const MODEL_HUES = [252, 186, 330, 45, 205, 300, 160, 15];
 const starEsc = (x) => String(x).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 
-// Places items on a circle at the angles they would prefer (next to what
-// they connect to), nudging neighbours apart until each has room.
+// Keep connected items near each other, separating neighbors to avoid overlap.
 function orbit(items, prefer, r, cx, cy) {
   const pos = new Map();
   if (!items.length) return pos;
@@ -347,10 +320,8 @@ function renderConstellationAll(c) {
   const R1 = Math.min(W, H) * 0.37, R2 = Math.min(W * 0.47, H * 0.46);
   const hue = new Map(c.models.map((m, i) => [m.model, MODEL_HUES[i % MODEL_HUES.length]]));
 
-  // Models on a small central ring; nodes and entry points ordered by where
-  // what they connect to sits.
   const mpos = new Map();
-  const first = c.models.length === 2 ? Math.PI : -Math.PI / 2; // two models side by side
+  const first = c.models.length === 2 ? Math.PI : -Math.PI / 2;
   c.models.forEach((m, i) => {
     const a = first + (2 * Math.PI * i) / c.models.length;
     mpos.set(m.model, [cx + R0 * Math.cos(a), cy + R0 * Math.sin(a)]);
@@ -359,7 +330,7 @@ function renderConstellationAll(c) {
   const meanAngle = (points) => {
     if (!points.length) return Math.PI / 2;
     const sx = points.reduce((k, p) => k + Math.cos(angleOf(p)), 0), sy = points.reduce((k, p) => k + Math.sin(angleOf(p)), 0);
-    // Connected to models on opposite sides: sit between them, above.
+    // Opposing connections have no mean direction; place the node above them.
     if (Math.hypot(sx, sy) < 0.2 * points.length) return -Math.PI / 2;
     return Math.atan2(sy, sx);
   };
@@ -382,7 +353,6 @@ function renderConstellationAll(c) {
   <text x="${cx}" y="${cy - R2 - 42}" class="orbit-label" text-anchor="middle">tailnet</text>
   <circle cx="${cx}" cy="${cy}" r="${R1}" class="orbit inner"/>`;
 
-  // Entry points to the nodes they route to.
   for (const e of c.entries) {
     const [x1, y1] = pos(e.node);
     for (const l of e.links) {
@@ -395,7 +365,6 @@ function renderConstellationAll(c) {
       out += `<path d="${d}" class="link link-${st}"/><path d="${d}" class="flow flow-${st}"><title>${esc(e.node)} → ${esc(l.to)} · ${esc(l.style)}: ${esc(l.models.join(", "))}</title></path>`;
     }
   }
-  // Nodes to the models they serve, each in its model's colour.
   for (const n of c.nodes) {
     const [x, y] = pos(n.node);
     for (const s of n.serves) {
@@ -405,7 +374,6 @@ function renderConstellationAll(c) {
       out += `<line x1="${x}" y1="${y}" x2="${mx}" y2="${my}" style="stroke:hsl(${h} 70% 52%)" class="flow${hot ? " hot" : ""}"><title>${esc(n.node)} serves ${esc(s.model)} · ${s.inflight}/${s.slots} busy</title></line>`;
     }
   }
-  // The models.
   const coreR = c.models.length > 3 ? 38 : 46;
   for (const m of c.models) {
     const [x, y] = mpos.get(m.model);
@@ -417,7 +385,6 @@ function renderConstellationAll(c) {
       <text x="${x}" y="${y + 6}" text-anchor="middle" class="core-name small-core">${esc(name)}</text>
       <text x="${x}" y="${y + 21}" text-anchor="middle" class="core-sub">${m.inflight}/${m.slots} slots</text>`;
   }
-  // Nodes, sized by GPU memory and ringed by their slots.
   for (const n of c.nodes) {
     const [x, y] = pos(n.node);
     const vram = (n.gpu?.vram_mb ?? 16000) / 1024;
@@ -438,7 +405,6 @@ function renderConstellationAll(c) {
     out += `<text x="${lx}" y="${ly}" text-anchor="${anchor}" class="node-sub">${esc(gpu)}</text>`;
     out += `<text x="${lx}" y="${ly + 14}" text-anchor="${anchor}" class="node-sub">${n.inflight}/${n.slots} slots busy · ${n.serves.length} model${n.serves.length === 1 ? "" : "s"}</text>`;
   }
-  // Entry points, the internet reaching the public one, and the rest.
   for (const e of c.entries) {
     if (npos.has(e.node)) continue;
     const [x, y] = pos(e.node);
@@ -491,13 +457,11 @@ function drawConstellation(c) {
     return;
   }
 
-  // Positions: serving nodes on the inner orbit, entry points and the rest outside.
   const pos = new Map();
   c.serving.forEach((s, i) => pos.set(s.node, at(i, c.serving.length, R1, Math.PI / 5)));
   const outer = [...c.entries.filter((e) => !pos.has(e.node)).map((e) => e.node), ...c.others];
   outer.forEach((n, i) => pos.set(n, at(i, outer.length, R2, Math.PI / Math.max(outer.length, 1))));
 
-  // Links: entry points to the nodes they route to, then serving nodes to the model.
   for (const e of c.entries) {
     const [x1, y1] = pos.get(e.node);
     for (const l of e.links) {
@@ -516,7 +480,6 @@ function drawConstellation(c) {
     out += `<line x1="${x}" y1="${y}" x2="${cx}" y2="${cy}" class="flow flow-spoke${hot ? " hot" : ""}"/>`;
   }
 
-  // The model.
   const [pub, name] = c.model.includes("/") ? c.model.split("/") : ["", c.model];
   const slots = c.serving.reduce((n, s) => n + s.slots, 0), busy = c.serving.reduce((n, s) => n + s.inflight, 0);
   out += `<circle cx="${cx}" cy="${cy}" r="80" class="halo"/>
@@ -525,7 +488,6 @@ function drawConstellation(c) {
     <text x="${cx}" y="${cy + 6}" text-anchor="middle" class="core-name">${esc(name)}</text>
     <text x="${cx}" y="${cy + 26}" text-anchor="middle" class="core-sub">${c.serving.length} node${c.serving.length === 1 ? "" : "s"} · ${busy}/${slots} slots</text>`;
 
-  // Serving nodes: sized by GPU memory, ringed by their slots.
   for (const s of c.serving) {
     const [x, y] = pos.get(s.node);
     const vram = (s.gpu?.vram_mb ?? 16000) / 1024;
@@ -541,7 +503,7 @@ function drawConstellation(c) {
     const gpu = s.gpu ? s.gpu.name.replace(/^(NVIDIA|AMD|Intel)\s+(GeForce\s+)?/i, "") : "";
     out += starPlatform(x, y - 12, s.platform);
     out += `<text x="${x}" y="${y + 6}" text-anchor="middle" class="node-name">${esc(s.node)}</text>`;
-    // Details on the side away from the model, so they never cross it.
+    // Put labels away from the model to avoid crossing it.
     const ux = (x - cx) / (Math.hypot(x - cx, y - cy) || 1), uy = (y - cy) / (Math.hypot(x - cx, y - cy) || 1);
     const lx = x + ux * (r + 22), ly = y + uy * (r + 22);
     const anchor = Math.abs(ux) < 0.35 ? "middle" : ux > 0 ? "start" : "end";
@@ -550,7 +512,6 @@ function drawConstellation(c) {
     out += `<text x="${lx}" y="${ly + dy + 14}" text-anchor="${anchor}" class="node-sub">${s.inflight}/${s.slots} slots busy${s.prefill ? ` · ${Math.round(s.prefill)} tok/s prefill` : ""}</text>`;
   }
 
-  // Entry points and the rest, on the outer orbit.
   for (const e of c.entries) {
     if (c.serving.find((s) => s.node === e.node)) continue;
     const [x, y] = pos.get(e.node);
@@ -559,10 +520,9 @@ function drawConstellation(c) {
     out += `<text x="${x}" y="${y - 1}" text-anchor="middle" class="entry-name">${esc(e.node)}</text>`;
     out += `<text x="${x}" y="${y + 13}" text-anchor="middle" class="entry-sub">${e.role === "entrypoint" ? (e.public ? "entrypoint · public" : "entrypoint") : "routes " + esc(e.via)}</text>`;
     if (e.public) {
-      // The internet, just outside the tailnet orbit, reaching in here.
       const ux = (x - cx) / (Math.hypot(x - cx, y - cy) || 1), uy = (y - cy) / (Math.hypot(x - cx, y - cy) || 1);
       const ox = cx + ux * (R2 + 112), oy = cy + uy * (R2 + 112);
-      const ex = x + ux * 58, ey = y + uy * 20; // the pill's outer edge
+      const ex = x + ux * 58, ey = y + uy * 20;
       out += `<line x1="${ox + ux * -15}" y1="${oy + uy * -15}" x2="${ex}" y2="${ey}" class="link link-public"/>
         <line x1="${ox + ux * -15}" y1="${oy + uy * -15}" x2="${ex}" y2="${ey}" class="flow flow-public"/>
         <circle cx="${ox}" cy="${oy}" r="15" class="globe"/>

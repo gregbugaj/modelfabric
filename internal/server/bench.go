@@ -15,18 +15,11 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/bench"
 )
 
-// Benchmarking this node: internal/bench's standard suite, run against this
-// node's own engine.
+// Local engine benchmark using internal/bench.
 //
-//	POST   /api/v1/bench  start      {"model", "prompts", "pp", "tg", "batch", "batch_pp", "reps"}
-//	GET    /api/v1/bench  progress, then the report
-//	DELETE /api/v1/bench  stop, and put the engine back as it was
-//
-// Started and polled, like tuning, for the same reason: a run reloads the
-// engine twice and takes minutes, and a closed browser tab must not leave the
-// node on a benchmark's one-slot, 32K-context load. A fleet benchmark is this
-// endpoint through the node proxy, once per node: each machine measures its
-// own GPU.
+// POST /api/v1/bench starts a run; GET returns progress and the report;
+// DELETE cancels and restores the engine. Runs outlive HTTP requests so a
+// disconnect does not leave benchmark settings loaded.
 
 type benchState struct {
 	mu      sync.Mutex
@@ -158,8 +151,6 @@ func (s *Server) handleBenchCancel(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"stopped": true, "message": "stopping; the engine is put back as it was found"})
 }
 
-// benchReport is what is known before the run: the machine, the build, the
-// model file, and the command that repeats it.
 func (s *Server) benchReport(cfg bench.Config) bench.Report {
 	st := s.m.State()
 	rep := bench.Report{Node: st.Node, Model: cfg.Model, At: time.Now(), Config: cfg}
@@ -181,8 +172,6 @@ func (s *Server) benchReport(cfg bench.Config) bench.Report {
 	return rep
 }
 
-// fillBenchReport carries what the run does not know about into each report it
-// emits.
 func (s *Server) fillBenchReport(r *bench.Report, base bench.Report) {
 	r.Node, r.Machine, r.Command = base.Node, base.Machine, base.Command
 	r.Engine.Quant, r.Engine.SizeMB, r.Engine.File = base.Engine.Quant, base.Engine.SizeMB, base.Engine.File
@@ -206,7 +195,6 @@ func benchCommand(node string, c bench.Config) string {
 	return cmd
 }
 
-// benchEngine is the tuner's engine plus what a report records about it.
 type benchEngine struct{ supEngine }
 
 func (e benchEngine) Loaded(_ context.Context, model string) (int, string, map[string]any, error) {

@@ -10,12 +10,9 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/nodekey"
 )
 
-// The dashboard's token manager: list, create, revoke. Management routes, so
-// loopback-only, or a device Tailscale reports as the same owner (peer.go) —
-// the same people who can already read the node key from its disk.
+// Token management requires loopback or a Tailscale device with the same owner.
 
-// tokenView is a token as the API shows it: never the secret, which is not
-// kept, and not the hash, which is nobody's business but the store's.
+// tokenView excludes both the secret and its stored hash.
 type tokenView struct {
 	ID       string     `json:"id"`
 	Name     string     `json:"name"`
@@ -34,12 +31,9 @@ func viewOf(t nodekey.Token) tokenView {
 }
 
 type tokensList struct {
-	// NodeKey is the node key's last four characters. It is listed so the
-	// page shows every credential the node accepts. It is rotated rather than
-	// revoked (there is always exactly one), and rotating cuts off every
-	// client holding it at once, so the page asks first.
-	NodeKey string `json:"node_key,omitempty"`
-	// Rotatable is whether this node can rotate its key from here.
+	// NodeKey is the node key's last four characters. Rotating the key revokes
+	// all clients using it; the dashboard requests confirmation.
+	NodeKey   string      `json:"node_key,omitempty"`
 	Rotatable bool        `json:"rotatable,omitempty"`
 	Tokens    []tokenView `json:"tokens"`
 }
@@ -126,10 +120,8 @@ func tokenErrStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-// keyInfo is where this node keeps its key and who it runs as: what `mfsh
-// key` checks before reading a key file. Run as another user, it read that
-// user's home, found no key, and created one the node never used: printed as
-// if it were the node's key, it was refused by the node it was meant for.
+// keyInfo identifies the running node's key directory and user. The CLI must
+// not create an unrelated key in its own user's home.
 type keyInfo struct {
 	Home string `json:"home"`
 	File string `json:"file"`

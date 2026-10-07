@@ -17,10 +17,6 @@ func withMemory(t *testing.T, total, available int64) {
 
 const gb = int64(1) << 30
 
-// A row is refused before it allocates anything when the machine has nothing to
-// spare. The sweep that prompted this took a Mac off the network entirely: no
-// out-of-memory kill, no error from the engine, no row, and the ssh session gone
-// with it.
 func TestARowIsRefusedWhenMemoryIsAlreadyTight(t *testing.T) {
 	withMemory(t, 36*gb, 2*gb) // 5.5%, under the start floor
 	tight, why := memoryTooTight()
@@ -41,9 +37,6 @@ func TestARowRunsWhenThereIsRoom(t *testing.T) {
 	}
 }
 
-// A platform that will not say must not block the sweep. Reading nothing is not
-// the same as reading zero free, and refusing every row on a machine ModelFabric cannot
-// measure would break tuning everywhere it cannot see memory.
 func TestUnknownMemoryDoesNotRefuseTheRow(t *testing.T) {
 	withMemory(t, 0, 0)
 	if tight, _ := memoryTooTight(); tight {
@@ -51,9 +44,8 @@ func TestUnknownMemoryDoesNotRefuseTheRow(t *testing.T) {
 	}
 }
 
-// The absolute floor matters on a small machine, where a percentage is not much
-// memory: 12% of 8GB is under a gigabyte, which is not enough to keep a host
-// answering while an engine loads.
+// An absolute floor protects small hosts where the percentage reserve is
+// less than 1 GiB.
 func TestTheFloorIsAtLeastAGigabyte(t *testing.T) {
 	withMemory(t, 8*gb, 900*1024*1024) // 11% of 8GB, but under 1GiB
 	if tight, _ := memoryTooTight(); !tight {
@@ -61,13 +53,10 @@ func TestTheFloorIsAtLeastAGigabyte(t *testing.T) {
 	}
 }
 
-// The case the Mac hit: memory was fine when the row started and collapsed while
-// it ran, because mlx-lm allocates as a request grows. The watch abandons the row
-// instead of letting the host go under.
+// Memory can collapse during a request as mlx-lm grows KV; cancel the row
+// when it crosses the abort floor.
 func TestTheWatchAbandonsARowWhenMemoryCollapses(t *testing.T) {
-	// Atomic because the watch reads it from its own goroutine while the test
-	// changes it — the race detector is right to object to the plain variable
-	// this started as.
+	// Use atomic access because the watcher reads while the test updates memory.
 	var available atomic.Int64
 	available.Store(20 * gb)
 	prev := hostMemory
@@ -78,7 +67,6 @@ func TestTheWatchAbandonsARowWhenMemoryCollapses(t *testing.T) {
 	defer cancel()
 	stop := watchMemory(ctx, cancel)
 
-	// The row is running happily, then the engine eats the machine.
 	time.Sleep(700 * time.Millisecond)
 	if ctx.Err() != nil {
 		t.Fatal("the row was abandoned while memory was fine")
@@ -102,8 +90,6 @@ func TestTheWatchAbandonsARowWhenMemoryCollapses(t *testing.T) {
 	}
 }
 
-// And it stays quiet when nothing goes wrong: a watch that reported starvation on
-// a healthy row would make every sweep untrustworthy.
 func TestTheWatchIsQuietOnAHealthyRow(t *testing.T) {
 	withMemory(t, 36*gb, 20*gb)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -129,8 +115,7 @@ func (e *idleEngine) Target(context.Context, string) (string, string, error) {
 func (e *idleEngine) Inflight(context.Context, string) (int, error)     { return 0, nil }
 func (e *idleEngine) Current(context.Context, string) (int, int, error) { return 1, 4096, nil }
 
-// A starved row ends the sweep, even for slot counts the operator listed: the
-// next one allocates more, and the row after a wedge is not a measurement.
+// Memory starvation ends even explicitly configured sweeps before more allocation.
 func TestStarvationStopsTheSweep(t *testing.T) {
 	withMemory(t, 36*gb, 1*gb) // tight from the start
 	e := &idleEngine{}

@@ -10,11 +10,8 @@ import (
 	"strings"
 )
 
-// serviceCmd installs ModelFabric as a systemd service for headless operation, the
-// equivalent of running llmster under systemctl.
-// systemdArg quotes a path for a systemd ExecStart line. systemd applies its
-// own quoting rules and expands "%" specifiers, so a path containing a space,
-// a quote, a backslash or a percent sign would otherwise change what is run.
+// systemdArg quotes a path for ExecStart. Escape systemd quoting characters
+// and percent specifiers so paths do not change the executed command.
 func systemdArg(p string) string {
 	q := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%").Replace(p)
 	return `"` + q + `"`
@@ -24,16 +21,11 @@ func serviceCmd(args []string) error {
 	if len(args) == 0 || (args[0] != "install" && args[0] != "unit") {
 		return fmt.Errorf("usage: mfsh service install [-dir DIR] [-enable]\n       mfsh service unit      print the unit to stdout (e.g. for a system-wide install)")
 	}
-	// ContinueOnError so a bad flag returns through this function's error,
-	// the way every other subcommand reports one, instead of calling os.Exit
-	// from inside a function that promises to return.
 	fs := flag.NewFlagSet("service", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath(), "config file the service runs with")
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// The unit file's paths are absolute by necessity: systemd runs from
-		// "/", so an empty home turned the install directory into a relative
-		// path that resolves somewhere else entirely.
+		// Require an absolute home path because systemd runs from /.
 		return fmt.Errorf("cannot determine the home directory: %w", err)
 	}
 	dir := fs.String("dir", filepath.Join(home, ".config", "systemd", "user"), "where to write the unit")
@@ -46,9 +38,6 @@ func serviceCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Resolving is a nicety, not a requirement: if the path cannot be resolved
-	// (it was replaced, or a parent is unreadable) the original absolute path
-	// is still correct, while the discarded error left `self` empty.
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
 		self = resolved
 	}
@@ -61,11 +50,7 @@ func serviceCmd(args []string) error {
 	if err := os.MkdirAll(*dir, 0o755); err != nil {
 		return err
 	}
-	// A unit from before the project was renamed runs the old llmz binary on
-	// the same port. Enabling this one beside it would leave two services
-	// fighting for :1234, and systemd restarting whichever lost.
-	// Only a unit that is enabled or running is in the way; a disabled one is
-	// just a stale file.
+	// Reject an enabled or running legacy unit to avoid competing services on the same port.
 	if old := filepath.Join(*dir, "llmz.service"); *enable {
 		if _, err := os.Stat(old); err == nil {
 			for _, check := range []string{"is-enabled", "is-active"} {
@@ -93,8 +78,7 @@ func serviceCmd(args []string) error {
 		fmt.Printf("%s mfsh.service is enabled and running\n", green("✓"))
 	}
 
-	// A user service stops when its user logs out — the classic surprise on a
-	// headless machine. Linger keeps it running with nobody logged in.
+	// Linger keeps the user service running after logout.
 	if u, err := user.Current(); err == nil {
 		if _, err := os.Stat("/var/lib/systemd/linger/" + u.Username); err != nil {
 			fmt.Printf("\n  %s it will stop when you log out. To keep it running headless:\n    %s\n",
@@ -130,9 +114,7 @@ WantedBy=default.target
 `, systemdArg(bin), configArg(cfgPath))
 }
 
-// configArg is the unit's -config, or nothing for the default path: a unit
-// outlives the build that wrote it, and a default frozen into it is the path
-// that build had, not the one the next build reads.
+// configArg omits the default config path so installed units follow future default changes.
 func configArg(cfgPath string) string {
 	if cfgPath == "" || cfgPath == defaultConfigPath() {
 		return ""

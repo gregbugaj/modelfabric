@@ -20,18 +20,11 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/slotcache"
 )
 
-// TestLiveColdTier drives the real router and engine shim against a real
-// llama-server, because the unit tests only prove this package agrees with its
-// own idea of the engine. The cache places requests in the shim, as the
-// supervisor wires it, so a conversation is cached the same whether it came
-// through ModelFabric's router or straight to the shim the way llm-d's Envoy
-// sends it. Skipped unless pointed at one:
+// TestLiveColdTier exercises the router and shim against a real llama-server.
+// One slot and no host-RAM cache isolate reuse from disk. Skipped unless configured:
 //
 //	llama-server -m model.gguf --port 18999 -np 1 --cache-ram 0 --slot-save-path /some/dir
 //	MF_LIVE_ENGINE=http://127.0.0.1:18999 MF_LIVE_SLOTDIR=/some/dir go test ./internal/slotcache -run Live -v
-//
-// One slot and no host-RAM cache, so that a conversation coming back warm can
-// only have come from disk.
 func TestLiveColdTier(t *testing.T) {
 	base, dir := os.Getenv("MF_LIVE_ENGINE"), os.Getenv("MF_LIVE_SLOTDIR")
 	if base == "" || dir == "" {

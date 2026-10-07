@@ -1,12 +1,5 @@
-/* ---- stat cards ---- */
-
-/* The front door. A mesh is addressed by one string apps paste, so that string
-   is the page's subject: set large in mono, selectable, with the hops it hides
-   spelled out beneath it in the same scope colours the Mesh page uses. */
 .frontdoor {
-  /* No card: this is the page's opening statement, not a box on the page.
-     Type and air carry it, and the panels below keep their own chrome. The
-     inline padding matches a panel head's, so the page has one left edge. */
+  /* Match panel-header padding to align the page's left edge. */
   padding: 2px 14px 0;
   margin: 2px 0 26px;
 }
@@ -27,8 +20,6 @@
 .fd-auth { margin-top: 4px; font-size: 12.5px; color: var(--text-2); }
 .fd-auth .locked { color: hsl(var(--warning-token)); font-weight: 600; }
 
-/* The hops a request takes through this node. Not decoration: each stop is a
-   listener or a process that is actually in the path right now. */
 .fd-path {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
   margin: 16px 0 0; padding: 12px 0 0; list-style: none;
@@ -44,8 +35,6 @@
 .fd-arrow { color: var(--text-muted); }
 .fd-stop.off { opacity: 0.55; }
 
-/* One line of live state, where four tiles used to sit: three of them read
-   zero on a healthy idle mesh. */
 .pulse { font-size: 12.5px; color: var(--text-2); display: inline-flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
 .pulse b { color: var(--text); font-weight: 600; }
 .pulse .sep { color: var(--text-muted); }

@@ -10,10 +10,7 @@ source "$(dirname "$0")/env.sh"
 NAME=${1:?usage: run.sh NAME}
 cd "$WORK/aider"
 
-# The key belongs to whichever node the agent talks to. With an entrypoint
-# that is not this machine, and `mfsh key -addr` cannot fetch it: a key is read
-# from its own node's disk and deliberately not served over the network, so it
-# comes over ssh.
+# Fetch the entrypoint's key over SSH; keys are local files and are not exposed by the management API.
 if [ -n "${ENTRYPOINT:-}" ]; then
   KEY=$(tailscale ssh "$ENTRYPOINT" '~/.local/bin/mfsh key' </dev/null | tr -d '\r\n')
   [ -n "$KEY" ] || { echo "could not read $ENTRYPOINT's API key over ssh" >&2; exit 1; }
@@ -21,10 +18,7 @@ else
   KEY=$("$MFSH" key)
 fi
 
-# AGENT_BASE is ModelFabric's, so every request is recorded with the node and engine
-# that served it — the placement data this benchmark exists to produce. It
-# must also be reachable from inside the container: the public entrypoint is,
-# a loopback address is not.
+# Use the ModelFabric entrypoint to record request placement. It must be reachable from the benchmark container.
 case "$AGENT_BASE" in
   http://127.0.0.1*|http://localhost*)
     echo "warning: $AGENT_BASE is loopback and the benchmark runs in a container." >&2
@@ -32,12 +26,9 @@ case "$AGENT_BASE" in
     ;;
 esac
 
-# Which exercises, decided here rather than by the harness. aider shuffles
-# unseeded and takes the first N, so --num-tests alone gives every mode a
-# different subset — see subset.py. Passing the list keeps the modes
-# comparable and the split across the six languages even.
+# Pass a seeded, language-balanced exercise list; --num-tests alone uses aider's unseeded shuffle.
 if [ "$NUM_TESTS" -ge 225 ]; then
-  SELECT=()            # the whole set; nothing to choose
+  SELECT=()
   WHICH="all 225 exercises"
 else
   KEYWORDS=$("$AIDER_DIR/subset.py" "$WORK/aider/tmp.benchmarks/polyglot-benchmark" \

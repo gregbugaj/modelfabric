@@ -18,26 +18,20 @@ func TestParseTTL(t *testing.T) {
 	}
 }
 
-// `mfsh unload <model-key>` used to post the key straight through as an
-// instance_id, so the server answered `no loaded instance "qwen/qwen3-0.6b"`
-// while that model was plainly loaded — the interactive path resolved the id
-// but the positional one did not.
+// Resolve positional model keys to instance IDs before unloading; sending a key as instance_id rejected loaded models.
 func TestUnloadTargetsResolvesAModelKey(t *testing.T) {
 	models := []apiModel{
 		{Key: "qwen/qwen3-0.6b", LoadedInstances: loadedIDs("inst-aaa", "inst-bbb")},
 		{Key: "qwen/qwen3.8-27b", LoadedInstances: loadedIDs("inst-ccc")},
 		{Key: "unloaded/model"},
 	}
-	// A key names every instance of that model, not just the first.
 	got, err := unloadTargets(models, "qwen/qwen3-0.6b")
 	if err != nil || len(got) != 2 || got[0] != "inst-aaa" || got[1] != "inst-bbb" {
 		t.Fatalf("unloadTargets(key) = %v, %v; want both instances", got, err)
 	}
-	// An instance id still names exactly that instance.
 	if got, err := unloadTargets(models, "inst-bbb"); err != nil || len(got) != 1 || got[0] != "inst-bbb" {
 		t.Fatalf("unloadTargets(id) = %v, %v; want just that instance", got, err)
 	}
-	// Anything else says so, and says what is loaded, once per model.
 	_, err = unloadTargets(models, "qwen/nope")
 	if err == nil {
 		t.Fatal("an unknown argument must be an error, not a silent no-op")
@@ -50,7 +44,6 @@ func TestUnloadTargetsResolvesAModelKey(t *testing.T) {
 	if strings.Count(err.Error(), "qwen/qwen3-0.6b") != 1 {
 		t.Errorf("a model with replicas should be listed once: %q", err)
 	}
-	// A model that is not loaded is not a target.
 	if _, err := unloadTargets(models, "unloaded/model"); err == nil {
 		t.Error("a model with no instances cannot be unloaded")
 	}
@@ -85,10 +78,7 @@ func TestSystemdArgQuotesAwkwardPaths(t *testing.T) {
 	}
 }
 
-// The comment promised that wildcard listen addresses are probed via loopback,
-// but only the bare ":1234" form was translated — so a health check against
-// "0.0.0.0:1234" or "[::]:1234" dialled an address that is not connectable on
-// some systems.
+// Probe all wildcard forms through loopback; dialing 0.0.0.0 or [::] fails on some systems.
 func TestHTTPBaseTranslatesEveryWildcard(t *testing.T) {
 	for in, want := range map[string]string{
 		":1234":          "http://127.0.0.1:1234",

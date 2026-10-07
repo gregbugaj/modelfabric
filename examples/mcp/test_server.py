@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""A tiny MCP server for testing ModelFabric's /api/v1/chat. No dependencies.
+"""Dependency-free MCP test server for ModelFabric's /api/v1/chat.
 
-It speaks MCP over stdio: one JSON message per line on stdin, one per line on
-stdout. Two tools, chosen so a test has an answer the model cannot guess:
+Use newline-delimited JSON on stdin and stdout. Tools:
 
-  add           adds two numbers
-  secret_word   returns a fixed word, "marzipan"
+  add           add two numbers
+  secret_word   return the fixed word "marzipan"
 
-See docs: /docs/api/mcp#try-it-with-the-test-server
+See /docs/api/mcp#try-it-with-the-test-server.
 """
 import json
 import sys

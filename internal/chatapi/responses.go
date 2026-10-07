@@ -25,14 +25,12 @@ import (
 // A request that needs none of this is passed through as it arrives, byte for
 // byte apart from that one patch: this is the path Codex streams on.
 
-// Upstream is the engine's answer to one /v1/responses call.
 type Upstream struct {
 	Status int
 	Header http.Header
 	Body   io.ReadCloser
 }
 
-// Responses answers POST /v1/responses.
 func (r *Runner) Responses(ctx context.Context, raw []byte, w http.ResponseWriter) {
 	var body map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -146,8 +144,6 @@ func relayStream(w http.ResponseWriter, body io.Reader, keep func(map[string]any
 	}
 }
 
-// patchEvent adds the fields an event is missing and reports whether it
-// added any.
 func patchEvent(ev map[string]any, seq *int, index map[string]int) bool {
 	changed := false
 	set := func(k string, v any) {
@@ -299,8 +295,6 @@ func (r *Runner) responsesWithTools(ctx context.Context, body map[string]json.Ra
 	}
 	labelOf := func(p Provider) string { return labels[or(p.ServerLabel, p.PluginID)] }
 
-	// What the model is offered: the caller's own tools, then each server's
-	// as functions.
 	offered := append([]json.RawMessage(nil), rest...)
 	listed := map[string][]map[string]any{}
 	for _, name := range sortedNames(tools) {

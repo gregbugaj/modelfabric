@@ -8,9 +8,8 @@ import (
 
 // On Apple silicon the CPU, the GPU and the host share one pool of memory, so
 // the survey reports the chip once as the CPU and once as a GPU whose MemoryMB
-// is what Metal will actually hand out — not a second, separate pool.
+// is what Metal will actually hand out - not a second, separate pool.
 
-// surveyHost fills in the CPU and host memory from sysctl.
 func surveyHost(hw *Hardware) {
 	if brand, err := syscall.Sysctl("machdep.cpu.brand_string"); err == nil {
 		hw.CPU = strings.TrimSpace(brand)
@@ -24,10 +23,8 @@ func surveyHost(hw *Hardware) {
 	hw.MemoryMB = int(readMemTotal() >> 20)
 }
 
-// surveyAccelerators reports the Apple GPU. Metal is part of the OS, so there
-// is nothing to detect: what matters is how much of the shared memory it may
-// use. macOS keeps the rest for everything else, and a machine can be told to
-// allow more with iogpu.wired_limit_mb.
+// surveyAccelerators reports the Apple GPU's shared-memory budget.
+// Metal is part of macOS; iogpu.wired_limit_mb can override its memory limit.
 func surveyAccelerators(_ context.Context, hw *Hardware) {
 	if !strings.HasPrefix(hw.CPU, "Apple") || hw.MemoryMB == 0 {
 		return
@@ -37,9 +34,6 @@ func surveyAccelerators(_ context.Context, hw *Hardware) {
 	// little-endian bytes, so parsing it as a decimal string always failed and
 	// an operator who raised the wired limit was silently ignored.
 	if mb, ok := sysctlUint("iogpu.wired_limit_mb"); ok && mb > 0 && int(mb) <= hw.MemoryMB {
-		// Never more than the machine has: unified memory comes out of host
-		// RAM, so a misconfigured or misread limit claiming more than that is
-		// not a budget, it is a wrong number that placement would believe.
 		budget = int(mb)
 	}
 	hw.GPUs = append(hw.GPUs, GPU{Name: hw.CPU, MemoryMB: budget, Unified: true})

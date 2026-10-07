@@ -16,7 +16,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// fixed answers the same body every time; counter answers a new one each call.
 func fixed(body string, code int) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(code)
@@ -52,7 +51,6 @@ func next(t *testing.T, f *stateFeed, sub *feedSub) map[string]string {
 	}
 }
 
-// quiet asserts nothing arrives across several samples.
 func quiet(t *testing.T, sub *feedSub, f *stateFeed) {
 	t.Helper()
 	deadline := time.After(10 * f.every)
@@ -133,7 +131,6 @@ func TestFeedLateSubscriberGetsCurrentState(t *testing.T) {
 	}
 }
 
-// With no dashboard open the sampler must not keep rendering handlers.
 func TestFeedStopsWithItsLastSubscriber(t *testing.T) {
 	var calls atomic.Int64
 	f := newStateFeed([]feedSource{{"moving", counter(&calls), "/moving"}}, 5*time.Millisecond)
@@ -169,7 +166,7 @@ func TestEventsEndpoint(t *testing.T) {
 		name      string
 		query     string
 		wantCode  int
-		wantEvent string // the first event name, when the stream opens
+		wantEvent string
 	}{
 		{name: "unknown resource is refused by name", query: "?only=mesh,bogus", wantCode: http.StatusBadRequest},
 		{name: "narrowed stream opens with that resource", query: "?only=mesh", wantCode: http.StatusOK, wantEvent: "mesh"},

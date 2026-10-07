@@ -6,10 +6,8 @@ import { el, meshView } from "./rendering.js";
 import { kvOpts, rerenderRouting, setRoutingBusy } from "./routing.js";
 import { renderPresets, setPresetBusy, setWlChoice, startWorkload, wlChoice } from "./workload-presets.js";
 
-/* ---------- Vision: per-node load settings for models that take images ---------- */
-
-// node -> {settings, default, loaded, error}. Held while the dialog is open so
-// Save can tell what actually changed and write only those nodes.
+// node -> {settings, default, loaded, error}; retain while open to save
+// only changed nodes.
 let visionRows = new Map();
 
 function visionNodes() {
@@ -49,10 +47,8 @@ function renderVisionDialog() {
   body.append(el("p", "wl-blurb", w.blurb));
 
   const group = el("div", "wl-group");
-  // The same two fields the model's Load tab already has, named the same, but
-  // applied to every model that takes images instead of to one. They are one
-  // decision: -c is context × slots, so a slot count set without a context
-  // silently changes how large a prompt fits.
+  // Edit context and slots together: -c is context × slots, so changing
+  // slots alone changes the prompt capacity.
   const head = el("div", "wl-group-title");
   head.append(el("span", null, "Per node"));
   head.append(el("span", "wl-col-head", "Context length"));
@@ -73,10 +69,8 @@ function renderVisionDialog() {
     }
     label.append(text);
 
-    // What is running there now, and with how many slots. These flags are
-    // fixed when the engine launches, so a saved change reaches a model only
-    // on its next load — which is the question this row has to answer before
-    // someone saves and waits for nothing to happen.
+    // Engine flags are fixed at launch; show current values separately
+    // from saved settings that apply on the next load.
     if (row?.loaded && !row.error) {
       const want = row.settings.parallel ?? row.dflt.parallel ?? 1;
       row.stale = (meshView?.meshEngines ?? [])
@@ -101,7 +95,6 @@ function renderVisionDialog() {
         });
         return n;
       };
-      // Context first, so the row reads in the order the two values multiply.
       label.append(num("context_length", 512, 1048576, 32768));
       label.append(num("parallel", 1, 64, 1));
     }
@@ -109,9 +102,6 @@ function renderVisionDialog() {
   }
   body.append(group);
 
-  // Speculation used to be stated here rather than offered, because it failed
-  // an image prompt on every engine. It does not any more, so the note says
-  // where the old advice went — an operator who read it before will look.
   body.append(el("p", "wl-empty",
     "Speculative decoding is left to the model: a vision load keeps its own MTP head. It used to be forced off here, because llama.cpp failed a prompt carrying an image while drafting; that is fixed in current builds. What it is worth depends on the work \u2014 drafting pays when the model\u2019s output is predictable, as code is, and costs a little when it is not. Set Speculative decoding to off in the model's Load settings on an older build, or on a node where it does not pay."));
   body.append(el("p", "wl-empty",
@@ -120,8 +110,6 @@ function renderVisionDialog() {
   const start = $("wl-start");
   start.disabled = false;
   start.textContent = "Save";
-  // Only when there is something to reload. A "Save & reload" that would
-  // restart nothing is a button that unloads a 27B for no reason.
   const rl = $("wl-reload");
   const stale = [...visionRows.values()].some((r) => r.stale?.length);
   rl.hidden = !stale;
@@ -149,12 +137,7 @@ async function saveVisionDefaults(reload = false) {
         }),
       });
     }
-    // Engines already running keep the settings they were launched with; this
-    // decides the next load, and saying so avoids "I saved it and nothing
-    // changed".
     if (changed.length) {
-      // No node restart: the file is read on every load. The engine's own
-      // flags are not, which is the part worth saying.
       showNotice(`Vision settings saved on ${changed.map(([n]) => n).join(", ")}.${reload ? "" : " No restart needed — reload a vision model there to apply them."}`, "success");
     }
     if (reload) await reloadVisionModels(stale);
@@ -167,9 +150,6 @@ async function saveVisionDefaults(reload = false) {
   }
 }
 
-// Unload then load, the same two calls the model settings dialog makes — the
-// engine's flags are fixed at launch, so this is the only way a saved slot
-// count reaches a model that is already running.
 async function reloadVisionModels(stale) {
   for (const [node, row] of stale) {
     for (const e of row.stale) {
@@ -185,8 +165,7 @@ async function reloadVisionModels(stale) {
         });
         showNotice(`${e.model} reloaded on ${node}`, "success");
       } catch (err) {
-        // Keep going: one node failing should not strand the others
-        // half-reloaded with nothing said about it.
+        // Continue after a node failure so remaining nodes can finish reloading.
         showNotice(`Reload of ${e.model} on ${node} failed: ${err.message}`, "error");
       }
     }
@@ -197,8 +176,7 @@ export function initWorkloadDialog() {
   const form = $("wl-form");
   if (!form) return;
   form.addEventListener("submit", (e) => {
-    // A dialog form's submitter carries the button's value; "start" is the
-    // only one that acts, so Escape and Close cannot schedule anything.
+    // Only the "start" submitter acts; Escape and Close must not schedule.
     const v = e.submitter?.value;
     if (v === "save-reload") { saveVisionDefaults(true); return; }
     if (v !== "start") return;

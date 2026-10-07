@@ -28,8 +28,6 @@ func TestMetricsExposition(t *testing.T) {
 		"modelfabric_nodes_up 3",
 		`modelfabric_requests_total{model="qwen/qwen3-0.6b",node="minion",status="200",via="router",local="false"} 2`,
 		`modelfabric_response_bytes_total{model="qwen/qwen3-0.6b",node="minion",status="200",via="router",local="false"} 1000`,
-		// An unresolved node and an unset chooser get names rather than empty
-		// labels, which Prometheus allows but nobody can group by.
 		`modelfabric_requests_total{model="qwen/qwen3-0.6b",node="unknown",status="404",via="router",local="false"} 1`,
 		`modelfabric_requests_total{model="qwen/qwen3.8-27b",node="unknown",status="200",via="llm-d",local="false"} 1`,
 		"modelfabric_request_errors_total 1",
@@ -103,7 +101,6 @@ func TestMetricsEscapesLabelValues(t *testing.T) {
 	}
 }
 
-// fmtSscan reads the trailing integer of an exposition line.
 func fmtSscan(line string, n *uint64) (int, error) {
 	i := strings.LastIndex(line, " ")
 	if i < 0 {

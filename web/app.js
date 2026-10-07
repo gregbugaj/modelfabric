@@ -1,6 +1,4 @@
-// The dashboard entry point. Each import below is a section of what was
-// one 4,500-line file; the order of these imports does not matter, but the
-// init calls at the bottom do — they are why this file still exists.
+// Dashboard initialization order is significant; import order is not.
 
 import "./theme.js";
 import "./navigation.js";
@@ -37,7 +35,6 @@ initDoctor();
 initServerSettings();
 initLive();
 tick();
-// Still on a timer with the feed open: the mesh map, the mesh-wide activity
-// view and peers too old for the feed are only ever fetched. Not while the
-// tab is hidden, when nothing on it is being looked at.
+// Mesh topology, peer Activity, and peers without feeds still need polling.
+// Pause it while the tab is hidden.
 setInterval(() => { if (!document.hidden) void tick(); }, POLL_MS);

@@ -1,9 +1,5 @@
-// Package mcp is a Model Context Protocol client: enough of it to list a
-// server's tools and call them, over streamable HTTP or a child process's
-// stdio. It exists so /api/v1/chat can run tools for a model the way LM
-// Studio's does; it is written against the standard library because the
-// protocol at this size is JSON-RPC and two transports, which did not justify
-// a module.
+// Package mcp lists and calls Model Context Protocol tools over streamable
+// HTTP or child-process stdio, using JSON-RPC and the standard library.
 package mcp
 
 import (
@@ -31,14 +27,12 @@ const protocolVersion = "2025-06-18"
 // model's context, so anything near this is already useless.
 const maxMessage = 8 << 20
 
-// Tool is one tool a server offers.
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
-// Client is a session with one server.
 type Client interface {
 	ListTools(ctx context.Context) ([]Tool, error)
 	// CallTool runs a tool and returns its output as text. A tool that ran

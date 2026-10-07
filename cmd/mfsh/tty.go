@@ -10,15 +10,9 @@ import (
 	"unsafe"
 )
 
-// Minimal terminal handling, stdlib only — no x/term dependency, so the binary
-// stays a single static file with nothing to vendor.
-
-// The ioctl numbers and the termios layout are per-OS: 0x5401/0x5402 are
-// Linux's TCGETS/TCSETS, and using them on macOS (TIOCGETA/TIOCSETA, with a
-// different struct) made every ioctl fail — so isTTY answered false on every
-// Mac and ModelFabric never offered an interactive prompt there. The constants now
-// live in tty_linux.go and tty_darwin.go, and the struct comes from syscall,
-// which declares the right shape for each platform.
+// ioctl constants and termios layouts differ by OS. Keep constants in
+// tty_linux.go and tty_darwin.go and use syscall's platform-specific struct;
+// Linux values make macOS TTY detection fail.
 type termios = syscall.Termios
 
 func ioctlTermios(fd uintptr, req uintptr, t *termios) error {
@@ -47,13 +41,8 @@ func sanitizeTTY(s string) string {
 	return b.String()
 }
 
-// isTTY reports whether stdin and stdout are both a terminal. Anything piped
-// or redirected must not get an interactive prompt.
-// isTTY answers "can this prompt interactively?", which needs both ends. For
-// "may this draw?" — a spinner, a redrawn status line — the question is about
-// output alone, and isStdoutTTY (color.go) is the one to ask: keying a
-// progress indicator on this one lost it for `mfsh chat < script.txt` run in a
-// terminal.
+// isTTY requires both stdin and stdout to be terminals for interactive prompts.
+// Use isStdoutTTY for progress displays so redirected input does not hide them.
 func isTTY() bool {
 	var t termios
 	if ioctlTermios(os.Stdin.Fd(), ioctlReadTermios, &t) != nil {
@@ -72,16 +61,10 @@ func makeRaw(fd uintptr) (func(), error) {
 		return nil, err
 	}
 	raw := old
-	// Unbuffered, unechoed input, and ISIG off so Ctrl-C arrives as byte 3
-	// rather than as a signal. The read loop already treats byte 3 as cancel;
-	// with ISIG on that branch was unreachable, and the terminal driver killed
-	// the process before the deferred restore could run — leaving the shell
-	// with no echo.
+	// Disable ISIG so Ctrl-C reaches the read loop as byte 3 and deferred terminal restoration runs.
 	raw.Lflag &^= syscall.ECHO | syscall.ICANON | syscall.ISIG
-	// VMIN=0 with VTIME=1 makes every read return within 100ms, with whatever
-	// arrived. That is what lets a lone Esc be told from the start of an arrow
-	// key: with VMIN=1 a read could return the Esc of "ESC [ A" on its own and
-	// the loop cancelled the prompt the user was trying to navigate.
+	// VMIN=0 and VTIME=1 bound reads to 100ms. A follow-up read distinguishes
+	// lone Esc from an arrow-key sequence arriving in separate reads.
 	raw.Cc[syscall.VMIN] = 0
 	raw.Cc[syscall.VTIME] = 1
 	if err := ioctlTermios(fd, ioctlWriteTermios, &raw); err != nil {
@@ -90,7 +73,6 @@ func makeRaw(fd uintptr) (func(), error) {
 	return func() { _ = ioctlTermios(fd, ioctlWriteTermios, &old) }, nil
 }
 
-// Choice is one row in an interactive picker.
 type Choice struct {
 	Value string
 	Label string
@@ -132,7 +114,6 @@ func selectOne(prompt string, choices []Choice) (string, error) {
 	sel := 0
 	draw := func(first bool) {
 		if !first {
-			// Move back over the list to redraw it in place.
 			fmt.Fprintf(os.Stderr, "\x1b[%dA", len(choices))
 		}
 		for i, c := range choices {
@@ -144,9 +125,7 @@ func selectOne(prompt string, choices []Choice) (string, error) {
 			if c.Note != "" {
 				note = fmt.Sprintf("  \x1b[2m%s\x1b[0m", sanitizeTTY(c.Note))
 			}
-			// Labels come from catalog and peer data, which is to say from
-			// another machine. Written raw into an ANSI UI, an escape in a
-			// model name could move the cursor or recolour the prompt.
+			// Strip controls from catalog and peer labels to prevent terminal escape injection.
 			fmt.Fprintf(os.Stderr, "\r\x1b[K%s%s%s\x1b[0m%s\n", marker, style, padVisible(sanitizeTTY(c.Label), width), note)
 		}
 	}
@@ -158,14 +137,9 @@ func selectOne(prompt string, choices []Choice) (string, error) {
 	buf := make([]byte, 3)
 	idle := newIdleReads()
 	for {
-		// Reposition above the hint line before redrawing.
 		n, err := os.Stdin.Read(buf)
 		if n == 0 {
-			// VTIME makes a read with no keypress return zero bytes, and Go
-			// turns a zero-byte read into io.EOF — so "nobody has typed for
-			// 100ms" and "stdin closed" arrive identically. Treating the error
-			// as cancel meant the picker cancelled itself the moment it was
-			// shown unless a key was already pending.
+			// A VTIME timeout produces zero bytes and io.EOF; treating it as cancellation closes an idle picker.
 			if idle.closed(err) {
 				return "", ErrCancelled
 			}
@@ -204,14 +178,12 @@ func selectOne(prompt string, choices []Choice) (string, error) {
 		default:
 			continue
 		}
-		// Step up over the hint line, redraw, and put it back.
 		fmt.Fprint(os.Stderr, "\x1b[1A")
 		draw(false)
 		fmt.Fprint(os.Stderr, "\x1b[2m  ↑↓ navigate • ⏎ select • esc cancel\x1b[0m\n")
 	}
 }
 
-// selectNumbered is the fallback when raw mode is unavailable.
 func selectNumbered(prompt string, choices []Choice) (string, error) {
 	fmt.Fprintf(os.Stderr, "\n%s\n", prompt)
 	for i, c := range choices {
@@ -255,12 +227,9 @@ func confirm(question string) bool {
 	return false
 }
 
-// idleReads tells a timed-out read from a closed stdin.
-//
-// With VMIN=0 and VTIME=1 a read returns every 100ms whether or not a key was
-// pressed, and a zero-byte read reaches Go as io.EOF. Waiting and hanging up
-// therefore look the same. They differ in pace: the timeout paces itself at
-// ten a second, while a closed descriptor returns instantly and would spin.
+// idleReads distinguishes VTIME timeouts from closed stdin. Both produce
+// zero bytes and io.EOF; timeouts arrive about every 100ms, while closed
+// stdin returns immediately and would spin.
 type idleReads struct {
 	first time.Time
 	n     int
@@ -268,15 +237,13 @@ type idleReads struct {
 
 func newIdleReads() *idleReads { return &idleReads{first: time.Now()} }
 
-// closed reports whether these empty reads mean stdin has gone away.
 func (i *idleReads) closed(err error) bool {
 	if err == nil {
 		i.n, i.first = 0, time.Now()
 		return false
 	}
 	i.n++
-	// Twenty empty reads should take about two seconds. Far quicker than that
-	// and nothing is pacing them, which means there is nothing to wait for.
+	// Twenty VTIME expirations take about two seconds; much faster reads indicate closed stdin.
 	if i.n < 20 {
 		return false
 	}

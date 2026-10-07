@@ -1,11 +1,4 @@
 import { settingControl, settingRow } from "./setting-fields.js";
-// Server settings: this node's listeners, access, tokens and on-demand
-// loading, in the same flyout My Models and Activity use. Read from and saved
-// to the config file the node runs from.
-//
-// Names follow LM Studio's Server Settings where the setting is the same
-// thing — "Enable CORS", not a paraphrase that hides what it is — and every
-// row says in a line what it does, with the rest behind its "?".
 
 import { showNotice } from "./actions.js";
 import { $ } from "./core.js";
@@ -22,10 +15,8 @@ import {
 // `when` names a switch that must be on for the row to show.
 const TABS = [
   { id: "server", label: "Server", rows: [
-    // Two addresses, one per listener: this machine's, whose port is yours,
-    // and the tailnet's, whose port is the mesh port every node shares. Shown
-    // as a host and a port each, so the same 1234 on both reads as two
-    // listeners rather than one setting repeated.
+    // Show local and tailnet hosts separately; equal port numbers still
+    // refer to distinct listeners.
     { key: "port", label: "Server Port", kind: "port", prefix: true,
       desc: "This machine's address, for apps and this dashboard.",
       help: "Only this machine can reach it. `mfsh up -port N` overrides the port for one run without saving." },
@@ -40,10 +31,8 @@ const TABS = [
     { key: "peer_admin", label: "Managed from Other Nodes", kind: "switch",
       desc: "Let your other devices' dashboards load and unload models here.",
       help: "Tailscale decides who is asking: only devices it reports as your own (or sharing your tag) are accepted. Off, this node can only be managed from itself." },
-    // The URL this node's router dials its own engines at (supervisor:
-    // LocalURL(engine_bind, port)). Not how other nodes reach this one: a
-    // peer's router sends to the Tailnet address on the mesh port, and this
-    // node's router hands the request to its engine here.
+    // engine_bind controls how this router reaches local engines. Peers
+    // reach the mesh listener, which forwards to those engines.
     { key: "engine_bind", label: "Engine Bind", kind: "select", options: [],
       desc: "Where this node's engines listen, and where its router reaches them. Other nodes reach this one at the Tailnet address above, never at its engines.",
       help: "This machine only is enough for ModelFabric: a request for a model here, from an app or from another node, comes in through this node and is handed to the engine on this machine. Tailnet is for something that dials engines itself, which is llm-d scheduling from another node. Engine ports have no authentication of their own, so on the tailnet Tailscale ACLs are the only thing in front of them. The tailnet address is looked up from Tailscale at each start, never typed." },
@@ -62,7 +51,6 @@ const TABS = [
       desc: "One per line, as scheme://host[:port]. * allows any site you visit." },
   ] },
   { id: "tokens", label: "Tokens" },
-  // Both off unless turned on: each has this node act on a caller's say-so.
   { id: "mcp", label: "MCP", rows: [
     { key: "mcp_allow_ephemeral", label: "Allow per-request MCPs", kind: "switch", exposes: true,
       desc: "Let a request to /api/v1/chat name an MCP server for this node to call (\"ephemeral_mcp\").",
@@ -88,7 +76,7 @@ const ss = {
   tab: readSidePref("mfsh.ss.tab") || "server",
   width: Number(readSidePref("mfsh.ss.width")) || 460,
   pinned: false, // startSideResize reads it; this flyout is never pinned
-  view: null,    // the last /api/v1/server-settings answer
+  view: null,
   inputs: {},    // row key -> control, built once per open so edits survive tab switches
   rows: {},      // row key -> row element
   panes: {},
@@ -175,8 +163,7 @@ function build() {
   form.addEventListener("submit", onSave);
   form.addEventListener("input", refresh);
   form.addEventListener("change", (e) => {
-    // Turning on a switch that reveals a field offers a sensible start: LM
-    // Studio's CORS switch allows any origin, and the warning says so.
+    // Enabling CORS defaults to any origin; the warning must reflect that.
     if (e.target === ss.inputs.cors_on && e.target.checked && !ss.inputs.cors_origins.value.trim()) {
       ss.inputs.cors_origins.value = "*";
     }
@@ -199,17 +186,13 @@ function showTab(id) {
     b.setAttribute("aria-selected", String(on));
   }
   for (const [tid, pane] of Object.entries(ss.panes)) pane.hidden = tid !== id;
-  // Tokens save themselves, one action at a time; the footer's Save is for
-  // the settings, and showing it there would suggest otherwise.
+  // Token actions save immediately; the settings Save button does not apply.
   side().querySelector(".ss-foot").hidden = id === "tokens";
   if (id === "tokens") void renderTokens(ss.panes.tokens);
 }
 
-// Engine Bind is loopback or the tailnet. The node shows a tailnet address
-// written into config.json as Tailnet, since that is what it binds: the
-// address Tailscale gives this node at each start. Only something else
-// entirely, a LAN address set by hand, is shown as it is, so the page never
-// rewrites what it did not set.
+// Recognize configured tailnet addresses as Tailnet, but preserve
+// custom LAN addresses rather than rewriting them.
 function engineBindOptions(saved, tailnet) {
   const sel = ss.inputs.engine_bind;
   sel.replaceChildren();
@@ -235,9 +218,7 @@ function fill(saved) {
   form.tailnet = ss.view?.tailnet?.listen || "not on a tailnet";
   const host = String(saved?.listen ?? "").replace(/:\d+$/, "") || "127.0.0.1";
   $("ss-port-host").textContent = `${host}:`;
-  // Every node is an entrypoint; role "entrypoint" only stops this one
-  // loading models. A row reading "runs models" or "entrypoint" presented
-  // that as an either/or it is not, so it is said only when it applies.
+  // Every node routes; the entrypoint role only disables local model loading.
   const note = $("ss-role-note");
   note.hidden = saved?.role !== "entrypoint";
   for (const [k, input] of Object.entries(ss.inputs)) {
@@ -259,11 +240,9 @@ function readForm() {
 
 const changes = () => settingsChanges(ss.view?.saved, readForm());
 
-// Which row shows a setting that is saved but waiting for a restart.
 const ROW_OF = { listen: "port", public_listen: "front_on", mesh_admin: "peer_admin", jit_ttl: "jit_unload" };
 
 function refresh() {
-  // Rows that only mean something with their switch on.
   for (const t of TABS) {
     for (const f of t.rows ?? []) {
       if (f.when) ss.rows[f.key].hidden = !ss.inputs[f.when].checked;
@@ -352,7 +331,7 @@ async function onSave(e) {
       .filter(Boolean).join(" · "),
     "success",
   );
-  void tick(); // the front-door panel shows whether a key is required
+  void tick();
 }
 
 export function openServerSettings(tab) {
@@ -375,8 +354,6 @@ export function initServerSettings() {
   $("ss-open").addEventListener("click", () => (serverSettingsOpen() ? closeServerSettings() : openServerSettings()));
 }
 
-// Every setting the API takes is reachable from some row: formToServer
-// produces them all, and a row missing for one would leave it stuck.
 for (const k of SERVER_SETTINGS) {
   if (!(k in formToServer({}, {}))) throw new Error(`server setting ${k} has no control`);
 }

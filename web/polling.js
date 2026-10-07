@@ -14,23 +14,20 @@ import { tn } from "./tune-slots.js";
 import { buildFront, buildLocal, buildRouting, buildRuntime, buildView } from "./ui-model.js";
 import { renderPresets, routingView, setRoutingView } from "./workload-presets.js";
 
-/* ---------- polling ---------- */
-
 function setConn(ok, text) {
   const badge = $("conn");
   badge.classList.toggle("err", !ok);
   badge.replaceChildren(el("span", "dot"), document.createTextNode(text));
 }
 
-// tick is started by the poll interval, by navigation and by many action
-// handlers. Without a guard a slow poll could finish after a newer one and
-// paint stale state over it, or two polls could interleave their renders.
+// Serialize polls so slow responses cannot overwrite newer state
+// or interleave renders.
 let ticking = false;
 let tickAgain = false;
 
 export async function tick() {
   if (ticking) {
-    tickAgain = true; // coalesce: run once more when the current one lands
+    tickAgain = true; // Coalesce overlapping polls into one follow-up.
     return;
   }
   ticking = true;
@@ -45,11 +42,8 @@ export async function tick() {
   }
 }
 
-/* ---------- the live feed ---------- */
-
-// /api/v1/events pushes each of these as it changes; the body of each is what
-// its GET returns, and null where that GET would not answer 200. While the
-// feed holds all of them, a tick paints from it instead of asking again.
+// /api/v1/events uses each GET's payload, or null for non-200 responses.
+// Use the feed only after it has supplied every resource.
 const FEED = ["mesh", "models", "operations", "runtimes", "llmd", "front"];
 const live = { source: null, data: new Map() };
 const feedReady = () => live.data.size === FEED.length;
@@ -65,12 +59,10 @@ function openFeed() {
     });
   }
   es.onerror = () => {
-    // Polling carries the page until the stream is back. The data is dropped
-    // rather than kept: after a gap it is a state from before the gap, and on
-    // reconnect the server sends every resource again anyway.
+    // Discard state after a stream gap; polling fills in until the server
+    // resends every resource on reconnect.
     live.data.clear();
-    // CLOSED means the server answered, but not with a stream — a node older
-    // than the feed. EventSource will not retry that, and neither do we.
+    // CLOSED means the server did not provide a stream; do not retry old peers.
     if (es.readyState === EventSource.CLOSED) live.source = null;
   };
 }
@@ -81,8 +73,7 @@ function closeFeed() {
   live.data.clear();
 }
 
-// A hidden tab asks nothing: an open, forgotten dashboard polled its node and,
-// through it, every peer for as long as the browser stayed up.
+// Pause hidden tabs to avoid polling the node and its peers indefinitely.
 export function initLive() {
   openFeed();
   document.addEventListener("visibilitychange", () => {
@@ -96,7 +87,6 @@ export function initLive() {
   });
 }
 
-// pollState is the fallback: the same six answers, fetched.
 async function pollState() {
   const [meshResp, apiResp, opsResp, rtResp, llmdResp, frontResp] = await Promise.all([
     fetch("/z/mesh", { cache: "no-store" }),
@@ -129,14 +119,12 @@ async function tickOnce() {
     const api = st.models;
     setOperations(st.operations?.operations ?? []);
     setRuntimesApi(st.runtimes);
-    // Before render(), which paints the front-door panel from it.
     setFrontView(buildFront(st.front));
     const meshBody = st.mesh;
     setSelfNode(meshBody?.self?.node || "");
     setMeshView(buildView(meshBody));
     recordLoad(meshView.meshEngines);
     render(meshView, buildLocal(api, operations));
-    // My Models: this node always; the others while the page is open.
     mm.nodes.set(selfNode, api ? { api, operations } : { error: "this node does not manage models" });
     const livePeers = (meshBody?.peers ?? []).filter((p) => p.alive).map((p) => p.node);
     for (const n of [...mm.nodes.keys()]) if (n !== selfNode && !livePeers.includes(n)) mm.nodes.delete(n);
@@ -153,10 +141,8 @@ async function tickOnce() {
       setProfilesApi(await fetch("/api/v1/llmd/profiles").then((r) => (r.ok ? r.json() : null)).catch(() => null));
     }
     setCatalogKeys((api?.models ?? []).map((m) => m.key));
-    // llm-d schedules across the mesh, not just this node: its endpoints are
-    // whichever engines serve the model, wherever they run. Offering only the
-    // models loaded here left the Model select showing one model while the
-    // scheduler ran another, so Apply would not have done what it said.
+    // Use mesh-wide loaded models: llm-d can schedule peer engines, and a
+    // local-only list can make Apply target a different model than displayed.
     const loaded = (meshView.models ?? []).map((m) => m.id);
     setRoutingView(buildRouting(llmdApi, profilesApi, operations, loaded));
     renderRouting(routingView);
@@ -166,7 +152,6 @@ async function tickOnce() {
     if (!document.querySelector('section[data-view="doctor"]').hidden) renderDoctorNodes();
     if (!document.querySelector('section[data-view="activity"]').hidden) {
       renderOperations();
-      // mm.nodes has just been refreshed, so the peer list is current.
       if (actScope === "mesh") refreshPeerTraffic(); else renderTraffic();
     }
     setConn(true, "live");
@@ -181,8 +166,6 @@ document.addEventListener("keydown", (e) => {
   if ($("settings-dialog").open || $("dv-dialog").open || $("tn-dialog").open) return;
   if (serverSettingsOpen()) { closeServerSettings(); return; }
   if (actSelected) { closeActSide(); return; }
-  // Escape closes the flyout, but leaves a pinned panel alone: pinned is a
-  // layout choice, not something you dismiss.
   if (!mm.selected || mm.pinned) return;
   closeSide();
 });

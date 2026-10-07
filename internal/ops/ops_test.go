@@ -138,7 +138,6 @@ func TestAFailedJournalWriteIsReportedNotSwallowed(t *testing.T) {
 		t.Fatalf("the operation was not written: %v", err)
 	}
 
-	// Make the directory unwritable so the next write cannot land.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Skipf("cannot make the journal dir read-only here: %v", err)
 	}

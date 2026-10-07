@@ -11,10 +11,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/supervisor"
 )
 
-// The vision endpoints are how the dashboard reads and sets a node's slot
-// count for models that take images, on this node and — through the peer
-// proxy — on every other. A second ModelFabric cannot be started alongside a live
-// one to try them by hand: it binds the mesh port. So they are exercised here.
 func visionServer(t *testing.T) *Server {
 	t.Helper()
 	m := mesh.New(config.Default(), "testnode")
@@ -42,8 +38,6 @@ func TestVisionDefaultsEndpointReportsTheSafeDefault(t *testing.T) {
 	if got.Settings.Parallel == nil || *got.Settings.Parallel != 1 {
 		t.Errorf("a node that has saved nothing should report one slot: %s", rec.Body)
 	}
-	// Not off: a vision load keeps its MTP head now (see
-	// supervisor.DefaultVisionSettings).
 	if got.Settings.SpecMode != nil {
 		t.Errorf("speculation should be left to the runtime: %s", rec.Body)
 	}
@@ -60,8 +54,6 @@ func TestVisionDefaultsEndpointSaves(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("PUT: %d %s", rec.Code, rec.Body.String())
 	}
-	// The reply is the saved state, so the dashboard renders what is stored
-	// rather than what it hoped it sent.
 	if !strings.Contains(rec.Body.String(), `"parallel":4`) {
 		t.Errorf("PUT should echo the saved settings: %s", rec.Body)
 	}
@@ -74,8 +66,6 @@ func TestVisionDefaultsEndpointSaves(t *testing.T) {
 	}
 }
 
-// A bad value is refused rather than stored: the dashboard sends whatever is
-// typed into the slot box.
 func TestVisionDefaultsEndpointRejectsNonsense(t *testing.T) {
 	s := visionServer(t)
 	rec := httptest.NewRecorder()

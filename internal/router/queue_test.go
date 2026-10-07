@@ -13,7 +13,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// The fleet of the 2026-10-05 SWE runs, in the mesh's order.
 func queueFleet(x, m, h int64) []mesh.Candidate {
 	return []mesh.Candidate{
 		{Name: "xpredator", Local: true, Inflight: x, Slots: 2, PrefillTokS: 1761},
@@ -29,10 +28,8 @@ func testQueue() (*Queue, *time.Time) {
 	return q, &now
 }
 
-// What a request may do each time it looks. The cases are the ones the
-// placement experiments of 2026-10-05 turned on: a slot just vacated is its
-// conversation's (taking it was the 104-minute run), and a request with
-// nowhere to go waits here instead of behind a ten-minute call on one engine.
+// Recently freed slots retain conversation affinity during Grace. Requests
+// without a suitable destination wait in the router instead of an engine queue.
 func TestQueueDecides(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -42,25 +39,20 @@ func TestQueueDecides(t *testing.T) {
 		// a negative number, every free slot there was.
 		freed  map[string]float64
 		waited time.Duration
-		// ahead is whether another request has been waiting longer.
-		ahead bool
-		want  string // the engine it goes to, "" to keep waiting
+		ahead  bool
+		want   string // the engine it goes to, "" to keep waiting
 	}{
 		{"home has a slot: goes at once", queueFleet(1, 4, 1), "xpredator", nil, 0, false, "xpredator"},
 		{"home has a slot, even one vacated a moment ago: it is its own",
 			queueFleet(1, 4, 1), "xpredator", map[string]float64{"xpredator": 0.2}, 0, false, "xpredator"},
 		{"home has a slot: goes at once though others have waited longer",
 			queueFleet(1, 4, 1), "xpredator", nil, 0, true, "xpredator"},
-		// The fault of the first live run. Placement puts the 5090 ahead of a
-		// home that is three times slower, and a request whose home was not
-		// first in the order waited beside its own free slot, then took
-		// someone else's: 22 of 29 moves in that run were between the GPUs.
+		// Find the free home slot even when speed ranking places another engine
+		// first; otherwise requests wait unnecessarily and displace other caches.
 		{"home has a slot but is not first in the order: home, at once",
 			queueFleet(1, 4, 0), "helion", map[string]float64{"xpredator": 0.2, "helion": 0.2}, 0, false, "helion"},
 		{"home has a slot, and the much faster engine has one that has stayed free: the faster",
 			queueFleet(1, 4, 0), "helion", map[string]float64{"helion": 0.2}, 0, false, "xpredator"},
-		// The tail of the 2026-10-06 run: four conversations at home on the
-		// four-slot GPU for half an hour, the 5090 idle beside them.
 		{"home is shared and a faster engine stands idle: leaves for it",
 			queueFleet(0, 3, 0), "minion", map[string]float64{"minion": 0.2}, 0, false, "xpredator"},
 		{"home is shared, the faster engine has one neighbour and a slot nobody owns: leaves",
@@ -84,8 +76,6 @@ func TestQueueDecides(t *testing.T) {
 		{"two slots open, one just vacated: the other is taken", queueFleet(2, 2, 1), "xpredator",
 			map[string]float64{"minion": 0.2}, 0, false, "minion"},
 		{"a settled slot, but another request has waited longer", queueFleet(2, 3, 1), "", nil, 0, true, ""},
-		// Never refused for waiting: after the longest wait it is placed as
-		// if there were no queue, wherever placement had it going.
 		{"waited the longest allowed: goes where placement says", queueFleet(2, 4, 1), "", nil, 61 * time.Second, false, "helion"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -121,12 +111,8 @@ func TestQueueDecides(t *testing.T) {
 	}
 }
 
-// Between a request being let through and the engine's load showing it, a
-// second request must not be given the same slot. Eight agents starting
-// together put five conversations on a four-slot engine when this failed
-// (2026-10-06): the count was right, but it was compared with a reading of
-// the mesh taken before the lock, which could miss a request that had since
-// been let through, sent, and taken off the count.
+// Regression: reading mesh load before locking can miss a request that was
+// admitted, dispatched, and removed from pending, admitting the same slot twice.
 func TestQueueDoesNotGiveOneSlotTwice(t *testing.T) {
 	q, _ := testQueue()
 	before := queueFleet(2, 3, 1) // one slot open, on minion
@@ -146,7 +132,6 @@ func TestQueueDoesNotGiveOneSlotTwice(t *testing.T) {
 	if _, ok := q.decide(queueFleet(2, 4, 1), "", &waiter{since: q.now()}); ok {
 		t.Error("the slot is taken now, and counted: nothing should be offered")
 	}
-	// Done after Sent, or without it, never takes the count below zero.
 	q.Done(g, 0, 0)
 	q.Done(q.grant("minion", &waiter{since: q.now()}, nil), 0, 0)
 	if n := q.pending["minion"]; n != 0 {
@@ -154,11 +139,8 @@ func TestQueueDoesNotGiveOneSlotTwice(t *testing.T) {
 	}
 }
 
-// An engine's slots share one KV pool. In the run of 2026-10-06 three
-// conversations of 85, 92 and 97 thousand tokens lived on a four-slot engine
-// with a 262,144-token pool: a slot was always free, so each went home, and
-// each turn the engine threw out another's cache to fit it. Three cold reads
-// of 90,000 tokens in rotation, with a 131,072-token pool idle beside them.
+// Regression: free slots do not guarantee room in the shared KV pool.
+// Oversized residents can repeatedly evict each other while a slot stays free.
 func TestQueuePlacesBySizeNotOnlySlots(t *testing.T) {
 	pools := func(cs []mesh.Candidate) []mesh.Candidate {
 		for i := range cs {
@@ -166,19 +148,16 @@ func TestQueuePlacesBySizeNotOnlySlots(t *testing.T) {
 		}
 		return cs
 	}
-	// live puts a conversation on an engine with a request of its running.
 	live := func(q *Queue, id byte, engine string, tokens int64) *resident {
 		r := &resident{leaf: [32]byte{id}, engine: engine, tokens: tokens, inflight: true}
 		q.residents[r.leaf] = r
 		return r
 	}
 	for _, c := range []struct {
-		name  string
-		cands []mesh.Candidate
-		// others are conversations already living on minion, by size.
+		name   string
+		cands  []mesh.Candidate
 		others []int64
 		mine   int64 // this conversation's size; its home is minion
-		// xpredator holds a conversation of this size, 0 for none.
 		onFast int64
 		want   string
 	}{
@@ -214,7 +193,6 @@ func TestQueuePlacesBySizeNotOnlySlots(t *testing.T) {
 			}
 		})
 	}
-	// When nothing can hold it. Waiting only helps if room can appear.
 	t.Run("larger than any engine's pool: goes home at once, there is nothing to wait for", func(t *testing.T) {
 		q, _ := testQueue()
 		me := &resident{leaf: [32]byte{100}, engine: "minion", tokens: 300000}
@@ -227,8 +205,7 @@ func TestQueuePlacesBySizeNotOnlySlots(t *testing.T) {
 	})
 	t.Run("fits nowhere now, waited the longest allowed: where the others lose least", func(t *testing.T) {
 		q, now := testQueue()
-		// minion: 85k + 92k living there, so 97k more is 20k over its pool.
-		// xpredator: 60k living there, so 97k more is 34k over.
+		// The additional 97k tokens exceed these pools by 20k and 34k respectively.
 		live(q, 1, "minion", 85000)
 		live(q, 2, "minion", 92000)
 		live(q, 9, "xpredator", 60000)
@@ -239,16 +216,12 @@ func TestQueuePlacesBySizeNotOnlySlots(t *testing.T) {
 		if !ok || out[0].Name != "minion" {
 			t.Errorf("got %v ok=%v, want minion: 20k over there against 34k on xpredator", order(out), ok)
 		}
-		// With the 5090's resident larger, home is still the lesser harm; with
-		// it smaller, the 5090 is.
 		q.residents[[32]byte{9}].tokens = 30000
 		out, ok = q.decide(applyAffinity(pools(queueFleet(1, 2, 1)), "minion", ""), "minion", w)
 		if !ok || out[0].Name != "xpredator" {
 			t.Errorf("got %v ok=%v, want xpredator: 4k over there against 20k at home", order(out), ok)
 		}
 	})
-	// A conversation that ended stops counting against the pool once its
-	// grace has passed, the same as its slot.
 	t.Run("a conversation that ended makes room", func(t *testing.T) {
 		q, now := testQueue()
 		a := live(q, 1, "minion", 85000)
@@ -267,8 +240,6 @@ func TestQueuePlacesBySizeNotOnlySlots(t *testing.T) {
 	})
 }
 
-// A held request is woken by a slot being freed, and leaves the queue when it
-// goes or when its caller gives up.
 func TestAdmitWaitsAndWakes(t *testing.T) {
 	q := NewQueue(10*time.Millisecond, time.Minute)
 	q.tick = 5 * time.Millisecond
@@ -413,7 +384,6 @@ func TestReadUsage(t *testing.T) {
 			}
 		})
 	}
-	// Only the end is kept, however the response arrives.
 	var tail []byte
 	for range 100 {
 		tail = keepTail(tail, make([]byte, 1000))

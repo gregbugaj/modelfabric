@@ -12,38 +12,20 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/catalog"
 )
 
-// MLX is Apple's array framework, and mlx-lm's server is how a Mac serves an
-// MLX model — the same relationship llama-server has to llama.cpp. A Mac can
-// run both: GGUF through llama.cpp on Metal, MLX weights through this, which is
-// what LM Studio offers and what the mesh needs to stay one pool of models.
-//
-// It is not llama.cpp with different flags, and three differences shape
-// everything below:
-//
-//   - There is no context-length flag. An MLX model's context is what its
-//     config.json declares; the server allocates KV as a request grows.
-//   - It dispatches on the request's "model" field and will fetch an id it
-//     does not recognise from Hugging Face. Only "default_model" is guaranteed
-//     to mean "the model you were started with", so that is the id ModelFabric uses,
-//     and HF_HUB_OFFLINE stops the engine reaching the network regardless.
-//   - It serves no /metrics and no /props. Prefill rate has to come from
-//     elsewhere, and readiness from /health.
-//
-// MLXServedModel is the id an mlx-lm server answers to for the model it was
-// started with.
+// MLXServedModel is the id mlx-lm maps to its loaded model. Other ids can
+// trigger Hugging Face downloads; HF_HUB_OFFLINE prevents network access.
+// MLX uses the context from config.json and allocates KV per request.
+// Readiness uses /health; the server exposes neither /metrics nor /props.
 const MLXServedModel = "default_model"
 
 type mlxLM struct{}
 
 func (mlxLM) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 	a := Applied{
-		Runtime:       d.Name,
-		ContextLength: d.ContextLength,
-		Parallel:      d.Parallel,
-		BatchSize:     d.BatchSize,
-		// CtxCheckpoints is how many distinct prompt caches the server keeps,
-		// which is the same idea as llama.cpp's context checkpoints: how many
-		// conversations can resume without prefilling again.
+		Runtime:        d.Name,
+		ContextLength:  d.ContextLength,
+		Parallel:       d.Parallel,
+		BatchSize:      d.BatchSize,
 		CtxCheckpoints: d.CtxCheckpoints,
 		DraftMax:       d.DraftMax,
 	}
@@ -119,15 +101,12 @@ func (mlxLM) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 	}
 
 	a.Parallel = max(a.Parallel, 1)
-	// The context a request may use is whatever the model declares: mlx-lm
-	// takes no context flag, and KV grows per request. A smaller number from
-	// the config or the request would be a limit nothing enforces, and routing
-	// reads this field to decide what fits.
+	// mlx-lm has no context flag and grows KV per request. Report the model's
+	// context, since routing must not rely on an unenforced lower limit.
 	if m.MaxContextLength > 0 {
 		a.ContextLength = m.MaxContextLength
 	}
-	// KV is allocated per request as it grows, so there is no fixed pool to
-	// report. Leaving it zero says that, rather than inventing a capacity.
+	// KV grows per request; zero indicates there is no fixed pool.
 	a.KVCacheTokens = 0
 	return a
 }
@@ -135,7 +114,6 @@ func (mlxLM) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 func (mlxLM) Argv(d *Definition, m catalog.Model, a Applied, bind string, port int) []string {
 	argv := []string{
 		d.Path(),
-		// The model is a directory of safetensors, not a file.
 		"--model", m.Path,
 		"--host", bind,
 		"--port", strconv.Itoa(port),
@@ -198,7 +176,6 @@ func (mlxLM) Argv(d *Definition, m catalog.Model, a Applied, bind string, port i
 	return argv
 }
 
-// ServedModel is the id requests must carry: see MLXServedModel.
 func (mlxLM) ServedModel(catalog.Model) string { return MLXServedModel }
 
 // Traits: mlx-lm's /v1/models lists the Hugging Face cache rather than what it
@@ -223,11 +200,9 @@ func (mlxLM) Ready(ctx context.Context, endpoint, _ string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status %s", resp.Status)
 	}
-	// Any service answering 200 on /health used to count as "our engine is
-	// up", so if the port was already held by something else the launch was
-	// reported as successful. mlx-lm answers {"status":"ok"}; a body that is
-	// not JSON is somebody else. A JSON body without a status field is
-	// accepted, so an upstream change of shape does not break loading.
+	// Require JSON to avoid treating an unrelated service's 200 as readiness.
+	// mlx-lm returns {"status":"ok"}; tolerate a missing status field for
+	// compatibility with upstream response changes.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return err
@@ -244,8 +219,7 @@ func (mlxLM) Ready(ctx context.Context, endpoint, _ string) error {
 	return nil
 }
 
-// maxPromptCacheBytes caps --prompt-cache-bytes at 1 TiB: past any real
-// machine, and small enough that the shift behind it cannot wrap.
+// maxPromptCacheBytes caps --prompt-cache-bytes at 1 TiB to prevent overflow.
 const maxPromptCacheBytes = 1 << 40
 
 func formatFloat(f float64) string { return strconv.FormatFloat(f, 'g', -1, 64) }

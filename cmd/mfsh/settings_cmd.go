@@ -76,14 +76,11 @@ var settingFlags = []settingFlag{
 	{"thinking", "enable_thinking", kindBool, "thinking on|off by default"},
 }
 
-// argList is a repeatable string flag.
 type argList []string
 
 func (a *argList) String() string     { return strings.Join(*a, " ") }
 func (a *argList) Set(v string) error { *a = append(*a, v); return nil }
 
-// settingsFromFlags registers every setting on fs and returns a function that
-// collects the ones given, as API JSON.
 func settingsFromFlags(fs *flag.FlagSet) func() (map[string]any, error) {
 	vals := map[string]*string{}
 	for _, f := range settingFlags {
@@ -149,7 +146,6 @@ func flagForKey(key string) string {
 	return key
 }
 
-// printSettings shows a settings object as flag = value lines.
 func printSettings(settings map[string]any, indent string) {
 	keys := make([]string, 0, len(settings))
 	for k := range settings {
@@ -164,7 +160,6 @@ func printSettings(settings map[string]any, indent string) {
 	t.print()
 }
 
-// defaultsCmd shows and edits a model's saved defaults — LM Studio's gear.
 func defaultsCmd(args []string) error {
 	fs := flag.NewFlagSet("defaults", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -250,7 +245,6 @@ func defaultsCmd(args []string) error {
 	return nil
 }
 
-// presetCmd manages presets — named inference settings for any model.
 func presetCmd(args []string) error {
 	sub := "ls"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -326,9 +320,7 @@ func presetCmd(args []string) error {
 		if len(positional) != 1 {
 			return fmt.Errorf("usage: mfsh preset import <lm-studio-preset.json> [-name NAME]")
 		}
-		// The server accepts 1 MiB. Reading the whole file first meant a
-		// mistakenly named large file was loaded into memory only to be
-		// refused, so the size is checked before it is read.
+		// Check the 1 MiB server limit before allocating memory for the file.
 		const maxPreset = 1 << 20
 		if fi, err := os.Stat(positional[0]); err == nil && fi.Size() > maxPreset {
 			return fmt.Errorf("%s is %s; a preset must be under 1MB", positional[0], humanBytes(fi.Size()))

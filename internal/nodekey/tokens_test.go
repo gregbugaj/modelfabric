@@ -68,7 +68,6 @@ func TestTokenLifecycle(t *testing.T) {
 			if !errors.Is(err, ErrBadName) {
 				t.Fatalf("err = %v, want ErrBadName", err)
 			}
-			// Shown to people as is, in the dashboard and the CLI.
 			if !strings.HasPrefix(err.Error(), "a token named") {
 				t.Fatalf("message = %q", err)
 			}

@@ -8,7 +8,7 @@ import (
 )
 
 // An engine that cannot be told to answer to our model id is sent its own id
-// instead — and nothing else about the request may change on the way.
+// instead; and nothing else about the request may change on the way.
 func TestServedBodyRewritesOnlyTheModel(t *testing.T) {
 	body := []byte(`{"model":"qwen/qwen3.8-27b","messages":[{"role":"user","content":"hi"}],` +
 		`"stream":true,"temperature":0.7,"max_tokens":40}`)

@@ -3,16 +3,12 @@ import { $ } from "./core.js";
 import { chips, el } from "./rendering.js";
 import { PRESET_FIELDS, parseSettingsForm, settingsToForm } from "./ui-model.js";
 
-/* ---------- settings & presets ---------- */
-
 export let presets = [];
 let catalogKeys = [];
 
 export function fieldInput(f, value, models) {
-  // Pills: a short, closed set of levels reads better as one click than as a
-  // dropdown, and the same segmented control is already the idiom for nodes
-  // and grouping above. The hidden input carries the value, so the form's
-  // save loop (every [name] under it) needs no special case.
+  // The hidden named input keeps segmented levels compatible with
+  // the existing form save loop.
   if (f.type === "pills") {
     const wrap = el("div", "pills");
     const hidden = el("input");
@@ -113,9 +109,6 @@ export function openPresetEditor(existing) {
   $("settings-dialog").showModal();
 }
 
-// Preset management lives in a dialog opened from the settings panel, the way
-// LM Studio keeps presets beside the settings they carry rather than as a
-// catalogue of their own.
 export function openPresetManager() {
   $("dlg-title").textContent = "Presets";
   $("dlg-sub").textContent = "Named inference settings, applied to any model. Load settings belong to a model.";
@@ -141,8 +134,6 @@ export function openPresetManager() {
       del.type = "button";
       del.addEventListener("click", async () => {
         if (!confirm(`Delete preset ${p.name}?`)) return;
-        // A refused delete (a model still names this preset) or a network
-        // failure used to look exactly like success.
         try {
           const resp = await fetch(`/api/v1/presets/${encodeURIComponent(p.name)}`, { method: "DELETE" });
           if (!resp.ok) {
@@ -177,8 +168,6 @@ export function openPresetManager() {
   const neu = el("button", "btn primary", "New preset");
   neu.type = "button";
   neu.addEventListener("click", () => openPresetEditor(null));
-  // The dialog head already carries a Close; a second one in the footer just
-  // competes with the action that matters.
   actions.append(imp, file, neu);
   $("settings-dialog").showModal();
 }
@@ -203,13 +192,6 @@ export async function refreshPresets() {
   } catch { presets = []; }
 }
 
-
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and presets is written by the poll
-// loop and read here.
 export function setPresets(v) { presets = v; }
 
-// Assigned from another module, so it travels as a setter: ES modules
-// make an imported binding read-only, and catalogKeys is written by the poll
-// loop and read here.
 export function setCatalogKeys(v) { catalogKeys = v; }

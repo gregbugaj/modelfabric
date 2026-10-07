@@ -1,10 +1,3 @@
-/*
- * A screenshot with a caption.
- *
- * Bordered and rounded to match the surfaces around it, because a raw
- * screenshot of a bordered UI on a page with no border reads as a rendering
- * bug. `loading="lazy"` since these sit well below the fold on long pages.
- */
 export function Shot({
   src,
   alt,

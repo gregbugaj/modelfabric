@@ -8,11 +8,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/router"
 )
 
-// bodySink appends captured requests to a file, one JSON object per line.
-//
-// Separate from the in-memory ring on purpose: the ring forgets, a file does
-// not. Turning this on is a decision about what ends up on disk, so it is a
-// config setting rather than a button in the dashboard.
+// bodySink appends captured requests as JSON lines. Persistent capture is
+// configured separately from the in-memory ring because files retain prompts.
 type bodySink struct {
 	mu sync.Mutex
 	f  *os.File

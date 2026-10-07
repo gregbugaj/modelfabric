@@ -18,11 +18,8 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/llmd"
 )
 
-// routerBypassed explains why this node's router may see nothing, or "" when it
-// is in the path.
-//
-// Only llm-d does that now: Envoy dials the engines itself, so a request it
-// schedules never passes through ModelFabric's router and cannot appear in this log.
+// routerBypassed explains when llm-d bypasses this node's router, or returns "".
+// Envoy dials engines directly, so those requests are absent from the router log.
 func routerBypassed(addr string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -38,8 +35,6 @@ func routerBypassed(addr string) string {
 		"`mfsh log -engines` follows every engine instead.", st.Model)
 }
 
-// logCmd streams routed requests, like `lms log stream`, or shows an engine's
-// own output with `mfsh log engine`.
 func logCmd(args []string) error {
 	if len(args) > 0 && args[0] == "engine" {
 		return engineLogCmd(args[1:])
@@ -89,11 +84,6 @@ func logCmd(args []string) error {
 		return fmt.Errorf("stream refused: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	fmt.Fprintln(os.Stderr, dim("Streaming routed requests. Metadata always; prompts and replies only while capture is on. Ctrl-C to stop."))
-	// A node whose router is not in the path has nothing to stream, and the
-	// banner above used to promise requests and then sit silent for hours: a
-	// benchmark ran on three engines while this printed one line and waited.
-	// Whether ModelFabric sees a request depends on whether llm-d owns the model, so say so
-	// here rather than leave "quiet" and "blind" looking identical.
 	if why := routerBypassed(*addr); why != "" {
 		fmt.Fprintln(os.Stderr, dim(why))
 	}
@@ -156,9 +146,6 @@ func logCmd(args []string) error {
 	return sc.Err()
 }
 
-// engineLogCmd prints (and optionally follows) an instance's engine output.
-// That output is where load timings, VRAM decisions and engine warnings live —
-// it is what made the load-time regression diagnosable.
 func engineLogCmd(args []string) error {
 	fs := flag.NewFlagSet("log engine", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the ModelFabric node")

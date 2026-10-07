@@ -21,9 +21,7 @@ import (
 var colorEnabled = detectColor()
 
 func detectColor() bool {
-	// NO_COLOR first: the contract above says it is honoured and that
-	// CLICOLOR_FORCE overrides *the TTY check*. Checking FORCE first made it
-	// override NO_COLOR too, which is not what either says.
+	// NO_COLOR takes precedence; CLICOLOR_FORCE overrides only the TTY check.
 	if _, set := os.LookupEnv("NO_COLOR"); set {
 		return false
 	}
@@ -66,10 +64,7 @@ func yellow(s string) string { return style(ansiYellow, s) }
 func cyan(s string) string   { return style(ansiCyan, s) }
 
 // visibleWidth counts display columns, ignoring escape sequences.
-//
-// This is why the table renderer below exists instead of text/tabwriter:
-// tabwriter measures raw bytes, so a coloured cell silently misaligns every
-// column after it.
+// text/tabwriter counts escape bytes and misaligns colored cells.
 func visibleWidth(s string) int {
 	const (
 		normal = iota
@@ -86,10 +81,7 @@ func visibleWidth(s string) int {
 			}
 			width += runeWidth(r)
 		case afterESC:
-			// '[' introduces a CSI sequence. It is NOT a terminator, even
-			// though 0x5B sits inside the 0x40-0x7E final-byte range — treating
-			// it as one makes every styled cell measure too wide and silently
-			// misaligns every column after it.
+			// '[' starts CSI despite lying in the 0x40-0x7E final-byte range; skip it before checking terminators.
 			if r == '[' {
 				state = inCSI
 			} else {
@@ -106,7 +98,6 @@ func visibleWidth(s string) int {
 	return width
 }
 
-// table renders aligned, optionally coloured columns.
 type table struct {
 	headers []string
 	rows    [][]string
@@ -120,7 +111,6 @@ func newTable(headers ...string) *table {
 
 func (t *table) add(cells ...string) { t.rows = append(t.rows, cells) }
 
-// render writes the table, sizing each column by its widest visible cell.
 func (t *table) render(w *strings.Builder) {
 	cols := len(t.headers)
 	for _, r := range t.rows {
@@ -176,7 +166,6 @@ func (t *table) String() string {
 
 func (t *table) print() { fmt.Print(t.String()) }
 
-// statusDot renders a coloured state indicator.
 func statusDot(ok bool, label string) string {
 	if ok {
 		return green("●") + " " + label
@@ -184,7 +173,6 @@ func statusDot(ok bool, label string) string {
 	return red("●") + " " + label
 }
 
-// padVisible pads s to n display columns, ignoring escape sequences.
 func padVisible(s string, n int) string {
 	if d := n - visibleWidth(s); d > 0 {
 		return s + strings.Repeat(" ", d)
@@ -192,13 +180,9 @@ func padVisible(s string, n int) string {
 	return s
 }
 
-// runeWidth is the number of terminal columns a rune occupies.
-//
-// Terminals draw East Asian wide characters and most emoji two columns wide
-// and combining marks zero columns wide. Counting every rune as one column —
-// what this did before — shifts every column after a model named in Chinese,
-// Japanese or Korean, or with an emoji in its name. These ranges cover the
-// wide blocks in Unicode's East Asian Width data without importing it.
+// runeWidth returns the terminal column count: two for East Asian wide
+// characters and most emoji, zero for combining marks. The ranges follow
+// Unicode's East Asian Width data without adding a dependency.
 func runeWidth(r rune) int {
 	switch {
 	case r == 0:

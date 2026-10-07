@@ -1,16 +1,10 @@
 #!/bin/bash
-# One replay of a recorded run through whatever routing is in force, with
-# NVIDIA AIPerf, into $WORK/runs/NAME. It takes run.sh's place in sequence.sh:
+# Replay a fixed trace through the active routing mode using NVIDIA AIPerf.
 #
 #   RUNNER=bench/swe/aiperf-run.sh SWE_TRACE=trace.jsonl bench/swe/sequence.sh PREFIX router tuned litellm
 #
-# Where run.sh drives live agents, whose every run is a different set of
-# conversations, this sends one fixed script of requests (see aiperf-trace.py),
-# so the arms differ only in how they were routed.
-#
-#   SWE_TRACE     the trace to replay, from aiperf-trace.py (required)
-#   SWE_AIPERF    the aiperf executable (default: $WORK/aiperf-venv/bin/aiperf)
-#   SWE_WORKERS   conversations in flight at once
+# SWE_TRACE selects the required trace; SWE_AIPERF overrides the executable
+# (default $WORK/aiperf-venv/bin/aiperf); SWE_WORKERS sets concurrent conversations.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 NAME=${1:?usage: aiperf-run.sh NAME}
@@ -36,11 +30,9 @@ URL=${URL%/v1}
 CALLS=$(wc -l < "$TRACE")
 mkdir -p "$WORK/runs/$NAME"
 cp "$TRACE" "$WORK/runs/$NAME/trace.jsonl"
-# --request-count: without it AIPerf stops at max(10, 2 x concurrency) and
-# calls that the benchmark. --no-fixed-schedule with --concurrency: WORKERS
-# conversations at a time, the next starting when one ends, as the agent
-# harness does, where a fixed schedule would start each at its recorded
-# second whatever the system under test was doing.
+# Set request-count to avoid AIPerf's default request limit. Use concurrency
+# with no-fixed-schedule so each completed conversation admits the next,
+# matching the agent harness rather than recorded wall-clock start times.
 "$AIPERF" profile \
   --model "$MODEL" --endpoint-type chat --url "$URL" --api-key "$KEY" \
   --input-file "$TRACE" --custom-dataset-type mooncake-trace \

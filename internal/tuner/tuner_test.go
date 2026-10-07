@@ -30,7 +30,7 @@ func (f *flickeringEngine) Target(context.Context, string) (string, string, erro
 func (f *flickeringEngine) Current(context.Context, string) (int, int, error) { return 2, 4096, nil }
 
 func TestRunRefusesAnEngineThatIsOnlyMomentarilyIdle(t *testing.T) {
-	// Idle on the first look, busy on the second — the case a single check
+	// Idle on the first look, busy on the second; the case a single check
 	// misses.
 	e := &flickeringEngine{counts: []int{0, 2, 2, 2, 2}}
 	_, err := Run(context.Background(), e, Config{Model: "m", Slots: []int{1}}, nil)

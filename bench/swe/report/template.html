@@ -31,9 +31,7 @@
   --llmd: hsl(var(--brand-primary));
   --llmd-bg: hsl(var(--brand-primary-muted));
   --direct: hsl(var(--direct-token));
-  /* One colour per mode, by position. m0 and m1 are the pilot's two so a
-     rebuilt two-mode page looks exactly as it did; the rest are added for
-     three-node runs, which compare direct against several profiles at once. */
+  /* Assign colors by mode position; retain the first two colors for existing reports. */
   --m0: hsl(var(--direct-token));
   --m1: hsl(var(--brand-primary));
   --m2: hsl(275 60% 55%);
@@ -174,9 +172,7 @@ svg .note { fill: var(--text); font-weight: 500; }
 
 .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
 table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-/* Five columns per mode: two modes fit, three do not. width:100% squeezed the
-   columns until the last mode was unreadable rather than letting the wrapper
-   scroll, so the table keeps its natural width past that point. */
+/* Keep natural table width so additional modes scroll instead of compressing columns. */
 #tasks { width: max-content; min-width: 100%; }
 #tasks th, #tasks td { white-space: nowrap; }
 th, td { padding: 9px 12px; text-align: left; white-space: nowrap; }
@@ -350,7 +346,6 @@ function el(tag, attrs = {}, text) {
   return e;
 }
 
-// Headline tiles
 // A ratio only when both sides are real numbers and the divisor is not zero:
 // an empty or failed run used to render "Infinity×" or "NaN×" as a finding.
 function ratio(a, b, word) {
@@ -358,8 +353,7 @@ function ratio(a, b, word) {
   return `${(a / b).toFixed(1)}× ${word}`;
 }
 
-// MODES is the running order; the first is the baseline every delta is
-// measured against. A two-mode page renders exactly as the pilot's did.
+// The first mode is the baseline for all deltas; preserve running order.
 const MODES = (DATA && DATA.modes) || [];
 const BASE = (DATA && DATA.base) || MODES[0];
 const cls = m => "m" + Math.min(4, MODES.indexOf(m));
@@ -376,8 +370,7 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
 })();
 
 (function metrics() {
-  // The generator can leave the placeholder in place if it fails part-way.
-  // Rendering nothing beats a page of "Cannot read properties of null".
+  // Skip an unfilled data placeholder if report generation failed.
   if (!MODES.length || MODES.some(m => !cmp(m))) return;
   const b = cmp(BASE);
   const tiles = [
@@ -387,11 +380,7 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
       delta: r => ratio(b.p95, r.p95, "lower") },
     { label: "Total time waiting on the model", get: r => fmt.min(r.model_min),
       delta: r => ratio(b.model_min, r.model_min, "less") },
-    // Resolve rate is never marked as a win. At twenty tasks and temperature
-    // 1.0 the agent's own sampling moves several tasks in both directions at
-    // once, so a gap of one or two carries no signal about routing — the
-    // 2026-09-24 pair scored 17 and 15 while agreeing on only 13. A green
-    // badge here would state the opposite of what the page goes on to say.
+    // Do not mark solve-rate differences as routing wins: small samples and stochastic agent output confound attribution.
     { label: "Tasks resolved", get: r => `${r.resolved} / ${r.tasks}`, tone: "even",
       delta: r => (r.resolved === b.resolved ? "identical" : `${Math.abs(r.resolved - b.resolved)} apart, within noise`) },
   ];
@@ -406,26 +395,13 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
       pair.append(row);
     }
     m.append(pair);
-    // The delta reads against the baseline, so the baseline has none of its
-    // own: "1.0x less than itself" is noise on every tile.
     const others = MODES.filter(x => x !== BASE);
     if (others.length === 1) m.append(el("span", { class: "delta " + (t.tone || "good") }, t.delta(cmp(others[0]))));
     root.append(m);
   }
 })();
 
-// Latency by percentile.
-//
-// This was a CDF — share of calls under a given latency, log x. On a run where
-// the modes differ only in the tail it is the wrong chart: two near-identical S
-// curves that separate inside the last two percent of their height, which is a
-// few pixels below the 100% gridline. The finding was invisible in the picture
-// that was supposed to show it.
-//
-// Here the percentile is the x axis, stretched by -log10(1-p) so each further
-// nine gets equal width, and latency is a log y. The left edge is the median,
-// where the modes are level or the scheduler is behind; every step right is
-// ten times rarer, and the curves fan apart.
+// Plot percentile on -log10(1-p) and latency on a log scale to expose tail differences that a CDF compresses.
 (function percentiles() {
   const svg = document.getElementById("cdf");
   const W = 960, H = 360, L = 62, R = 118, T = 20, B = 48;
@@ -456,8 +432,6 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
   const ymax = Math.max(...series.map(s => s.v[s.v.length - 1])) * 1.15;
   const y = v => T + (1 - (Math.log10(Math.max(v, ymin)) - Math.log10(ymin)) / (Math.log10(ymax) - Math.log10(ymin))) * (H - T - B);
 
-  // Seconds below a minute, minutes above: "1800 s" is a number to convert,
-  // "30 min" is one to feel.
   const ylab = v => v < 60 ? v + " s" : (v / 60) + " min";
   for (const v of [1, 3, 10, 30, 60, 300, 600, 1800, 3600].filter(v => v <= ymax)) {
     add("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid" });
@@ -492,23 +466,17 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
     // own curve, which is easier to read back.
     const yy = i && e.yy - ends[i - 1].yy < 15 ? ends[i - 1].yy + 15 : e.yy;
     ends[i].yy = yy;
-    // Same units as the y axis: a slowest call of "2316 s" is a number to
-    // convert before it means anything, "39 min" is one that already does.
     add("text", { x: W - R + 8, y: yy + 4, class: "note" },
       `${e.name} ${e.v < 90 ? Math.round(e.v) + " s" : (e.v / 60).toFixed(e.v < 600 ? 1 : 0) + " min"}`);
   });
 })();
 
-// Aggregate table
 (function agg() {
   const t = document.getElementById("agg");
   if (!MODES.length || MODES.some(m => !cmp(m))) return;
   const n = (DATA.common || []).length;
   const cols = MODES.map(m => [`${m}, same ${n}`, cmp(m), m]);
-  // The baseline's own full run last, behind a rule: it is the only column
-  // that is not like-for-like, and the pilot's page put it there too. When no
-  // mode lost a task it is a character-for-character copy of the first column,
-  // which reads as a third run rather than as the same one twice.
+  // Show the full baseline separately from matched-task comparisons, and omit it when it duplicates the first column.
   const allBase = DATA.all && DATA.all[BASE];
   if (allBase && allBase.tasks !== n) cols.push([`${BASE}, all ${allBase.tasks}`, allBase, null]);
   const rows = [
@@ -535,9 +503,6 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
   for (const [label, f, key, dir] of rows) {
     const tr = el("tr");
     tr.append(el("td", {}, label));
-    // The best value across the like-for-like columns, so with three modes
-    // the winner is marked rather than a pairwise comparison that only ever
-    // knew about two.
     let best = null;
     if (key && dir) {
       for (const m of MODES) {
@@ -556,7 +521,6 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
   t.append(body);
 })();
 
-// Per-task table
 (function tasks() {
   const t = document.getElementById("tasks");
   if (!MODES.length) return;
@@ -580,18 +544,13 @@ const cmp = m => (DATA && DATA.cmp && DATA.cmp[m]) || null;
   if (!DATA || !Array.isArray(DATA.tasks)) return;
   for (const row of DATA.tasks) {
     const by = row.by || {};
-    // A row is struck through only when every mode lost the task; one mode
-    // timing out is the comparison, not a dead row.
     const tr = el("tr", MODES.some(m => by[m]) ? {} : { class: "timeout" });
     tr.append(el("td", { class: "mono" }, row.id.replace("astropy__astropy-", "astropy-")));
     const b = by[BASE];
     MODES.forEach((m, i) => {
       const r = by[m], sep = i ? " sep" : "";
       const res = el("td", { class: sep.trim() }); res.append(result(r)); tr.append(res);
-      // return, not continue: this is a forEach callback, and `continue` here
-      // is a syntax error that takes the whole script down — the page rendered
-      // blank with no console error, because a script that fails to parse
-      // never runs to throw one.
+      // Use return in the forEach callback; continue here is a syntax error.
       if (!r) { for (let k = 0; k < 4; k++) tr.append(el("td", { class: "num" }, "—")); return; }
       const cache = el("td", { class: "num" }, fmt.pct(r.cache));
       const time = el("td", { class: "num" }, fmt.min(r.model_s / 60));

@@ -1,37 +1,14 @@
 #!/usr/bin/env python3
-"""Picks a fixed, language-balanced subset of the polyglot exercises.
+"""Select a fixed, language-balanced subset of polyglot exercises.
 
     subset.py EXERCISES_DIR N [SEED]
 
-Prints the chosen exercises as one comma-separated line, ready for aider's
-`--keywords`, which keeps only the exercises whose directory name contains one
-of them.
-
-Why this exists. aider's harness does:
-
-    random.shuffle(test_dnames)
-    if num_tests > 0:
-        test_dnames = test_dnames[:num_tests]
-
-with no seed, so `--num-tests 60` means *a different* 60 of the 225 on every
-invocation. Two routing modes would then be solving different exercises, which
-is not a comparison — and the same flag cannot reproduce a past run either.
-
-Two things fall out of picking the subset here instead:
-
-  * every mode runs the same exercises, because the list is passed in;
-  * the split across the six languages is even, which shuffling does not
-    promise. The languages are far from equal in size (javascript 49,
-    cpp 26), so an unseeded draw of 60 can come back badly skewed, and a
-    routing difference would then be tangled with a language difference.
-
-The shuffle still runs, over the exercises we passed. That only changes the
-order they arrive in, not which work is done, and varying arrival order between
-modes is fine — arguably better than fixing it.
-
-The keyword match is a substring test, so this refuses to emit a name that is
-contained in another exercise's name: that would quietly pull in a second
-exercise. As of the 2026-09 checkout no such pair exists.
+Print comma-separated exercise names for aider's --keywords filter.
+A seeded subset avoids aider's unseeded --num-tests selection and keeps
+routing modes on the same exercises. Round-robin selection balances languages;
+aider may still shuffle their execution order.
+Reject names contained in another exercise name because --keywords uses
+substring matching and would select both.
 """
 import pathlib
 import random
@@ -57,9 +34,7 @@ def pick(names: list[str], n: int, seed: int) -> list[str]:
 
     rng = random.Random(seed)
     pools = {lang: rng.sample(v, len(v)) for lang, v in sorted(by_lang.items())}
-    # Round-robin over the languages rather than n//6 each: it gives the same
-    # even split when the languages are big enough, and degrades sensibly when
-    # one runs out or when n is not a multiple of six.
+    # Round-robin supports uneven language counts and subsets not divisible by six.
     chosen: list[str] = []
     while len(chosen) < n and any(pools.values()):
         for lang in sorted(pools):

@@ -15,7 +15,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/config"
 )
 
-// importCmd adopts a GGUF file already on disk, like `lms import`.
 func importCmd(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "address of the local ModelFabric node")
@@ -60,8 +59,7 @@ func importCmd(args []string) error {
 	}
 
 	files := []string{src}
-	// A vision model without its projector loads fine and answers text-only,
-	// which looks like success. Bring it along.
+	// Include the projector; without it a vision model loads but only serves text.
 	if !strings.HasPrefix(strings.ToLower(filepath.Base(src)), "mmproj") {
 		matches, _ := filepath.Glob(filepath.Join(filepath.Dir(src), "mmproj*.gguf"))
 		switch len(matches) {
@@ -69,9 +67,7 @@ func importCmd(args []string) error {
 		case 1:
 			files = append(files, matches[0])
 		default:
-			// Taking matches[0] took whichever sorted first, which need not be
-			// this model's. A projector that belongs to another model makes
-			// the import claim vision it cannot do.
+			// Do not choose by sort order: another model's projector cannot provide vision support.
 			return fmt.Errorf("%s holds %d projectors; import the model and its own projector by name:\n  mfsh import %s\n  mfsh import <the matching mmproj file>",
 				filepath.Dir(src), len(matches), src)
 		}
@@ -110,7 +106,6 @@ func checkGGUF(path string) error {
 	return nil
 }
 
-// adopt places src at dst and reports how.
 func adopt(src, dst, mode string) (string, error) {
 	switch mode {
 	case "link":
@@ -166,10 +161,7 @@ func copyFile(src, dst string) error {
 		os.Remove(tmp)
 		return err
 	}
-	// Link, not Rename: rename replaces an existing destination, so the
-	// caller's "this file must not exist" check was only advisory — a second
-	// import of the same name could overwrite a model between the check and
-	// the copy. Link fails if the destination appeared meanwhile.
+	// Use Link because it rejects an existing destination; Rename could overwrite a concurrent import after the existence check.
 	if err := os.Link(tmp, dst); err != nil {
 		os.Remove(tmp)
 		return err

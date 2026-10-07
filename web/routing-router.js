@@ -1,13 +1,6 @@
 import { settingControl, settingRow } from "./setting-fields.js";
-// The Routing page's first half: the two routing methods side by side, who
-// routes each model right now, and ModelFabric's router's own controls.
-// llm-d's controls follow, in routing.js.
-//
-// The router's settings are config.json keys, saved through the same
-// /api/v1/server-settings as Server settings (only what changed is written,
-// the previous file kept as .bak). Each is read when the node starts, so a
-// saved change is marked as waiting for a restart. The preferred node is the
-// exception: it has its own live API, which is what this uses.
+// Router settings use /api/v1/server-settings and take effect after restart.
+// Preferred-node changes use a separate live API. llm-d controls are in routing.js.
 
 import { showNotice } from "./actions.js";
 import { $ } from "./core.js";
@@ -18,8 +11,6 @@ import { meshScheduler } from "./workload-presets.js";
 
 const rr = { view: null, inputs: {}, rows: {}, built: false, loading: false };
 
-// Each row as on the Server settings panel: a name, a line on what it does,
-// the rest behind "?".
 const ROWS = [
   { key: "preferred", label: "Preferred node", kind: "select", live: true,
     desc: "When several nodes hold a model, try this one first. Applies at once.",
@@ -67,8 +58,7 @@ function build() {
   $("rg-router-save").addEventListener("click", save);
 }
 
-// Called with every poll; the settings themselves are read when the page is
-// opened and after a save, not every two seconds.
+// Refresh settings on open and after save; regular polls only update status.
 export function renderRouter() {
   build();
   renderMethods();
@@ -183,7 +173,6 @@ function readForm() {
 
 const changes = () => (rr.view ? settingsChanges(rr.view.saved, readForm(), ROUTER_SETTINGS) : {});
 
-// Which row shows a config key that waits for a restart.
 const ROW_OF = { cache_disk_mib: "cache_on" };
 
 function refresh() {

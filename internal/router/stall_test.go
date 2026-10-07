@@ -13,15 +13,9 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// A request that goes silent is abandoned, and the slot it held is released.
-//
-// This is the failure it was written for: a client timed out without closing
-// its connection, so it stopped reading while the engine kept writing. TCP
-// backpressure stalled the engine, and nothing timed out anywhere — the engine's
-// only slot stayed occupied for ninety minutes while two idle machines went
-// unused, because a slot is the unit every router counts in.
+// Regression: client backpressure can stall forwarding indefinitely.
+// The inactivity timeout must cancel the request and release its engine slot.
 func TestStalledRequestIsAbandonedAndTheSlotReleased(t *testing.T) {
-	// Sends one chunk so the response is committed, then never speaks again.
 	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -100,14 +94,9 @@ func TestStallWindow(t *testing.T) {
 	}
 }
 
-// A request that does not stream sends its headers only when the whole answer
-// is written, so the wait for headers is the length of the generation. The
-// router used the mesh's probe client for inference, which gives up after 120s
-// without headers: in the 2026-10-05 SWE run, 13.5% of requests at the
-// entrypoint died that way, each after three engines had prefilled its prompt
-// for two minutes and been abandoned.
-//
-// The probe bound is shrunk here so "longer than the bound" is 200ms.
+// Non-streaming responses may delay headers for the entire generation.
+// Inference must not inherit the probe client's response-header timeout.
+// The test reduces that timeout so a 200 ms response exceeds it.
 func TestSlowHeadersAreNotAStall(t *testing.T) {
 	old := mesh.ProbeHeaderTimeout
 	mesh.ProbeHeaderTimeout = 50 * time.Millisecond

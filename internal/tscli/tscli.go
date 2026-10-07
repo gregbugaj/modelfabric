@@ -1,7 +1,7 @@
 // Package tscli finds the tailscale CLI to talk to.
 //
 // On Linux there is one: `tailscale` on PATH, talking to the one tailscaled.
-// A Mac can have two installations that disagree — Homebrew's tailscaled runs
+// A Mac can have two installations that disagree; Homebrew's tailscaled runs
 // in userspace-networking mode, which serves Tailscale SSH and ping but carries
 // no ordinary TCP, while the Tailscale app provides the real tunnel and keeps
 // its CLI inside the bundle, off PATH. A CLI whose daemon is not running fails,
@@ -42,9 +42,7 @@ var (
 	checked time.Time
 )
 
-// Path is the tailscale CLI to run. It is the first candidate whose daemon
-// answers; when none does, it is plain "tailscale", so the caller reports the
-// error a missing Tailscale should produce rather than a path nobody expects.
+// Path returns the first CLI whose daemon answers, or "tailscale" if none does.
 func Path() string {
 	mu.Lock()
 	defer mu.Unlock()
@@ -73,12 +71,10 @@ func Path() string {
 	return found
 }
 
-// Run executes the working tailscale CLI with these arguments.
 func Run(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, Path(), args...).Output()
 }
 
-// answers reports whether this CLI can reach a running tailscaled.
 func answers(bin string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

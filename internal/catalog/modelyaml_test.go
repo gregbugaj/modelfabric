@@ -38,7 +38,6 @@ func TestUncheckedSamplerNeedsNoValue(t *testing.T) {
 	if on {
 		t.Error("an unchecked sampler reported as on")
 	}
-	// A checked one still has to carry a number.
 	if _, _, err := checkedValue(map[string]any{"checked": true}); err == nil {
 		t.Error("a checked sampler with no value was accepted")
 	}

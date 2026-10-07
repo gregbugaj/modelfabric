@@ -11,24 +11,10 @@ import (
 	"time"
 )
 
-// The dashboard's state, pushed as it changes.
-//
-// An open dashboard used to poll six endpoints every two seconds, and for
-// each peer two more through /api/v1/nodes — per tab, whether anything had
-// changed or not. Measured on a three-node mesh, five of the six answers were
-// byte-identical from one poll to the next; the sixth, /z/mesh, changes only
-// by its heartbeat timestamps. So the feed samples the same handlers here, in
-// process, and sends a resource only when its answer differs from the last
-// one sent. Every tab shares one sampler, and it runs only while someone is
-// subscribed.
-//
-// Each event is exactly what the matching GET returns, so the HTTP endpoints
-// stay the contract and the stream is only a cheaper way to read them. A
-// non-200 answer is sent as `null`: "this node does not do that", as the 404
-// from /api/v1/models means on a node that supervises nothing.
-//
-// SSE rather than a WebSocket for the reasons in tokens.go: the traffic is
-// one way, and Go's standard library has no WebSocket server.
+// The dashboard feed samples GET handlers in process and publishes changed
+// resources over SSE. Subscribers share one sampler, active only while needed.
+// Event data matches the corresponding GET body; non-200 responses become null.
+// SSE supports this one-way feed without a WebSocket dependency.
 
 // feedEvery is how often the feed samples while someone is subscribed. It is
 // also the most an action waits before the dashboard sees its effect.
@@ -196,8 +182,6 @@ func (f *stateFeed) sample() bool {
 	return true
 }
 
-// renderSource calls a handler as its GET would, without the logging middleware: a
-// sample a second in the debug log would be the chatter this replaces.
 func renderSource(src feedSource) []byte {
 	rec := httptest.NewRecorder()
 	src.h(rec, httptest.NewRequest(http.MethodGet, src.path, nil))

@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// answer is a minimal MCP server's reply to one message; nil for a
-// notification.
 func answer(msg []byte) []byte {
 	var in struct {
 		ID     *int64 `json:"id"`
@@ -81,7 +79,6 @@ func httpServer(t *testing.T, sse bool, seen *http.Header) string {
 		}
 		if sse {
 			w.Header().Set("Content-Type", "text/event-stream")
-			// A notification first: only the reply to our id may be taken.
 			fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n")
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", out)
 			return

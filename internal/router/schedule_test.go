@@ -7,7 +7,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// held is the shares map for a prompt one engine holds part of.
 func held(target string, share float64) map[string]float64 {
 	if target == "" || share <= 0 {
 		return nil
@@ -15,10 +14,6 @@ func held(target string, share float64) map[string]float64 {
 	return map[string]float64{target: share}
 }
 
-// The default placement, case by case against what llm-d's "tuned" profile
-// does (llm-d-router v0.10.0), on the fleet of the 2026-10-06 runs. The first
-// group is where the rule it replaces differed, and lost: 9 of 20 tasks at 35
-// minutes to llm-d's 14, on the same machines and tasks.
 func TestScheduleFollowsLLMD(t *testing.T) {
 	fleet := func(x, m, h int64) []mesh.Candidate {
 		return []mesh.Candidate{
@@ -38,29 +33,18 @@ func TestScheduleFollowsLLMD(t *testing.T) {
 		coldLRU []string // engines by last cold request, oldest first
 		want    string
 	}{
-		// Stays home when home is full. The old rule left for the engine with
-		// the fewest in flight, a different machine with nothing cached; with
-		// the queue it was held at the router. Here it waits for the next slot
-		// on the machine that has its cache.
 		{"home has every slot busy: home all the same", fleet(0, 4, 0), "minion", 0.97, 40000, nil, nil, "minion"},
 		{"home busy and a faster engine idle: still home", fleet(0, 3, 0), "minion", 0.97, 40000, nil, nil, "minion"},
-		// The room filter: an engine with a request already queued is passed
-		// over, home included, while another has none queued.
 		{"home already has a request waiting for a slot: not home", fleet(1, 5, 0), "minion", 0.97, 40000, nil, nil, "xpredator"},
 		{"every engine has one waiting: home again", fleet(3, 5, 2), "minion", 0.97, 40000, nil, nil, "minion"},
-		// The load gate, in seconds at each engine's own prefill rate: 15,000
-		// tokens to read on minion is 25s, more than 18s beyond an idle 5090.
-		// Passing the gate only makes the other engines candidates again; the
-		// token score still counts what each would have to read, and a cold
-		// read of the whole prompt elsewhere is more than home's backlog.
+		// The time-based load gate reopens other candidates, but token scoring
+		// can still favor home's backlog over a full cold prefill elsewhere.
 		{"home's backlog is within 18 seconds: stays", fleet(0, 2, 0), "minion", 0.97, 40000, reading{"minion": 9000}, nil, "minion"},
-		// Was "minion", when load was scored in tokens: 16,200 to read at home
-		// against 40,000 on the 5090. In seconds that is 27 at home's 600 a
-		// second and 25 on the 5090's 1,600, so the faster engine wins.
+		// Compare estimated seconds: 16,200/600 = 27 at home versus
+		// 40,000/1,600 = 25 on the faster engine.
 		{"home's backlog is past 18 seconds, and a cold read on the faster engine takes less time: leaves", fleet(0, 2, 0), "minion", 0.97, 40000, reading{"minion": 15000}, nil, "xpredator"},
 		{"home's backlog is past 18 seconds, but still quicker than a cold read elsewhere: stays", fleet(0, 2, 0), "minion", 0.97, 40000, reading{"minion": 12000}, nil, "minion"},
 		{"home has more to read first than the whole prompt: leaves", fleet(0, 2, 0), "minion", 0.97, 40000, reading{"minion": 60000}, nil, "xpredator"},
-		// Four fifths of the prompt is the line.
 		{"holds 80% of the prompt: sticky", fleet(0, 4, 0), "minion", 0.80, 40000, nil, nil, "minion"},
 		{"holds 79%: every engine is a candidate, the one with least to read wins", fleet(0, 4, 0), "minion", 0.79, 40000, nil, nil, "minion"},
 		{"holds 79%, but has more to read than the prompt's cached part saves", fleet(0, 4, 0), "minion", 0.79, 40000, reading{"minion": 60000}, nil, "xpredator"},
@@ -91,9 +75,6 @@ func TestScheduleFollowsLLMD(t *testing.T) {
 	}
 }
 
-// What an engine has to read goes up when a request is placed and down when
-// it ends, by the same amount; and a conversation's size, once the engine has
-// reported it, replaces the guess made from the length of its request.
 func TestPlacementTracksWhatEachEngineHasToRead(t *testing.T) {
 	p := NewPlacement(nil)
 	cands := []mesh.Candidate{
@@ -115,8 +96,6 @@ func TestPlacementTracksWhatEachEngineHasToRead(t *testing.T) {
 		t.Fatalf("after it finished, %s still has %d to read", home, got)
 	}
 
-	// The next turn of the same conversation: nearly all of it is held at
-	// home, so home it goes, and little is left to read.
 	second := turn(strings.Repeat("the quick brown fox ", 400) + strings.Repeat(" and a tool's output", 60)) // about 1.2KB more
 	c2 := p.Order(cands, "m", second, "")
 	if c2.Target != home || c2.Candidates[0].Name != home {
@@ -131,7 +110,6 @@ func TestPlacementTracksWhatEachEngineHasToRead(t *testing.T) {
 	if got := p.reading[home]; got <= 0 || got > c2.tokens/4 {
 		t.Errorf("home has %d of %d tokens to read for a prompt it mostly holds", got, c2.tokens)
 	}
-	// Sent elsewhere it would all have to be read.
 	other := "b"
 	if home == "b" {
 		other = "a"
@@ -145,7 +123,6 @@ func TestPlacementTracksWhatEachEngineHasToRead(t *testing.T) {
 	}
 }
 
-// The earlier rule is still there to be chosen.
 func TestHomeSlotPlacementIsSelectable(t *testing.T) {
 	cands := []mesh.Candidate{
 		{Name: "xpredator", Local: true, Inflight: 0, Slots: 2, PrefillTokS: 1600},
@@ -171,11 +148,8 @@ func TestHomeSlotPlacementIsSelectable(t *testing.T) {
 	}
 }
 
-// llm-d's rule as written deals new conversations round the engines in turn
-// and keeps each where it started. Run live on 2026-10-06 that put three on
-// the two-slot 5090: twelve cold reads of 45,000 to 70,000 tokens in eight
-// minutes there, each conversation taking the next one's slot, beside a GPU
-// with a slot nobody lived in. An engine is full by who lives on it.
+// Regression: distributing new conversations without tracking residency
+// can overfill one engine and cause repeated cache eviction.
 func TestScheduleKeepsConversationsWithinAnEnginesSlots(t *testing.T) {
 	fleet := func(x, m, h int64) []mesh.Candidate {
 		return []mesh.Candidate{
@@ -185,8 +159,7 @@ func TestScheduleKeepsConversationsWithinAnEnginesSlots(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		name string
-		// living is how many other conversations live on each engine.
+		name   string
 		living map[string]int
 		cands  []mesh.Candidate
 		target string
@@ -201,7 +174,6 @@ func TestScheduleKeepsConversationsWithinAnEnginesSlots(t *testing.T) {
 			map[string]int{"xpredator": 2, "minion": 3, "helion": 1}, fleet(1, 2, 0), "", 0, "minion"},
 		{"every engine is lived in to its slots: llm-d's rule decides, there is nowhere better",
 			map[string]int{"xpredator": 2, "minion": 4, "helion": 1}, fleet(1, 2, 0), "", 0, "xpredator"},
-		// The run's case, from the side of a conversation already there.
 		{"home has one more living there than it has slots, and another engine has room: leaves",
 			map[string]int{"xpredator": 2, "minion": 2}, fleet(1, 1, 0), "xpredator", 0.97, "minion"},
 		{"home is lived in exactly to its slots, counting this one: stays",
@@ -228,7 +200,6 @@ func TestScheduleKeepsConversationsWithinAnEnginesSlots(t *testing.T) {
 			}
 		})
 	}
-	// A conversation that has gone quiet stops counting.
 	t.Run("a conversation not heard from for a while no longer lives there", func(t *testing.T) {
 		p := NewPlacement(nil)
 		old := p.aff.now().Add(-2 * residentFor)
@@ -240,12 +211,8 @@ func TestScheduleKeepsConversationsWithinAnEnginesSlots(t *testing.T) {
 	})
 }
 
-// Every SWE-bench task starts with the same system prompt. With one engine
-// remembered as holding it, each new task was scored as partly cached there
-// and nowhere else, and followed the last request anywhere: replaying llm-d's
-// own run through this placement, 13 of 20 new tasks went to the one-slot Mac
-// where llm-d had sent 2. A block many conversations share is held by every
-// engine that has served any of them, and then it decides nothing.
+// Regression: a shared system prefix must retain every engine that served it.
+// Remembering only the latest holder concentrated unrelated new conversations there.
 func TestASharedSystemPromptDoesNotPullNewTasksToOneEngine(t *testing.T) {
 	p := NewPlacement(nil)
 	p.NoRoomRule = true
@@ -258,7 +225,6 @@ func TestASharedSystemPromptDoesNotPullNewTasksToOneEngine(t *testing.T) {
 	task := func(n string) []byte {
 		return []byte(`{"model":"m","messages":[{"role":"system","content":"` + system + `"},{"role":"user","content":"task ` + n + ` ` + strings.Repeat("describe the bug in detail ", 400) + `"}]}`)
 	}
-	// One task has run on each engine, the Mac last.
 	for i, name := range []string{"xpredator", "minion", "helion"} {
 		c := p.Order(cands, "m", task(string(rune('a'+i))), "")
 		attempt := p.Placed(c, name)
@@ -271,7 +237,6 @@ func TestASharedSystemPromptDoesNotPullNewTasksToOneEngine(t *testing.T) {
 	if got := c.Candidates[0].Name; got != "xpredator" {
 		t.Errorf("a new task went to %s, want xpredator: nothing is in flight, the shared prefix is everywhere, so the mesh's order decides", got)
 	}
-	// And a conversation still goes back to the one engine that has all of it.
 	first := p.Order(cands, "m", task("mine"), "")
 	attempt := p.Placed(first, "minion")
 	attempt.Finished(3000, 200)
@@ -281,10 +246,8 @@ func TestASharedSystemPromptDoesNotPullNewTasksToOneEngine(t *testing.T) {
 	}
 }
 
-// An engine that reloads has nothing cached, whatever was sent to it before.
-// The replay of 2026-10-06 started 49 seconds after an earlier run of the same
-// conversations, every engine reloaded in between, and placement followed the
-// earlier run: 53 moves where runs from an empty memory made 13.
+// Reloading clears affinity so subsequent requests cannot follow stale
+// cache locations from an earlier run.
 func TestPlacementForgetsAnEngineThatReloaded(t *testing.T) {
 	cands := []mesh.Candidate{
 		{Name: "xpredator", Local: true, Slots: 2, PrefillTokS: 1600},

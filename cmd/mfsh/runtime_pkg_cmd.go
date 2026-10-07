@@ -18,10 +18,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/runtime"
 )
 
-// `mfsh runtime get | update | remove` manage ModelFabric's own engine builds, the
-// way `lms runtime get/update/remove` manage LM Studio's: same package layout
-// and manifest, in ModelFabric's directory, from upstream llama.cpp releases.
-
 type runtimeInfo struct {
 	Name       string   `json:"name"`
 	Origin     string   `json:"origin"`
@@ -34,8 +30,6 @@ type runtimeInfo struct {
 	InUse      []string `json:"in_use"`
 }
 
-// shortDigest abbreviates a hash for display without assuming it is long
-// enough to abbreviate.
 func shortDigest(sum string) string {
 	switch {
 	case sum == "":
@@ -83,9 +77,6 @@ func runtimePkgCmd(sub string, args []string) error {
 
 	case "update":
 		if len(positional) > 0 {
-			// It updates every installed runtime; a name here was silently
-			// dropped, so `mfsh runtime update cuda` looked targeted and was
-			// not.
 			return fmt.Errorf("usage: mfsh runtime update [-y]   (it updates every installed runtime)")
 		}
 		return updateRuntimes(ctx, *addr, root, *yes)
@@ -176,11 +167,8 @@ func shortName(file string) string {
 	return "engine"
 }
 
-// announceRuntime tells a running node about installed or removed runtimes,
-// and reports which one new loads will use.
 func announceRuntime(ctx context.Context, addr, installed string) error {
-	// Derived from the caller's signal-aware context: a fresh Background here
-	// meant Ctrl-C did not reach a call that could hang for a minute.
+	// Preserve the caller's signal-aware context so Ctrl-C cancels the request.
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var body struct {
@@ -203,9 +191,7 @@ func announceRuntime(ctx context.Context, addr, installed string) error {
 	return nil
 }
 
-// updateRuntimes installs the newest upstream build of every ModelFabric runtime
-// variant already installed. Old builds stay, as LM Studio keeps them, so a
-// regression is one `runtime select` away from undone.
+// updateRuntimes installs the newest upstream build of each installed variant and retains old builds for rollback.
 func updateRuntimes(ctx context.Context, addr, root string, yes bool) error {
 	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	builds, err := rtpkg.NewClient().Builds(lctx, 30)
@@ -247,8 +233,7 @@ func updateRuntimes(ctx context.Context, addr, root string, yes bool) error {
 	return announceRuntime(ctx, addr, installed[len(installed)-1])
 }
 
-// removeRuntime deletes a ModelFabric-installed runtime. LM Studio's packages are
-// LM Studio's to remove, and a runtime with loaded instances is left alone.
+// removeRuntime deletes unused ModelFabric runtimes; LM Studio packages and loaded runtimes are protected.
 func removeRuntime(ctx context.Context, addr string, positional []string) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()

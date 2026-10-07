@@ -15,17 +15,10 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
-// The cluster benchmark: the whole setup measured as one system.
-//
-//	POST   /api/v1/bench/cluster  start   {"model": ..., "concurrency": [...], ...}
-//	GET    /api/v1/bench/cluster  progress, then the report; ?format=text
-//	DELETE /api/v1/bench/cluster  stop
-//
-// Requests go through this node's own front door, so they are placed as an
-// app's are: by the router, or by llm-d for the model it schedules, across
-// every node holding the model. Nothing is reloaded. The run is held here
-// rather than in the browser so it survives the tab closing, like every
-// other run.
+// Cluster benchmarks send requests through this node's front door using
+// normal routing across the mesh, without reloading engines.
+// POST /api/v1/bench/cluster starts a run; GET returns progress or the report
+// (?format=text supported); DELETE stops it. Runs outlive their HTTP request.
 
 type clusterState struct {
 	mu      sync.Mutex
@@ -213,8 +206,6 @@ func (s *Server) clusterReport(cfg bench.ClusterConfig) bench.ClusterReport {
 	return rep
 }
 
-// clusterCommand is the run as `mfsh bench -cluster`, which reproduces it
-// from a terminal on the same entry node.
 func clusterCommand(cfg bench.ClusterConfig) string {
 	ints := func(v []int) string {
 		s := make([]string, len(v))

@@ -53,9 +53,7 @@ func keyCmd(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	// A key is a file on the node that owns it, and is deliberately not served
-	// over the network. Asked about a peer, say where to run it rather than
-	// answer with this machine's key.
+	// Keys are local files and are never served over the network; reject requests aimed at peers.
 	if err := mustBeLocal(*addr, "a node's API key", "key"); err != nil {
 		return err
 	}
@@ -70,12 +68,9 @@ func keyCmd(args []string) error {
 	return nil
 }
 
-// sameKeyHome refuses to read or write keys in a directory the running node
-// does not use. `mfsh key`, run as root on a node running as another user,
-// read root's home, found no key, created one and printed it: a key the node
-// had never seen, which it refused, and which looked exactly like the real
-// one. A node that is not running, or too old to say, leaves this directory as
-// the only one there is.
+// sameKeyHome refuses key access outside the running node's key directory.
+// Running the CLI as another user could otherwise create a key the node rejects.
+// Without a running node or directory information, use the local directory.
 func sameKeyHome(addr, mine string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -114,15 +109,9 @@ func keyRotate() error {
 	return nil
 }
 
-// mustBeLocal refuses a command that only makes sense against the node it is
-// run on. `why` completes "<what> <why>": a key is read from that node's disk,
-// a live stream is served only on its own loopback listener. Both fail the
-// same way over the network — quietly answering about the wrong node — so
-// both say which node to run on instead.
-//
-// `mfsh key -addr http://<peer>:1234` would otherwise take the flag and return
-// *this* node's key: every request to the peer then answers 401, long after the
-// models have loaded and everything looks ready.
+// mustBeLocal rejects commands aimed at remote nodes. Keys are local files
+// and live streams are loopback-only; accepting a peer address could report
+// the wrong node's data. why completes the message "<what> <why>".
 func mustBeLocal(addr, what, cmd string) error {
 	return mustBeLocalBecause(addr, what, "is read from that node's own disk, not over the network", cmd)
 }
@@ -130,7 +119,7 @@ func mustBeLocal(addr, what, cmd string) error {
 func mustBeLocalBecause(addr, what, why, cmd string) error {
 	u, err := url.Parse(addr)
 	if err != nil || u.Host == "" {
-		return nil // not something this can judge; let the caller proceed
+		return nil // locality is unknown
 	}
 	host := u.Hostname()
 	switch host {

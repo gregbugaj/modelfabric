@@ -10,31 +10,19 @@ import (
 	"strings"
 )
 
-// The chat prompt's line editor: enough of one to be usable, and no more.
-//
-// A plain bufio.Scanner was fine until slash commands existed, at which point
-// the only way to discover them was to remember /help. This adds what makes a
-// command surface usable — a list that narrows as you type, Tab to complete,
-// history on the arrows — while staying inside the standard library, because
-// ModelFabric ships one binary with no runtime dependencies and a readline package
-// would be the first.
-//
-// Falls back to line-at-a-time reading whenever the terminal cannot be put
-// into raw mode, or when input is a pipe. That path has no completion and is
-// not meant to: it exists so `echo /help | mfsh chat` still works.
+// The chat line editor provides completion and history using the standard library.
+// Piped input and terminals without raw mode fall back to line-at-a-time reading.
 
-// lineEditor reads one line at a time, with completion and history.
 type lineEditor struct {
 	history  []string
 	fallback *bufio.Scanner // used when the terminal cannot be raw
-	// complete returns the candidates for the line so far. Each is the whole
-	// replacement line, so a completer can rewrite as much as it likes.
+	// complete returns candidate replacement lines for the current input.
 	complete func(line string) []completion
 }
 
 type completion struct {
 	Value string // the line this would become
-	Label string // what the list shows
+	Label string
 	Note  string // dimmed, to the right
 }
 
@@ -97,7 +85,6 @@ func (e *lineEditor) raw(prompt string) (string, bool) {
 			fmt.Print("\r\n" + label)
 		}
 		if len(cands) > 0 {
-			// Back up to the input line and put the cursor where it belongs.
 			fmt.Printf("\033[%dA", len(cands))
 		}
 		fmt.Printf("\r\033[%dC", visibleWidth(prompt)+pos)
@@ -110,10 +97,7 @@ func (e *lineEditor) raw(prompt string) (string, bool) {
 	}
 
 	redraw()
-	// Read os.Stdin directly rather than through a bufio.Reader. A buffered
-	// reader reads ahead, and anything it holds when this returns is lost to
-	// whatever reads next — selectOne, for instance, which /node and /model
-	// hand control to.
+	// Read stdin directly: buffered read-ahead would lose input when control passes to selectOne.
 	buf1 := make([]byte, 1)
 	idle := newIdleReads()
 	readByte := func() (byte, bool) {
@@ -148,9 +132,6 @@ func (e *lineEditor) raw(prompt string) (string, bool) {
 				return "", false
 			}
 		case '\r', '\n':
-			// Enter takes the highlighted completion when the list is showing
-			// something other than the line itself, which is what makes Enter
-			// and Tab feel the same rather than subtly different.
 			if shown > 0 && e.complete != nil {
 				if cands := e.complete(string(buf)); len(cands) > 0 && sel < len(cands) &&
 					cands[sel].Value != string(buf) && strings.HasPrefix(string(buf), "/") {
@@ -242,14 +223,11 @@ func (e *lineEditor) raw(prompt string) (string, bool) {
 	}
 }
 
-// completeChat offers slash commands, and file paths once a command wants one.
 func completeChat(cmds []completion) func(string) []completion {
 	return func(line string) []completion {
 		if !strings.HasPrefix(line, "/") {
 			return nil
 		}
-		// Past the first space the command has been chosen and what it wants
-		// is an argument. Only /image takes one that can be completed.
 		if cmd, arg, found := strings.Cut(line, " "); found {
 			if cmd == "/image" {
 				return completePath(cmd, arg)
@@ -266,8 +244,6 @@ func completeChat(cmds []completion) func(string) []completion {
 	}
 }
 
-// completePath completes a filesystem path, which is what makes /image usable:
-// nobody types an absolute path to a screenshot by hand.
 func completePath(cmd, arg string) []completion {
 	expanded := arg
 	if strings.HasPrefix(expanded, "~/") {
@@ -298,7 +274,7 @@ func completePath(cmd, arg string) []completion {
 			full += string(filepath.Separator)
 			note = "directory"
 		} else if !isImageFile(name) {
-			continue // /image wants images; listing the rest is noise
+			continue
 		}
 		out = append(out, completion{Value: cmd + " " + full, Label: name, Note: note})
 		if len(out) >= 12 {
@@ -317,17 +293,9 @@ func isImageFile(name string) bool {
 	return false
 }
 
-// Dropping a file onto a terminal pastes its path into the line. Every
-// terminal does it slightly differently — VTE sends a file:// URI, iTerm2
-// backslash-escapes the spaces, others single-quote the whole thing — so a
-// dropped path arrives as one of several shapes and none of them is a message
-// the model should be asked about.
-//
-// So the line is read for paths that exist and are images, those become
-// attachments, and whatever text is left is the message. Dragging a screenshot
-// in and typing a question on the same line does what it looks like it does.
+// Terminal file drops may use file:// URIs, backslash escapes or quoted paths.
+// Convert existing image paths to attachments and leave the remaining text as the message.
 
-// dropped splits a line into image paths that exist on disk and the rest.
 func dropped(line string) (paths []string, rest string) {
 	var kept []string
 	for _, tok := range shellish(line) {
@@ -345,9 +313,7 @@ type token struct {
 	quote byte   // the quote that wrapped it, 0 for none
 }
 
-// shellish splits on spaces the way a shell would, honouring quotes and
-// backslash escapes — which is what terminals produce when they paste a path
-// containing spaces, and "Screenshot from 2026-09-24.png" contains three.
+// shellish splits on spaces while honoring quotes and backslash escapes used in terminal file drops.
 func shellish(s string) []token {
 	var out []token
 	var cur strings.Builder
@@ -384,13 +350,12 @@ func shellish(s string) []token {
 	return out
 }
 
-// imagePath resolves a token to an image on disk, or says it is not one.
 func imagePath(t token) (string, bool) {
 	p := t.text
 	if p == "" {
 		return "", false
 	}
-	// VTE and friends drop a URI rather than a path.
+	// VTE drops a file URI rather than a path.
 	if after, ok := strings.CutPrefix(p, "file://"); ok {
 		if u, err := url.PathUnescape(after); err == nil {
 			p = u
@@ -407,9 +372,7 @@ func imagePath(t token) (string, bool) {
 		}
 		p = filepath.Join(home, p[2:])
 	}
-	// A bare word that happens to name a file in the working directory is
-	// still a path, but a quoted one is almost certainly a drop and worth
-	// resolving even when the extension is unfamiliar.
+	// Allow quoted paths with unfamiliar extensions; unquoted words must have a known image extension.
 	if !isImageFile(p) && t.quote == 0 {
 		return "", false
 	}

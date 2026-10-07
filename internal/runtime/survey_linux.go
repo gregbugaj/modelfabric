@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-// surveyHost fills in the CPU and host memory from /proc.
 func surveyHost(hw *Hardware) {
 	if f, err := os.Open("/proc/cpuinfo"); err == nil {
 		sc := bufio.NewScanner(f)
@@ -39,7 +38,6 @@ func surveyHost(hw *Hardware) {
 	hw.MemoryMB = int(readMemTotal() >> 20)
 }
 
-// surveyAccelerators finds NVIDIA GPUs and whether Vulkan or ROCm is usable.
 func surveyAccelerators(ctx context.Context, hw *Hardware) {
 	if hasNVIDIA() {
 		// A deadline each: sharing one meant a slow GPU query could leave the

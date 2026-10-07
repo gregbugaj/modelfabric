@@ -76,15 +76,10 @@ def aggregate(rows):
 
 
 def percentile_points(lat, n=120, lo=0.5):
-    """Latency at each percentile, as [percent, seconds], for the docs chart.
+    """Return [percentile, seconds] samples from the median upward.
 
-    Sampled evenly in -log10(1-p) rather than evenly in rank, because that is
-    the axis the chart draws: every further nine gets the same width and the
-    same number of points. Sampling evenly in rank instead puts almost nothing
-    past p99, which is the only part of these runs that differs.
-
-    Starts at the median. Everything below it is two modes doing the same
-    thing at the same speed, and drawing it only shrinks the part that isn't.
+    Sample evenly in -log10(1-p), matching the chart axis and retaining
+    enough points to resolve differences beyond p99.
     """
     if len(lat) < 2:
         return []
@@ -101,13 +96,10 @@ def percentile_points(lat, n=120, lo=0.5):
 
 
 def docs_data(data, runs, labels, run_label):
-    """The benchmark page's data file, in the shape site/components expects.
+    """Build data for site/components from the HTML report's aggregation.
 
-    Written from the same aggregation as the HTML page so the two cannot
-    disagree, and so nothing on the docs site is retyped by hand. Arms are
-    called a and b rather than by mode name: the page reads the names from
-    `arms`, which is what lets a later run swap in without touching the
-    components.
+    Use stable arm keys a and b; display names come from arms so later
+    runs can replace the data without changing components.
     """
     if len(labels) != 2:
         raise SystemExit("--docs-data wants exactly two --run arms (baseline first)")
@@ -149,9 +141,7 @@ def main():
                     help="what the docs page calls this run; defaults to the date in --out")
     a = ap.parse_args()
 
-    # The old two-run form still works: the pilot's command line is in the
-    # README and in shell history, and silently changing what it means would
-    # be worse than carrying two lines of translation.
+    # Preserve the documented two-run command-line form.
     specs = []
     if a.direct:
         specs.append(("direct", a.direct))
@@ -209,9 +199,7 @@ def main():
     print(f"wrote {a.out}: {len(labels)} modes, {len(common)} tasks compared ({lost})")
 
     if a.docs_data:
-        # The run label the docs page prints. The report file is named by date
-        # and the page has always shown that date, so read it back rather than
-        # asking for it twice and letting the two drift.
+        # Derive the displayed run label from the report filename to keep dates consistent.
         run = a.docs_run
         if not run:
             m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(a.out))

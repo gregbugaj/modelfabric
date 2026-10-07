@@ -1,11 +1,5 @@
-// Package tokentap carries a model's output to whoever is watching, as it is
-// generated — the counterpart to `lms log stream`.
-//
-// It is its own package because two different things in the request path need
-// it: the node's front door, which carries every request an app sends here,
-// and the engine shim, which llm-d dials on the machine that actually runs the
-// model. Those are usually different machines, and a watcher on either should
-// see the reply.
+// Package tokentap streams model output to watchers at the entry node and
+// engine shim, including requests that llm-d sends directly to the shim.
 package tokentap
 
 import (
@@ -16,44 +10,24 @@ import (
 	"time"
 )
 
-// Live output as it is generated, the counterpart to `lms log stream`.
-//
-// `mfsh log` prints one line per request once it has finished, which says
-// nothing while a 90-second answer is being written. This taps the response
-// while it streams, so a watcher sees tokens arriving and can tell a slow
-// engine from a stuck one.
-//
-// It is not logging and deliberately not built on the body-capture path:
-// nothing here is written to disk or kept in a ring buffer, the tap only runs
-// while somebody is watching, and when nobody is the cost is one atomic read
-// per write. ModelFabric's promise that prompts are never logged is unchanged —
-// this shows the reply, live, to someone already on the node's loopback
-// management interface, and forgets it immediately.
+// Taps run only while subscribed through the loopback management interface.
+// Output is neither written to disk nor retained in a ring buffer.
 
 // Event is one piece of a reply as it was streamed.
 type Event struct {
 	Time  time.Time `json:"time"`
 	Trace string    `json:"trace"`
 	Model string    `json:"model,omitempty"`
-	// Kind is "content" for the reply, "reasoning" for thinking the model
-	// emits separately, and "done" for the end of a request. Keeping them
-	// apart matters on reasoning models: a run of this fleet's benchmark was
-	// 98% reasoning by character count, and a stream that merged the two
-	// would look like an answer being written for two minutes.
+	// Kind is "content", "reasoning", or "done". Reasoning remains separate
+	// from the visible answer.
 	Kind string `json:"kind"`
 	Text string `json:"text,omitempty"`
-	// Deltas counts the SSE frames carrying text so far for this request.
-	// llama.cpp emits one per token, so this is the token count in practice —
-	// named for what it actually counts rather than what it usually equals.
+	// Deltas counts SSE frames containing text, not tokenizer-derived tokens.
 	Deltas int `json:"deltas,omitempty"`
 	// Millis is how long the request has been streaming, so a reader can show
 	// a rate without keeping its own clock per trace.
 	Millis int64 `json:"ms,omitempty"`
-	// AtOnce marks a reply that was never streamed: the caller did not ask for
-	// it, so the engine generated the whole answer and sent it in one piece.
-	// There is no live view to give, and saying so beats a blank panel that
-	// looks like a broken tap — which is how this read for every non-streaming
-	// caller, a large share of real traffic.
+	// AtOnce marks a non-streaming reply delivered as one complete body.
 	AtOnce bool `json:"at_once,omitempty"`
 }
 
@@ -62,11 +36,8 @@ type Tap struct {
 	subs map[chan Event]struct{}
 }
 
-// New returns a tap nobody is watching yet.
 func New() *Tap { return &Tap{subs: map[chan Event]struct{}{}} }
 
-// active reports whether anyone is watching. Every response write asks, so it
-// must be cheap and must not block a streaming reply.
 // Active reports whether anyone is watching. Every response write asks, so
 // it must be cheap and must not block a streaming reply.
 func (t *Tap) Active() bool {
@@ -79,7 +50,6 @@ func (t *Tap) Active() bool {
 	return n > 0
 }
 
-// Publish sends an event to every watcher.
 func (t *Tap) Publish(e Event) {
 	if t == nil {
 		return
@@ -96,9 +66,6 @@ func (t *Tap) Publish(e Event) {
 	}
 }
 
-// ----------------------------------------------------------------- writer
-
-// tokenWriter parses an SSE reply as it is written and publishes each delta.
 // Anything that is not an OpenAI-style event stream passes through untouched.
 // Writer parses an SSE reply as it is written and publishes each delta.
 type Writer struct {
@@ -248,9 +215,8 @@ func (w *Writer) emit(kind, text string) {
 	})
 }
 
-// finish publishes the end of a request once, so a reader can close out its
-// per-trace line whether the stream ended with [DONE] or the handler returned.
-// Finish publishes the end of a request once.
+// Finish publishes request completion once, whether triggered by [DONE]
+// or by the handler returning.
 func (w *Writer) Finish() {
 	if w.done {
 		return
@@ -269,12 +235,8 @@ func (w *Writer) Finish() {
 	w.buf = nil
 }
 
-// watchUpstream stops the writer parsing the caller's body and returns the sink
-// the unstream path feeds instead. On an upgraded request the caller receives
-// one assembled JSON body; parsing that would report the whole answer arriving
-// at once, which is the opposite of what the upgrade is for.
-// WatchUpstream stops the writer parsing the caller's body and returns the
-// sink the unstream path feeds instead.
+// WatchUpstream returns a sink for the actual engine stream and disables
+// parsing of the assembled JSON response sent to a non-streaming caller.
 func (w *Writer) WatchUpstream() func([]byte) {
 	w.giveUp, w.buf = true, nil
 	return func(payload []byte) { w.chunk(string(payload)) }
@@ -282,7 +244,7 @@ func (w *Writer) WatchUpstream() func([]byte) {
 
 // Unwrap lets http.ResponseController reach the real writer, so Flush still
 // works through this wrapper. Without it a streamed reply would be buffered
-// and arrive in one piece — the tap would break the thing it is watching.
+// and arrive in one piece; the tap would break the thing it is watching.
 func (w *Writer) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Subscribe registers a watcher and returns the channel and a cancel.

@@ -7,10 +7,8 @@ import (
 	"testing"
 )
 
-// An engine's log is the only place it says its RAM cache dropped a
-// conversation. The count has to survive being read a piece at a time: every
-// peer asks for instance state every couple of seconds, so the log is read
-// from where the last look stopped, and a message can straddle two looks.
+// RAM-cache drop messages can span incremental log reads; retain the tail
+// so peer polling does not miss them.
 func TestCacheDropsAreCountedFromTheLogAsItGrows(t *testing.T) {
 	drop := "0.01.000 W srv         alloc:  - making room for prompt cache entry, removing oldest entry (size = 2369.559 MiB)\n"
 	tooBig := "0.02.000 W srv         alloc:  - prompt state size 6079.642 MiB exceeds cache size limit 4096.000 MiB, skipping\n"
@@ -59,7 +57,6 @@ func TestCacheDropsAreCountedFromTheLogAsItGrows(t *testing.T) {
 			t.Errorf("after the log was replaced: counted %d, want 1", got)
 		}
 	})
-	// The engine's own process, for the size: this test is one.
 	t.Run("a live process reports its memory, a missing log is no drops", func(t *testing.T) {
 		var m memoryWatch
 		dropped, rss := m.read("i1", filepath.Join(t.TempDir(), "absent.log"), os.Getpid())

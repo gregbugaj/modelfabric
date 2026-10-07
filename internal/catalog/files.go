@@ -8,18 +8,9 @@ import (
 	"strings"
 )
 
-// ModelFiles lists every file a model needs on disk, relative to dir, the
-// directory holding them. It is what a copy of the model has to carry.
-//
-// This is wider than what a load pins. A load names the first shard of a split
-// GGUF and llama.cpp finds the rest by name, so the other shards never appear
-// in the model; a copy that took only Path would move one piece of three and
-// produce a model that cannot load. model.yaml is included too: it carries the
-// publisher's sampling defaults, and a copy without it would behave differently
-// from the original.
-//
-// A directory model (MLX today; any Hugging Face layout, as vLLM and SGLang
-// read, would be the same) is every file under its directory.
+// ModelFiles lists the files needed to copy a model, relative to dir.
+// GGUF copies include all shards and model.yaml to preserve loadability and
+// sampling defaults. Directory models include every file below their root.
 func ModelFiles(m Model) (dir string, files []string, err error) {
 	info, err := os.Stat(m.Path)
 	if err != nil {

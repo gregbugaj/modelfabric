@@ -2,7 +2,6 @@ package prefixchain
 
 import "testing"
 
-// Slot placement moved to the shim; test the shared implementation directly.
 func TestWithSlot(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"the pin goes first and the rest is untouched", `{"model":"m","messages":[]}`, `{"id_slot":3,"model":"m","messages":[]}`},

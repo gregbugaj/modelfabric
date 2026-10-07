@@ -7,17 +7,10 @@ import (
 	"strings"
 )
 
-// Settings are the load and inference options a caller can set for a model —
-// the ones LM Studio exposes per model (its gear icon) and per load. Every
-// field is optional: nil means "not set here", so Settings from several
-// places merge field by field.
-//
-// Precedence, highest first: the load request, the operator's per-model
-// defaults, the model's own model.yaml, the runtime's defaults.
-//
-// LM Studio names are noted where they differ.
+// Settings are optional load and inference options; nil fields inherit from
+// lower-precedence layers. Precedence, highest first: load request, per-model
+// defaults, model.yaml, runtime defaults. LM Studio aliases are noted below.
 type Settings struct {
-	// Context and placement.
 	ContextLength  *int     `json:"context_length,omitempty"`  // llm.load.contextLength
 	Parallel       *int     `json:"parallel,omitempty"`        // numParallelSessions
 	GPULayers      *int     `json:"gpu_layers,omitempty"`      // -ngl
@@ -29,23 +22,16 @@ type Settings struct {
 	// speculation: auto still uses the model's MTP head when it has one.
 	Vision *bool `json:"vision,omitempty"`
 
-	// Reasoning. A thinking model spends tokens before it answers, and on a
-	// classification task that is most of the work: a 27B spent 411 completion
-	// tokens and 1803 characters of reasoning to return the word "Blank".
-	// These are llama.cpp launch flags, not request fields — the server
-	// accepts reasoning_budget in a request body and ignores it, which reads
-	// as a control that does nothing.
+	// Reasoning controls are launch flags; llama.cpp ignores reasoning_budget
+	// in request bodies.
 	Reasoning *string `json:"reasoning,omitempty"` // --reasoning: on | off | auto
-	// ReasoningEffort is handed to the chat template, which defines the levels
-	// it accepts; a model.yaml's template_vars carries the publisher's default
-	// (Qwen3.8-27B ships "xhigh", the most verbose it has).
+	// ReasoningEffort levels are defined by the chat template; template_vars
+	// in model.yaml can supply the default.
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"` // --reasoning-effort
-	// ReasoningBudget caps thinking in tokens: -1 unrestricted, 0 ends it at
-	// once, N>0 is the allowance. Measured on qwen3-0.6b: 48 held reasoning to
-	// 165-179 characters across runs, -1 gave 718-1105.
+	// ReasoningBudget caps thinking in tokens: -1 unrestricted, 0 disabled,
+	// N > 0 allows N tokens.
 	ReasoningBudget *int `json:"reasoning_budget,omitempty"` // --reasoning-budget
 
-	// Speculative decoding.
 	SpecMode       *string  `json:"spec_mode,omitempty"`        // auto | mtp | draft | off
 	DraftModel     *string  `json:"draft_model,omitempty"`      // speculativeDecoding.draftModel (a catalog key)
 	DraftMax       *int     `json:"draft_max,omitempty"`        // --spec-draft-n-max
@@ -53,7 +39,6 @@ type Settings struct {
 	DraftPMin      *float64 `json:"draft_p_min,omitempty"`      // --spec-draft-p-min
 	DraftGPULayers *int     `json:"draft_gpu_layers,omitempty"` // --spec-draft-ngl
 
-	// Batching and KV cache.
 	BatchSize      *int    `json:"batch_size,omitempty"`      // evalBatchSize
 	UBatchSize     *int    `json:"ubatch_size,omitempty"`     // physicalBatchSize
 	CacheTypeK     *string `json:"cache_type_k,omitempty"`    // kCacheQuantizationType
@@ -64,15 +49,12 @@ type Settings struct {
 	CtxCheckpoints *int    `json:"ctx_checkpoints,omitempty"` // --ctx-checkpoints
 	CacheRAM       *int    `json:"cache_ram,omitempty"`       // --cache-ram: host-RAM prompt cache, MiB; 0 is off
 
-	// Memory.
 	KeepInMemory *bool `json:"keep_in_memory,omitempty"` // keepModelInMemory (mlock)
 	TryMmap      *bool `json:"try_mmap,omitempty"`       // tryMmap
 
-	// Mixture of experts.
 	NCPUMoE     *int     `json:"n_cpu_moe,omitempty"`     // --n-cpu-moe: expert layers kept on the CPU
 	CPUMoERatio *float64 `json:"cpu_moe_ratio,omitempty"` // numCpuExpertLayersRatio, 0..1 of the layers
 
-	// Model shape and threads.
 	RopeFreqBase  *float64 `json:"rope_freq_base,omitempty"`  // ropeFrequencyBase
 	RopeFreqScale *float64 `json:"rope_freq_scale,omitempty"` // ropeFrequencyScale
 	Threads       *int     `json:"threads,omitempty"`         // cpuThreadPoolSize
@@ -88,8 +70,8 @@ type Settings struct {
 	RepeatPenalty    *float64       `json:"repeat_penalty,omitempty"`
 	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
 	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
-	EnableThinking   *bool          `json:"enable_thinking,omitempty"`      // reasoning.enableThinking
-	TemplateKwargs   map[string]any `json:"chat_template_kwargs,omitempty"` // any other template variables
+	EnableThinking   *bool          `json:"enable_thinking,omitempty"` // reasoning.enableThinking
+	TemplateKwargs   map[string]any `json:"chat_template_kwargs,omitempty"`
 
 	// ExtraArgs are appended to the engine's command line (LM Studio's
 	// argumentsOverride). Flags ModelFabric manages are refused.
@@ -124,7 +106,6 @@ func (s Settings) Merge(over Settings) Settings {
 	return out
 }
 
-// IsZero reports whether nothing is set.
 func (s Settings) IsZero() bool {
 	v := reflect.ValueOf(s)
 	for i := 0; i < v.NumField(); i++ {
@@ -136,20 +117,13 @@ func (s Settings) IsZero() bool {
 	return true
 }
 
-// SpecModes are the speculative decoding choices.
 var SpecModes = []string{"auto", "mtp", "draft", "off"}
 
-// ReasoningModes are llama.cpp's --reasoning choices.
 var ReasoningModes = []string{"auto", "on", "off"}
 
-// Reasoning effort levels are defined by the model's chat template, not by
-// llama.cpp, so ModelFabric does not keep a list to check against. Qwen3.8-27B
-// accepts xhigh (its default), medium and low, and raises a Jinja exception on
-// anything else — "minimal", from llama.cpp's own help text, 500s every
-// request. A list here would be right for one model and wrong for the next;
-// the template's error names the levels it takes.
+// Reasoning effort levels belong to each model's chat template. A fixed list
+// would reject valid levels or accept ones that cause Jinja errors.
 
-// CacheTypes are the KV cache types llama.cpp accepts.
 var CacheTypes = []string{"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
 
 // managedFlags are set by ModelFabric itself. An extra argument repeating one would
@@ -160,11 +134,8 @@ var managedFlags = []string{
 	"-hf", "-hfr", "--hf-repo", "--api-key", "--api-key-file",
 	"--ssl-key-file", "--ssl-cert-file", "--path", "--mmproj", "-mm",
 	"-md", "--model-draft", "--spec-draft-model", // use draft_model instead
-	// ModelFabric computes these and then reasons about them: -c is context ×
-	// parallel, and the slot count is what the router and llm-d's room filter
-	// use for capacity. Overriding them here would leave the engine serving
-	// one shape while the mesh schedules for another. Use context_length and
-	// parallel, which ModelFabric accounts for.
+	// -c is context × parallel; routing uses the same slot count for capacity.
+	// Use context_length and parallel to keep engine and scheduler state aligned.
 	"-c", "--ctx-size", "--parallel", "-np",
 }
 
@@ -187,8 +158,6 @@ func CheckManagedFlags(what string, args []string) error {
 	return nil
 }
 
-// Validate rejects values llama.cpp would refuse or misread, and extra
-// arguments that override what ModelFabric manages.
 func (s Settings) Validate() error {
 	var errs []string
 	bad := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
@@ -276,8 +245,6 @@ func (s Settings) Validate() error {
 	return nil
 }
 
-// settingsFields lists the JSON names of every setting, for the CLI's help
-// and the dashboard's form.
 func SettingsFields() []string {
 	t := reflect.TypeOf(Settings{})
 	out := make([]string, 0, t.NumField())

@@ -5,10 +5,7 @@ import (
 	"testing"
 )
 
-// visibleWidth is what keeps coloured tables aligned. The subtle case: '[' is
-// 0x5B, which sits inside the CSI final-byte range 0x40-0x7E, so a naive
-// terminator check ends the escape at the bracket and counts "2m...0m" as
-// visible text. Every column after a styled cell then drifts.
+// A CSI parser must skip '[' (0x5B) before checking final bytes, or escape bytes inflate cell widths.
 func TestVisibleWidthIgnoresEscapes(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -30,8 +27,6 @@ func TestVisibleWidthIgnoresEscapes(t *testing.T) {
 	}
 }
 
-// The styling helpers must agree with the width function, whatever the
-// colour setting is.
 func TestStyledStringsMeasureAsPlain(t *testing.T) {
 	saved := colorEnabled
 	defer func() { colorEnabled = saved }()
@@ -48,7 +43,6 @@ func TestStyledStringsMeasureAsPlain(t *testing.T) {
 	}
 }
 
-// A table with coloured cells must align exactly like one without.
 func TestTableAlignsWithColouredCells(t *testing.T) {
 	saved := colorEnabled
 	defer func() { colorEnabled = saved }()
@@ -149,7 +143,6 @@ func TestTableAlignsWithWideCharacters(t *testing.T) {
 	tb.add("通义千问", "16GB")
 	tb.add("qwen/qwen3-0.6b", "462MB")
 	lines := strings.Split(strings.TrimRight(tb.String(), "\n"), "\n")
-	// The SIZE column must start at the same display column on every row.
 	col := -1
 	for _, l := range lines {
 		idx := strings.LastIndex(l, "  ") + 2
@@ -161,9 +154,7 @@ func TestTableAlignsWithWideCharacters(t *testing.T) {
 	}
 }
 
-// Choice labels come from catalog and peer data — another machine's strings.
-// Written raw into the ANSI picker, an escape sequence in a model name could
-// move the cursor, recolour the prompt or hide what is being selected.
+// Sanitize catalog and peer labels so escape sequences cannot move the cursor, change colors or hide selections.
 func TestTTYTextFromElsewhereIsSanitized(t *testing.T) {
 	if got := sanitizeTTY("qwen/qwen3-0.6b"); got != "qwen/qwen3-0.6b" {
 		t.Errorf("ordinary text was changed: %q", got)

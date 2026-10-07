@@ -9,7 +9,6 @@ import (
 	"github.com/gregbugaj/modelfabric/internal/tuner"
 )
 
-// capture takes what a print function wrote to stdout.
 func capture(t *testing.T, f func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -29,9 +28,7 @@ func capture(t *testing.T, f func()) string {
 	return <-done
 }
 
-// The three-node fleet as measured on 2026-09-25, which is the shape the table
-// has to handle: every node stops at a different slot count, and the answers
-// disagree — 2, 4 and 1.
+// Nodes may stop at different slot counts and recommend different values.
 func measuredFleet() []fleetResult {
 	row := func(slots int, agg float64) tuner.Row {
 		return tuner.Row{Slots: slots, Fit: true, Aggregate: agg, AskedContext: 65536, GotContext: 65536}
@@ -64,8 +61,6 @@ func TestFleetTableShowsEveryNodeAndItsAnswer(t *testing.T) {
 			t.Errorf("the table is missing %q:\n%s", want, out)
 		}
 	}
-	// The columns are the union of what was tried, so a node that stopped early
-	// gets an empty cell rather than a borrowed one. helion never tried 4 or 8.
 	helion := line(t, out, "helion")
 	if strings.Contains(helion, "53") || strings.Contains(helion, "OOM") {
 		t.Errorf("helion's row carries another node's measurements: %q", helion)
@@ -73,7 +68,6 @@ func TestFleetTableShowsEveryNodeAndItsAnswer(t *testing.T) {
 	if strings.Count(helion, "—") != 2 {
 		t.Errorf("helion tried 1 and 2 of four columns, so two should be blank: %q", helion)
 	}
-	// Each node's own recommendation, not the fleet's — the whole point.
 	for node, want := range map[string]string{"xpredator": "2 slots", "minion": "4 slots", "helion": "1 slot"} {
 		if got := line(t, out, node); !strings.HasSuffix(strings.TrimSpace(got), want) {
 			t.Errorf("%s should recommend %s: %q", node, want, got)
@@ -81,9 +75,6 @@ func TestFleetTableShowsEveryNodeAndItsAnswer(t *testing.T) {
 	}
 }
 
-// Nothing is applied, and the table says so plainly. A tuning tool that
-// reconfigured three machines as a side effect of measuring them is one nobody
-// would run on a live fleet.
 func TestFleetTableAppliesNothingAndPrintsTheCommands(t *testing.T) {
 	out := capture(t, func() { printFleetTable(measuredFleet()) })
 	if !strings.Contains(out, "Nothing was changed") {
@@ -100,8 +91,6 @@ func TestFleetTableAppliesNothingAndPrintsTheCommands(t *testing.T) {
 	}
 }
 
-// A node whose sweep could not be put back is the one outcome that leaves work
-// to do, so it is called out rather than left to be noticed.
 func TestFleetTableNamesNodesItCouldNotRestore(t *testing.T) {
 	res := measuredFleet()
 	res[1].Report.RestoredTo = 0

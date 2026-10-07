@@ -1,17 +1,7 @@
 import data from '../../data/fleet-bench.json';
 
-/*
- * How fast each machine in our own mesh runs one model, one request at a time.
- *
- * data/fleet-bench.json is written by bench/fleet/build.py from `mfsh bench`
- * reports, and this renders it and nothing else: no number here was typed by
- * hand. With no machines in the file the section is not rendered at all,
- * because an empty table, or one filled with placeholder figures, is the
- * invented-dashboard look the rest of the site avoids.
- *
- * The machines differ on purpose (a 5090, a 6000 Ada, a Mac): that spread is
- * what the router has to work with, so it is shown rather than averaged.
- */
+/* bench/fleet/build.py generates data/fleet-bench.json from mfsh bench reports.
+ * Keep per-machine results separate and omit the section when no data exists. */
 
 type Size = { pp_tps: number; tg_tps: number; ttft_ms: number };
 type Node = {
@@ -32,7 +22,6 @@ function secs(ms: number) {
   return ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`;
 }
 
-// A size this machine was not measured at: a gap, never a guess.
 function Gap() {
   return <span className="text-[hsl(var(--mfsh-muted))]">–</span>;
 }

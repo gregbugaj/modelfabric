@@ -57,7 +57,6 @@ func TestCatalogIdentityBeatsDerivedMetadata(t *testing.T) {
 	models := t.TempDir()
 	writeGGUF(t, models, "lmstudio-community/Qwen3.8-27B-GGUF/weights.gguf",
 		ggufKV("general.architecture", ggufString, ggufStr("qwen35")),
-		// Deliberately wrong/absent identity metadata.
 		ggufKV("general.basename", ggufString, ggufStr("Something_Else")),
 		ggufKV("general.size_label", ggufString, ggufStr("99B")),
 	)

@@ -12,7 +12,7 @@ import (
 
 // NvidiaMemory is the GPU memory a process holds, from nvidia-smi: the
 // engine's own, not the whole GPU's. A whole-GPU reading counts whatever else
-// shares the card — a training run holding 26 GB of a 32 GB 5090 would have
+// shares the card; a training run holding 26 GB of a 32 GB 5090 would have
 // been reported as the model's peak.
 func NvidiaMemory(pid int) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -36,9 +36,6 @@ func NvidiaMemory(pid int) (int, error) {
 	return total, nil
 }
 
-// GPUInfo is the first GPU's name, driver and memory, for the report. On a
-// Mac it is the chip and its unified memory: there is no nvidia-smi there, and
-// a report from helion said nothing at all about the hardware it measured.
 func GPUInfo() (name, driver string, mb int) {
 	if goruntime.GOOS == "darwin" {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -53,7 +50,7 @@ func GPUInfo() (name, driver string, mb int) {
 }
 
 // macGPU reads sysctl's two lines: the chip, then memory in bytes. The memory
-// is unified — the GPU's and the system's are the same — and is labelled so.
+// is unified; the GPU's and the system's are the same; and is labelled so.
 func macGPU(out string) (name, driver string, mb int) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 2 {
