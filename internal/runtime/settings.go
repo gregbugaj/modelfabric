@@ -17,6 +17,11 @@ type Settings struct {
 	OffloadRatio   *float64 `json:"offload_ratio,omitempty"`   // acceleration.offloadRatio, 0..1 of the layers
 	FlashAttention *bool    `json:"flash_attention,omitempty"` // flashAttention
 
+	// GPU names the GPUs this engine may use, by the index nvidia-smi gives
+	// them: "0", "1", or several as "0,1". Nil or "all" leaves it to the
+	// engine, which spreads one model over every GPU it can see. See GPUEnv.
+	GPU *string `json:"gpu,omitempty"`
+
 	// Vision=false omits the image projector for text-only loads, saving its
 	// VRAM. Nil loads the projector when available. This does not disable
 	// speculation: auto still uses the model's MTP head when it has one.
@@ -226,6 +231,11 @@ func (s Settings) Validate() error {
 		// but merging treated any present value as deliberate.
 		if v != nil && *v <= 0 {
 			bad("%s must be greater than 0", name)
+		}
+	}
+	if s.GPU != nil {
+		if _, err := ParseGPUs(*s.GPU); err != nil {
+			bad("%v", err)
 		}
 	}
 	for name, v := range map[string]*string{"cache_type_k": s.CacheTypeK, "cache_type_v": s.CacheTypeV} {

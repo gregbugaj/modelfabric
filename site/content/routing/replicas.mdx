@@ -18,6 +18,44 @@ On the 27B, a cache hit takes time-to-first-token from **1.4 seconds to 0.24**.
 { "prefix_affinity": false }
 ```
 
+## One engine per GPU
+
+A machine with two GPUs can run one engine across both or one engine on each. llama.cpp does the
+first unless told otherwise: it spreads the model's layers over every GPU it sees. That is what
+you need for a model too large for one card. For a model that fits on one, it is the wrong
+default. The model runs at the pace of the slower card, pays a transfer between cards on every
+token, and the second card gives you no extra slots.
+
+One engine on each card gives you both cards' slots, and the router places conversations across
+them like any other replicas:
+
+```bash
+mfsh load <model> -gpu each
+```
+
+Cards rarely match, so the usual form is one load per card with its own slot count. `-add` starts
+another engine for a model that is already loaded:
+
+```bash
+mfsh load <model> -gpu 0 -parallel 4
+mfsh load <model> -gpu 1 -parallel 2 -add
+```
+
+In the dashboard, a model with more than one engine on a node shows each engine as its own row
+under the model on **My Models**, with the GPU it runs on, its slots and context, and its own
+**Unload** button. The model's own button becomes **Unload all**.
+
+Click the model to open its panel. The **Engines** tab lists the running engines with the settings
+each was loaded with, and has **Add another engine**, which offers the card that has none yet.
+**Load settings** is separate: it is what is saved for the model and used the next time an engine
+is loaded, including which GPU the first engine goes on.
+
+GPUs are numbered as `nvidia-smi` and `mfsh doctor` list them. The Serving page marks each engine
+with the GPU it is confined to. An engine with no mark uses every GPU the machine has.
+
+Asking for a GPU the machine does not have is refused at load, with the list of the ones it does
+have. `-gpu` works with CUDA runtimes; on other backends leave it unset.
+
 ## How a request is placed
 
 Each request is placed the moment it arrives, in four steps:

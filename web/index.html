@@ -113,7 +113,10 @@
         </div>
         <div class="fd-auth-row">
           <div class="fd-auth" id="fd-auth"></div>
-          <button class="btn sm" id="ss-open" type="button">Server settings</button>
+          <span class="fd-buttons">
+            <button class="btn" id="connect-open" type="button" title="What to put in a coding agent's configuration so it uses this mesh">Connect an app</button>
+            <button class="btn" id="ss-open" type="button">Server settings</button>
+          </span>
         </div>
         <ol class="fd-path" id="fd-path" aria-label="What a request passes through"></ol>
       </section>
@@ -150,7 +153,7 @@
       <div class="panel">
         <div class="panel-head">Engines <span class="capacity" id="engines-capacity"></span><span class="hint">every engine process in the mesh</span></div>
         <table>
-          <thead><tr><th title="The machine this engine runs on.">Node</th><th title="The model this engine has loaded. The eye marks one loaded to read images.">Model</th><th title="Whether the engine is answering.">Status</th><th title="Requests being served now, out of the slots the engine has. A slot serves one request at a time and keeps that conversation&#39;s cache.">Running</th><th title="Requests queued inside this engine for a slot. They cannot be moved to another engine once they are here.">Waiting</th><th title="Slots with no request running. A free slot usually still holds the cache of a conversation that is between requests.">Free slots</th><th title="Average number of requests in flight over the last two minutes. Shows which engine has been carrying the work, where Running shows only this instant.">Load 2m</th><th title="How fast this engine reads a prompt, in tokens per second, averaged since it started. A leading ~ means too little has been measured to route by.">Prefill</th><th title="How fast this engine writes an answer, in tokens per second, averaged since it started. It drops while another slot on the same GPU is reading a long prompt.">Decode</th><th title="With speculative decoding on: the share of drafted tokens the model kept. Higher means faster writing.">Drafts</th><th title="How full the engine&#39;s context memory is, across all its slots.">KV cache</th><th title="The engine&#39;s cache in host RAM for conversations that are not in a slot, and how many it has dropped for lack of room since it started. A dropped conversation is read again in full when it returns. If the count keeps rising and the machine has memory free, raise the cache with -cache-ram when loading the model.">RAM cache</th><th title="RAM the engine process is holding now. Hover a value for how much the machine has free.">Memory</th><th title="Where the engine listens. An address on the tailnet can be reached by other nodes directly.">Address</th><th title="The engine build that is running.">Runtime</th></tr></thead>
+          <thead><tr><th title="The machine this engine runs on.">Node</th><th title="The model this engine has loaded. The eye marks one loaded to read images.">Model</th><th title="Whether the engine is answering.">Status</th><th title="Requests being served now, out of the slots the engine has: 1 / 4 is one running and three free. A slot serves one request at a time, and a free one usually still holds the cache of a conversation that is between requests.">Running</th><th title="Requests queued inside this engine for a slot. They cannot be moved to another engine once they are here.">Waiting</th><th title="Average number of requests in flight over the last two minutes. Shows which engine has been carrying the work, where Running shows only this instant.">Load 2m</th><th title="How fast this engine reads a prompt, in tokens per second, averaged since it started. A leading ~ means too little has been measured to route by.">Prefill</th><th title="How fast this engine writes an answer, in tokens per second, averaged since it started. It drops while another slot on the same GPU is reading a long prompt.">Decode</th><th title="Tokens per second this engine is writing right now, all its slots together, over the last three seconds. Decode is the speed of one answer; this is what the machine is producing.">Output now</th><th title="With speculative decoding on: the share of drafted tokens the model kept. Higher means faster writing.">Drafts</th><th title="How full the engine&#39;s context memory is, across all its slots.">KV cache</th><th title="The engine&#39;s cache in host RAM for conversations that are not in a slot, and how many it has dropped for lack of room since it started. A dropped conversation is read again in full when it returns. If the count keeps rising and the machine has memory free, raise the cache with -cache-ram when loading the model.">RAM cache</th><th title="RAM the engine process is holding now. Hover a value for how much the machine has free.">Memory</th><th title="Where the engine listens. An address on the tailnet can be reached by other nodes directly.">Address</th><th title="The engine build that is running.">Runtime</th></tr></thead>
           <tbody id="engines-body"></tbody>
         </table>
         <div class="empty" id="engines-empty" hidden></div>
@@ -161,7 +164,7 @@
       <div class="panel">
         <div class="panel-head">Work done <span class="hint">tokens each engine has processed since it started</span></div>
         <table>
-          <thead><tr><th title="The machine these totals are for, since its engine started.">Node</th><th title="Prompt tokens this engine had to read. This is the work routing tries to avoid.">Prefilled</th><th title="This engine&#39;s part of all the prompt tokens read across the mesh.">Share</th><th title="Prompt tokens it did not have to read, because the conversation was already in a slot.">From cache</th><th title="From cache as a share of all prompt tokens. Higher is better: it rises when a conversation keeps returning to the same engine.">Cache hit</th><th title="Tokens this engine has written in answers.">Generated</th><th title="Requests sent here whose conversation was last on a different engine, out of all requests sent here. Each one reads its whole prompt again, so this is where re-reading comes from. Counted by the nodes that routed the requests, since they started.">Moved in</th></tr></thead>
+          <thead><tr><th title="The engine these totals are for, since it started: its machine, the GPU or backend it runs on, and its model. A machine with two engines has two rows.">Engine</th><th title="Prompt tokens this engine had to read. This is the work routing tries to avoid.">Prefilled</th><th title="This engine&#39;s part of all the prompt tokens read across the mesh.">Share</th><th title="Prompt tokens it did not have to read, because the conversation was already in a slot.">From cache</th><th title="From cache as a share of all prompt tokens. Higher is better: it rises when a conversation keeps returning to the same engine.">Cache hit</th><th title="Tokens this engine has written in answers.">Generated</th><th title="Requests sent here whose conversation was last on a different engine, out of all requests sent here. Each one reads its whole prompt again, so this is where re-reading comes from. Counted by the nodes that routed the requests, since they started.">Moved in</th></tr></thead>
           <tbody id="work-body"></tbody>
         </table>
         <div class="empty" id="work-empty" hidden></div>
@@ -504,6 +507,54 @@
   </main>
 
 </div>
+
+<!-- The developer log, docked under every page: each request as it happens,
+     where it was sent and why, the engine's progress on it, and how it ended.
+     Closed, it is a bar; open, it is a panel of the height it was last
+     dragged to. Bodies appear only for requests made while capture was on. -->
+<section class="dev-dock" id="dev-dock" aria-label="Developer log">
+  <div class="dev-dock-grip" id="dev-dock-grip" title="Drag to resize"></div>
+  <div class="dev-dock-bar" id="dev-controls">
+    <button class="dev-dock-toggle" id="dev-dock-toggle" type="button" aria-expanded="false" aria-controls="dev-dock-body" title="Show or hide the developer log (Ctrl+`)">
+      <span class="dev-dock-caret" aria-hidden="true">▸</span> Developer log
+    </button>
+
+          <label class="hint">Node
+            <select id="dev-node" title="Whose developer log to follow. Every node keeps its own."></select>
+          </label>
+          <label class="hint">Detail
+            <select id="dev-level" title="Requests shows each request's arrival, placement, progress and result. Everything adds each line the engines write.">
+              <option value="info">Requests</option>
+              <option value="debug">Everything, with engine lines</option>
+            </select>
+          </label>
+          <input type="search" id="dev-filter" placeholder="Filter: a model, a node, a request id…" aria-label="Filter the developer log">
+          <span class="grow"></span>
+          <label class="hint" title="How many lines this page holds. Older lines are dropped from the page; the node keeps its own history.">Keep last
+            <select id="dev-keep"></select>
+          </label>
+          <span class="hint" id="dev-count"></span>
+          <label class="act-toggle" title="Keep the newest line in view">
+            <input type="checkbox" id="dev-follow" checked>
+            <span>Follow</span>
+          </label>
+          <button class="btn" type="button" id="dev-clear" title="Clear this page. The node keeps its own history.">Clear</button>
+          <span class="pulse" id="dev-live"></span>
+    <button class="btn icon" id="dev-dock-max" type="button" title="Fill the window, or go back to the size it was">⤢</button>
+  </div>
+  <div class="dev-dock-body" id="dev-dock-body">
+<div class="meta-line" id="dev-capture">
+          <label class="act-toggle">
+            <input type="checkbox" id="dev-bodies">
+            <span>Capture request &amp; response</span>
+          </label>
+          <span class="hint" id="dev-bodies-note"></span>
+          <span class="hint" id="dev-status"></span>
+        </div>
+    <div id="dev-log" class="dev-log" role="log" aria-live="off"></div>
+    <div class="empty" id="dev-empty"></div>
+  </div>
+</section>
 <dialog id="dv-dialog" class="modal-lg" aria-label="Discover models">
   <div class="modal-head">
     <div>
@@ -545,6 +596,34 @@
   </div>
 </dialog>
 <!-- llm-d serves one model; preselect the active one for confirmation. -->
+<!-- What to put in a coding agent's configuration so it uses this mesh:
+     where the app runs decides the address and the key. -->
+<dialog id="connect-dialog" aria-labelledby="connect-title">
+  <form method="dialog" id="connect-form">
+    <div class="dlg-head">
+      <div>
+        <div class="dlg-title" id="connect-title">Connect an app</div>
+        <div class="dlg-sub">Use this mesh's models from a coding agent</div>
+      </div>
+      <button class="btn" value="cancel" type="submit">Close</button>
+    </div>
+    <div class="dlg-body" id="connect-body"></div>
+  </form>
+</dialog>
+<!-- The command that calls a model, through the mesh and to one engine,
+     with a button that sends it. Opened from a model's name on Serving. -->
+<dialog id="try-dialog" aria-labelledby="try-title">
+  <form method="dialog" id="try-form">
+    <div class="dlg-head">
+      <div>
+        <div class="dlg-title" id="try-title">Try a model</div>
+        <div class="dlg-sub" id="try-sub"></div>
+      </div>
+      <button class="btn" value="cancel" type="submit">Close</button>
+    </div>
+    <div class="dlg-body" id="try-body"></div>
+  </form>
+</dialog>
 <dialog id="wl-dialog">
   <form method="dialog" id="wl-form">
     <div class="dlg-head">

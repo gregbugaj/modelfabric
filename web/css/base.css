@@ -61,7 +61,7 @@
   /* Use fill and border in dark themes, where shadows provide little contrast. */
   --seg-active-bg: hsl(var(--surface-1));
   --seg-active-shadow: 0 1px 2px hsl(220 20% 20% / 0.06), 0 1px 3px hsl(220 20% 20% / 0.04);
-  --side-shadow: -14px 0 40px hsl(220 40% 12% / 0.18);
+  --side-shadow: -1px 0 0 hsl(220 14% 82%), -6px 0 16px hsl(220 40% 12% / 0.06);
 }
 
 :root[data-theme="dark"] {
@@ -91,7 +91,7 @@
   --shadow: none;
   --seg-active-bg: hsl(var(--surface-2));
   --seg-active-shadow: inset 0 0 0 1px hsl(220 14% 32%);
-  --side-shadow: -1px 0 0 hsl(220 14% 30%), -22px 0 60px hsl(224 45% 2% / 0.62);
+  --side-shadow: -1px 0 0 hsl(220 14% 30%);
   --overlay-bg: hsl(var(--surface-2));
   --overlay-scrim: hsl(224 45% 2% / 0.72);
   --warning-text: 38 92% 66%;
@@ -124,7 +124,7 @@
     --shadow: none;
     --seg-active-bg: hsl(var(--surface-2));
     --seg-active-shadow: inset 0 0 0 1px hsl(220 14% 32%);
-    --side-shadow: -1px 0 0 hsl(220 14% 30%), -22px 0 60px hsl(224 45% 2% / 0.62);
+    --side-shadow: -1px 0 0 hsl(220 14% 30%);
   --overlay-bg: hsl(var(--surface-2));
   --overlay-scrim: hsl(224 45% 2% / 0.72);
   --warning-text: 38 92% 66%;

@@ -39,6 +39,7 @@ var settingFlags = []settingFlag{
 	{"context", "context_length", kindInt, "context length per request"},
 	{"parallel", "parallel", kindInt, "concurrent slots"},
 	{"gpu-layers", "gpu_layers", kindInt, "layers to offload to the GPU"},
+	{"gpu", "gpu", kindString, "GPUs this engine may use, as nvidia-smi numbers them: 0, 1, 0,1 or all (with load, also each: one engine per GPU)"},
 	{"offload-ratio", "offload_ratio", kindFloat, "fraction of layers on the GPU, 0..1 (LM Studio's GPU offload)"},
 	{"flash-attention", "flash_attention", kindBool, "flash attention on|off"},
 	{"vision", "vision", kindBool, "serve images on|off; off loads a multimodal model text-only, freeing the projector and letting it speculate"},

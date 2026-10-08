@@ -11,9 +11,8 @@
 
 .ss-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; align-items: center;
-  padding: 10px 0; border-bottom: 1px solid var(--border-soft);
+  padding: 9px 0;
 }
-.ss-row:last-child { border-bottom: none; }
 .ss-row[hidden] { display: none; }
 .ss-row.ss-sub { padding-top: 0; margin-top: -2px; padding-left: 14px; border-left: 2px solid var(--border-soft); }
 .ss-row.ss-wide { grid-template-columns: 1fr; }
@@ -80,8 +79,7 @@ input.switch:focus-visible { outline: 2px solid var(--primary); outline-offset: 
   user-select: all;
 }
 .tk-list { display: grid; margin-top: 6px; }
-.tk-row { padding: 7px 0; border-bottom: 1px solid var(--border-soft); display: grid; gap: 2px; }
-.tk-row:last-child { border-bottom: none; }
+.tk-row { padding: 7px 0; display: grid; gap: 2px; }
 .tk-main { display: flex; align-items: center; gap: 8px; }
 .tk-name { font-weight: 600; font-size: 13px; }
 .tk-builtin .tk-name { color: var(--text-2); }
@@ -98,3 +96,4 @@ input.switch:focus-visible { outline: 2px solid var(--primary); outline-offset: 
 .ss-note { font-size: 12px; color: var(--text-2); padding: 8px 10px; margin: 6px 0 2px; border-radius: var(--r-md); background: hsl(var(--surface-inset)); }
 .ss-note[hidden] { display: none; }
 #ss-side textarea.input { min-height: 112px; line-height: 1.5; }
+.tk-main .btn + .btn { margin-left: 8px; }

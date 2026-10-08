@@ -1,6 +1,8 @@
 # The binary `make build` writes, and the release tree `make dist` writes.
 /mfsh
 /dist/
+# Left by `go build ./bench/routesim` run from the repository root.
+/routesim
 node_modules/
 web/node_modules/
 

@@ -30,12 +30,14 @@ func LaunchSpec(d *Definition, m catalog.Model, a Applied, bind string, port, ge
 		bind = "127.0.0.1"
 	}
 	return process.LaunchSpec{
-		DeploymentID:   m.Key,
-		Generation:     generation,
-		Engine:         d.Engine,
-		ServedModel:    eng.ServedModel(m),
-		Argv:           eng.Argv(d, m, a, bind, port),
-		Env:            d.envList(),
+		DeploymentID: m.Key,
+		Generation:   generation,
+		Engine:       d.Engine,
+		ServedModel:  eng.ServedModel(m),
+		Argv:         eng.Argv(d, m, a, bind, port),
+		// After the definition's own, so a choice made at load wins over a
+		// runtime definition that pins a device.
+		Env:            append(d.envList(), GPUEnv(a)...),
 		Cwd:            d.Dir(),
 		Endpoint:       LocalURL(bind, port),
 		Model:          m.Key,

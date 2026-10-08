@@ -1,6 +1,6 @@
 .btn {
-  font: inherit; font-size: 13px; font-weight: 500;
-  padding: 6px 13px; border-radius: var(--r-sm); cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  padding: 5px 12px; border-radius: var(--r-sm); cursor: pointer; line-height: 1.35;
   /* Prevent flex sizing from shrinking buttons until their labels overflow. */
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   min-width: fit-content; min-height: fit-content;
@@ -13,7 +13,6 @@
 .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .btn.primary {
   background: var(--primary); border-color: var(--primary); color: #fff;
-  font-weight: 600;
 }
 .btn.primary:hover:not(:disabled) {
   background: hsl(var(--brand-primary-hover)); border-color: hsl(var(--brand-primary-hover)); color: #fff;
@@ -23,6 +22,13 @@
 .btn.danger { color: hsl(var(--error-text)); border-color: hsl(var(--error-token) / 0.45); }
 .btn.danger:hover:not(:disabled) { color: hsl(var(--error-text)); border-color: hsl(var(--error-token)); }
 .btn.danger:hover:not(:disabled) { background: hsl(var(--error-subtle)); }
+
+/* One button size, on every screen and in every panel. There were three:
+   regular in toolbars and footers, small in table rows, and a second small
+   that differed by two pixels in the preset bar. Side by side, as a model's
+   row is beside its panel, the same "Unload" was two different buttons. The
+   size classes are kept so the markup need not change, and mean nothing. */
+.btn.sm, .btn.small, .btn.lg { font-size: 12.5px; padding: 5px 12px; }
 
 td.actions { text-align: right; white-space: nowrap; }
 

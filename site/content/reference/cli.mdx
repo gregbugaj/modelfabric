@@ -41,14 +41,68 @@ flags.
 | `mfsh status` | nodes in the mesh and what they serve |
 | `mfsh models` | every model in the mesh, and who holds it |
 | `mfsh ops` | recent load/unload operations |
-| `mfsh log` | stream routed requests; bodies only while capture is on |
+| `mfsh log` | one line per finished request; bodies only while capture is on |
+| `mfsh log -dev` | the developer log: each request as it arrives, where it is sent and why, the engine's progress, and how it ends. See [Which log](#which-log). |
 | `mfsh log -tokens` | follow replies as they are generated, this node only (`-text` prints them) |
-| `mfsh log -engines` | every engine in the mesh: prefill and decode rates, slots, cache (`-json` to record) |
+| `mfsh log -engines` | every engine in the mesh: slots, cache, read and write speed per request (`pp/s`, `tg/s`) and what the engine is writing now across all its slots (`now`). `-json` to record. |
 | `mfsh log engine [instance]` | an engine's own output (`-f`, `-n N`) |
 | `mfsh endpoints` | mesh model servers in llm-d file-discovery format |
 | `mfsh prefer [node]` | prefer a node when several hold the same model (`-none` to clear) |
 | `mfsh llmd init` | write EPP + Envoy configs to put llm-d in front |
 | `mfsh llmd install \| enable \| disable \| status \| profiles` | run llm-d for a model |
+
+### Which log
+
+`mfsh log` is five different logs. `mfsh log -h` lists them the same way.
+
+| You want | Run |
+|---|---|
+| what is happening to requests right now, across the mesh | `mfsh log -dev -node all` |
+| the same, with every line the engines write | `mfsh log -dev -node all -debug` |
+| one line per request once it has ended | `mfsh log` |
+| how busy each engine is: rates, slots, cache | `mfsh log -engines` |
+| the reply as it is generated | `mfsh log -tokens` |
+| why a load failed, or what one engine printed | `mfsh log engine [instance] -f` |
+
+`mfsh log -dev` is the terminal's version of the dashboard's
+[Developer log](/docs/dashboard#developer-log). On its own it follows the node you are on.
+
+```bash
+mfsh log -dev                           # this node
+mfsh log -dev -node all                 # every node, merged into one stream by time
+mfsh log -dev -node all -debug          # with the engines' own lines
+mfsh log -dev -node minion              # one other node, by name
+mfsh log -dev -backlog=false            # only what happens from now on
+mfsh log -dev -node all -json           # one JSON object per line, for jq or a file
+mfsh log -dev -node all | grep 906ebc   # one request across nodes, by its id
+```
+
+```text
+05:22:46  INFO   entrypoint-01  qwen/qwen3.8-27b  78c374  request received: POST /v1/chat/completions, 5 messages, 41.3 KB
+05:22:46  INFO   entrypoint-01  qwen/qwen3.8-27b  78c374  sent to xpredator: it holds 54% of this prompt
+05:22:47  INFO   xpredator      qwen/qwen3.8-27b  78c374  sent to xpredator/inst-fa086196585f: it holds 54% of this prompt
+05:22:53  INFO   minion         qwen/qwen3.8-27b  engine  slot 0: prompt processing 85% (19224 tokens read)
+```
+
+With `-node all` each line names the node that wrote it, and a request that crosses machines
+appears once per machine under the same request id. It starts by replaying what every node still
+holds, which can be a few thousand lines; `-backlog=false` skips that. A node that is down or
+restarting is reported once and picked up again when it answers. Lines are ordered by each node's
+own clock, so two nodes whose clocks disagree can show a request's lines slightly out of order.
+
+`mfsh log -engines` prints a line when an engine's load changes, and every few seconds while it is
+writing:
+
+```text
+05:39:32  xpredator  2/2 full  kv   0%   1679 pp/s     60 tg/s  now   132 tok/s
+```
+
+`pp/s` and `tg/s` are one request's read and write speed, averaged since the engine started. `now`
+is what the engine is writing across all its slots over the last three seconds, and `?` when the
+engine does not report it.
+
+`mfsh log engine` is something else: it prints one engine's log file on the machine you are on,
+and does not reach other nodes.
 
 ### llmd enable flags
 
@@ -114,6 +168,7 @@ three places. `mfsh load -h` prints the current list.
 |---|---|
 | `-context` | context length **per request**; the KV pool is `context × parallel` |
 | `-parallel` | concurrent slots |
+| `-gpu` | GPUs this engine may use, as `nvidia-smi` numbers them: `0`, `1`, `0,1` or `all`. With `mfsh load`, `-gpu each` starts one engine per GPU |
 | `-gpu-layers` | layers to offload to the GPU |
 | `-offload-ratio` | fraction of layers on the GPU, 0..1 |
 | `-flash-attention` | `on\|off` |

@@ -884,7 +884,13 @@ test("buildTokens lists the node key first, then tokens newest first, never a se
   }, now);
   assert.deepEqual(rows.map((r) => r.name), ["Node key", "ci", "laptop"]);
   assert.equal(rows[0].builtin, true);
-  assert.equal(rows[0].masked, "sk-mfsh-…ab12");
+  // The node did not say how its key begins, so nothing is put in front of it.
+  assert.equal(rows[0].masked, "…ab12");
+  // Seen 2026-10-08: a key from before the rename begins sk-llmz-, and the
+  // page showed sk-mfsh-…bedf for it.
+  assert.equal(buildTokens({ node_key: "bedf", node_key_prefix: "sk-llmz-" })[0].masked, "sk-llmz-…bedf");
+  assert.equal(buildTokens({ tokens: [{ id: "1", name: "new", hint: "e72c", prefix: "sk-mfsh-", created: "2026-10-08T00:00:00Z" }] })[0].masked, "sk-mfsh-…e72c");
+  assert.equal(buildTokens({ tokens: [{ id: "2", name: "old", hint: "bea7", created: "2026-10-01T00:00:00Z" }] })[0].masked, "…bea7");
   assert.equal(rows[0].rotatable, false);
   assert.equal(buildTokens({ node_key: "ab12", rotatable: true })[0].rotatable, true);
   assert.equal(rows[1].lastUsed, "never");
@@ -1044,11 +1050,12 @@ test("slotUse separates running from waiting and counts free slots", () => {
 test("meshCapacity flags work waiting on one engine while another has a slot free", () => {
   const e = (inflight, slots, healthy = true) => ({ healthy, slots, ...slotUse(inflight, slots) });
   assert.deepEqual(meshCapacity([e(1, 2), e(2, 1), e(0, 4)]),
-    { slots: 7, running: 2, waiting: 1, free: 5, waitingBesideFree: true });
+    // These engines report no live write rate, so the total is unknown and all three are counted as not saying.
+    { slots: 7, running: 2, waiting: 1, free: 5, waitingBesideFree: true, outputNow: null, outputUnknown: 3 });
   assert.equal(meshCapacity([e(3, 2), e(2, 1)]).waitingBesideFree, false, "waiting, but nothing free");
   assert.equal(meshCapacity([e(1, 2), e(0, 4)]).waitingBesideFree, false, "free, and nothing waiting");
   assert.equal(meshCapacity([e(0, 4, false), e(2, 1)]).free, 0);
-  assert.deepEqual(meshCapacity(undefined), { slots: 0, running: 0, waiting: 0, free: 0, waitingBesideFree: false });
+  assert.deepEqual(meshCapacity(undefined), { slots: 0, running: 0, waiting: 0, free: 0, waitingBesideFree: false, outputNow: null, outputUnknown: 0 });
 });
 
 import { heldRequests, movedIn, waitedText } from "./ui-model.js";
@@ -1112,4 +1119,280 @@ test("gib says a size in MiB the way a person would", () => {
   for (const [mib, want] of [[8192, "8.0 GB"], [6144, "6.0 GB"], [32768, "32 GB"], [7372, "7.2 GB"], [null, "—"], [undefined, "—"]]) {
     assert.equal(gib(mib), want);
   }
+});
+
+import { devlogAppend, devlogBody, devlogClock, devlogFields, devlogMatches } from "./ui-model.js";
+
+test("the developer log keeps entries in time order, once each, and no more than its cap", () => {
+  const at = (s, seq, node = "a") => ({ node, seq, time: `2026-10-07T10:00:${String(s).padStart(2, "0")}.000Z`, msg: `m${seq}` });
+  const list = [];
+  devlogAppend(list, at(1, 1), 3);
+  devlogAppend(list, at(3, 2), 3);
+  // A peer's entry that happened between the two arrives late.
+  devlogAppend(list, at(2, 1, "b"), 3);
+  assert.deepEqual(list.map((e) => e.node + e.seq), ["a1", "b1", "a2"]);
+  // A reconnected stream replays its backlog: nothing is doubled.
+  devlogAppend(list, at(3, 2), 3);
+  assert.equal(list.length, 3);
+  // Past the cap the oldest goes.
+  devlogAppend(list, at(4, 3), 3);
+  assert.deepEqual(list.map((e) => e.node + e.seq), ["b1", "a2", "a3"]);
+});
+
+test("the developer log's filter needs every word, anywhere in the row", () => {
+  const e = { msg: "sent to minion: it holds 94% of this prompt", model: "qwen/qwen3.8-27b", trace: "a1b2c3d4", level: "info", node: "sites-01" };
+  for (const [filter, want] of [["", true], ["minion", true], ["MINION 94%", true], ["a1b2c3", true], ["qwen sent", true], ["helion", false], ["minion helion", false]]) {
+    assert.equal(devlogMatches(e, filter), want, filter);
+  }
+});
+
+test("a captured body is indented when it is whole JSON and left alone when it is not", () => {
+  assert.equal(devlogBody('{"a":[1,2]}', false), '{\n  "a": [\n    1,\n    2\n  ]\n}');
+  assert.equal(devlogBody('data: {"x":1}\n\n', false), 'data: {"x":1}\n\n');
+  // Cut at the cap, it is not valid JSON and must not be reported as malformed.
+  assert.equal(devlogBody('{"a":[1,', true), '{"a":[1,\n… cut at the capture limit');
+  assert.equal(devlogBody("", false), "");
+});
+
+test("the developer log's clock and figures read at a glance", () => {
+  const d = new Date(2026, 9, 7, 9, 5, 3, 42);
+  assert.equal(devlogClock(d.toISOString()), "09:05:03.042");
+  assert.equal(devlogClock("nonsense"), "");
+  assert.equal(devlogFields({ status: 200, holds_percent: { minion: 94 } }), 'status=200  holds_percent={"minion":94}');
+  assert.equal(devlogFields({ tokens_per_sec: 83.95871814412483, ms: 9311 }), "tokens_per_sec=83.96  ms=9311");
+  assert.equal(devlogFields(undefined), "");
+});
+
+import { gpuLabel } from "./ui-model.js";
+
+test("an engine confined to a GPU says which, and one left alone says nothing", () => {
+  for (const [gpu, want] of [["0", "GPU 0"], ["1", "GPU 1"], ["0,1", "GPUs 0,1"], ["", ""], [undefined, ""], [null, ""]]) {
+    assert.equal(gpuLabel(gpu), want);
+  }
+  const view = buildView({
+    self: { node: "minion", instances: [
+      { id: "i1", model: "m", state: "ready", slots: 4, gpu: "0" },
+      { id: "i2", model: "m", state: "ready", slots: 2, gpu: "1" },
+    ] },
+    // A peer on a build from before GPU selection reports nothing.
+    peers: [{ node: "old", alive: true, instances: [{ id: "i3", model: "m", state: "ready", slots: 2 }] }],
+  });
+  assert.deepEqual(view.meshEngines.map((e) => [e.node, e.gpu]), [["minion", "0"], ["minion", "1"], ["old", ""]]);
+});
+
+import { freeGPU, gpuChoices, parseSettingsForm as parseForm } from "./ui-model.js";
+
+test("a GPU selector lists a node's cards as nvidia-smi numbers them", () => {
+  const gpus = [{ name: "NVIDIA RTX 6000 Ada Generation", vram_mb: 49140 }, { name: "NVIDIA GeForce RTX 4090", vram_mb: 24564 }];
+  assert.deepEqual(gpuChoices(gpus), [
+    { value: "0", label: "GPU 0 · RTX 6000 Ada · 48 GB" },
+    { value: "1", label: "GPU 1 · RTX 4090 · 24 GB" },
+  ]);
+  assert.deepEqual(gpuChoices(undefined), []);
+  // The chosen card is saved as the number, and unset means every card.
+  assert.deepEqual(parseForm({ gpu: "1", parallel: "2" }).settings, { gpu: "1", parallel: 2 });
+  assert.deepEqual(parseForm({ gpu: "" }).settings, {});
+});
+
+test("adding an engine offers the card that has none", () => {
+  const gpus = [{ name: "A", vram_mb: 49140 }, { name: "B", vram_mb: 24564 }];
+  for (const [name, instances, want] of [
+    ["nothing loaded: the first card", [], "0"],
+    ["one engine on GPU 0: the other card", [{ config: { gpu: "0" } }], "1"],
+    ["one engine on GPU 1: the first card", [{ config: { gpu: "1" } }], "0"],
+    ["both cards have an engine", [{ config: { gpu: "0" } }, { config: { gpu: "1" } }], ""],
+    ["an engine spread over every card leaves none free", [{ config: {} }], ""],
+  ]) {
+    assert.equal(freeGPU(gpus, instances), want, name);
+  }
+});
+
+import { engineKind, engineSummary } from "./ui-model.js";
+
+test("an engine is named by its GPU, or by what it runs on", () => {
+  for (const [runtime, gpu, want] of [
+    ["llama.cpp-upstream-linux-x86_64-cuda-12.8@b11153", "1", "GPU 1"],
+    ["llama.cpp-upstream-linux-x86_64-cuda-12.8@b11153", "", "CUDA"],
+    ["llama.cpp-mac-arm64-apple-metal-advsimd@2.46.0", "", "Metal"],
+    ["llama.cpp-linux-x86_64-cpu-avx2@2.40.0", "", "CPU"],
+    ["mlx-lm@0.28", undefined, "MLX"],
+    ["something-else", "", ""],
+  ]) assert.equal(engineKind(runtime, gpu), want, runtime);
+  assert.equal(engineSummary({ gpu: "0", parallel: 4 }), "GPU 0 · 4 slots");
+  assert.equal(engineSummary({ parallel: 1, runtime: "llama.cpp-linux-x86_64-cpu-avx2" }), "CPU · 1 slot");
+  assert.equal(engineSummary({}), "");
+});
+
+// Seen 2026-10-08: minion ran two engines of one model, one per GPU, and the
+// Serving page said "3 replicas" for four engines on three machines.
+test("a model's replicas are its engines, and a node running two says so", () => {
+  const inst = (id, gpu) => ({ id, model: "m", state: "ready", slots: 1, gpu });
+  const view = buildView({
+    models: [{ id: "m", nodes: ["helion", "minion", "xpredator"] }],
+    self: { node: "xpredator", instances: [inst("a")] },
+    peers: [
+      { node: "minion", alive: true, instances: [inst("b", "0"), inst("c", "1")] },
+      { node: "helion", alive: true, instances: [inst("d")] },
+    ],
+  });
+  const m = view.models.find((x) => x.id === "m");
+  assert.equal(m.replicas, 4);
+  assert.deepEqual([...m.servedBy].sort(), ["helion", "minion ×2", "xpredator"]);
+});
+
+import { gpuMemoryText } from "./ui-model.js";
+
+// Seen 2026-10-08: a model loaded on "every GPU" was split 25.6 GB and 15.2 GB
+// across two cards, and the dashboard called the engine "CUDA".
+test("an engine split across cards says so, from what the cards report", () => {
+  const split = [{ gpu: 0, mb: 25610 }, { gpu: 1, mb: 15220 }];
+  const cuda = "llama.cpp-upstream-linux-x86_64-cuda-12.8@b11153";
+  assert.equal(engineKind(cuda, "", split), "split across GPUs 0+1");
+  // Left to choose and landing on one card, it is on that card.
+  assert.equal(engineKind(cuda, "", [{ gpu: 1, mb: 21094 }]), "GPU 1");
+  // Nothing measured: what was asked for, then the backend.
+  assert.equal(engineKind(cuda, "0", []), "GPU 0");
+  assert.equal(engineKind(cuda, "", undefined), "CUDA");
+  assert.equal(gpuMemoryText(split), "GPU 0: 25 GB · GPU 1: 15 GB");
+  assert.equal(gpuMemoryText([]), "");
+  const view = buildView({ self: { node: "minion", instances: [{ id: "i1", model: "m", state: "ready", slots: 4, gpu_memory: split }] } });
+  assert.deepEqual(view.meshEngines[0].gpuMemory, split);
+});
+
+test("a model's row carries how far its load has got", () => {
+  const nodes = [{
+    node: "minion", self: false,
+    api: { models: [{ key: "m", path: "/m.gguf", loaded_instances: [] }, { key: "idle", path: "/i.gguf", loaded_instances: [] }] },
+    operations: [{ id: "op1", kind: "load", model: "m", state: "running", fraction: 0.5, message: "loading weights onto the GPU: 8.5 of 17.0 GB" }],
+  }];
+  const by = Object.fromEntries(buildCatalog(nodes).rows.map((r) => [r.key, r]));
+  assert.deepEqual([by.m.busy, by.m.busyKind, by.m.busyFraction, by.m.busyMessage], [true, "load", 0.5, "loading weights onto the GPU: 8.5 of 17.0 GB"]);
+  assert.deepEqual([by.idle.busy, by.idle.busyFraction, by.idle.busyMessage], [false, 0, ""]);
+});
+
+import { curlFor, tryTargets } from "./ui-model.js";
+
+test("a curl command to try a model, for the mesh and for one engine", () => {
+  const e = { node: "minion", model: "qwen/qwen3.8-27b", address: "100.64.0.3:18002" };
+  const [mesh, engine] = tryTargets({ url: "http://127.0.0.1:1234/v1", requireKey: false }, e);
+  assert.equal(mesh.curl.split("\n")[0], "curl http://127.0.0.1:1234/v1/chat/completions \\");
+  assert.ok(!mesh.curl.includes("Authorization"), "no key is needed on loopback, so none is shown");
+  assert.equal(engine.curl.split("\n")[0], "curl http://100.64.0.3:18002/v1/chat/completions \\");
+  assert.ok(engine.curl.includes('"model": "qwen/qwen3.8-27b"'));
+  // A front door that wants a key: the command reads it from the environment,
+  // and never has the key itself in it.
+  const [keyed] = tryTargets({ url: "http://100.64.0.1:1234/v1", requireKey: true }, e);
+  assert.ok(keyed.curl.includes('-H "Authorization: Bearer $MFSH_KEY"'));
+  assert.equal(keyed.setup, "export MFSH_KEY=$(mfsh key)");
+  // An engine on loopback is said to be reachable only from its own machine.
+  const [, local] = tryTargets({ url: "http://127.0.0.1:1234/v1" }, { ...e, address: "127.0.0.1:18000" });
+  assert.match(local.note, /works only on minion itself/);
+  // No address reported: only the mesh's command is offered.
+  assert.equal(tryTargets({ url: "http://127.0.0.1:1234/v1" }, { ...e, address: "" }).length, 1);
+  // A quote in the prompt must not end the shell's string early.
+  assert.ok(curlFor("http://h/v1/", { messages: [{ content: "it's" }] }).includes(`it'\\''s`));
+});
+
+import { entrypoints, publicTarget } from "./ui-model.js";
+
+test("the command for calling from outside names the entrypoint and always carries a key", () => {
+  const topo = [
+    { node: "xpredator", listeners: [{ name: "front", enabled: true }, { name: "public", enabled: false }] },
+    { node: "entrypoint-01", listeners: [{ name: "mesh", enabled: true }, { name: "public", enabled: true }] },
+    null,
+  ];
+  assert.deepEqual(entrypoints(topo), ["entrypoint-01"]);
+  assert.deepEqual(entrypoints(undefined), []);
+  // The address is not something the node knows; until it is typed, a
+  // reserved example stands in, and the block says it is not known.
+  const unknown = publicTarget("entrypoint-01", "", "m");
+  assert.equal(unknown.known, false);
+  assert.equal(unknown.curl.split("\n")[0], "curl https://api.example.com/v1/chat/completions \\");
+  // Typed with or without /v1 or a trailing slash, it is one address.
+  for (const typed of ["https://api.example.org", "https://api.example.org/", "https://api.example.org/v1/"]) {
+    const t = publicTarget("entrypoint-01", typed, "m");
+    assert.equal(t.curl.split("\n")[0], "curl https://api.example.org/v1/chat/completions \\", typed);
+    assert.equal(t.known, true);
+    assert.ok(t.curl.includes('-H "Authorization: Bearer $MFSH_KEY"'));
+  }
+  assert.match(unknown.note, /must be one of entrypoint-01's own/);
+});
+
+import { connectPlaces, opencodeConfig, servedModels } from "./ui-model.js";
+
+test("an opencode config for the mesh: its models, their real context, and a key only by name", () => {
+  const models = servedModels([
+    { model: "qwen/qwen3.8-27b", contextLength: 65536, vision: true },
+    // The router may send a request to either engine, so the smaller window is the one to promise.
+    // One engine reading images is enough: a request with an image is sent only to those.
+    { model: "qwen/qwen3.8-27b", contextLength: 49152, vision: false },
+    { model: "small", contextLength: 0 },
+  ]);
+  assert.deepEqual(models, [{ id: "qwen/qwen3.8-27b", context: 49152, vision: true }, { id: "small", context: 0, vision: false }]);
+
+  const local = JSON.parse(opencodeConfig("http://127.0.0.1:1234/v1", models));
+  const p = local.provider.modelfabric;
+  assert.equal(p.npm, "@ai-sdk/openai-compatible");
+  assert.deepEqual(p.options, { baseURL: "http://127.0.0.1:1234/v1" });
+  // Without attachment and modalities opencode strips an attached image before sending, and the model
+  // answers "this model doesn't support image input" though it is loaded to read images.
+  assert.deepEqual(p.models["qwen/qwen3.8-27b"], {
+    name: "qwen/qwen3.8-27b", limit: { context: 49152, output: 12288 },
+    attachment: true, modalities: { input: ["text", "image"], output: ["text"] },
+  });
+  assert.deepEqual(p.models.small, { name: "small" });
+
+  // With a key, the file names an environment variable and never holds the key.
+  const keyed = opencodeConfig("https://api.example.com/v1", models, "MFSH_KEY");
+  assert.equal(JSON.parse(keyed).provider.modelfabric.options.apiKey, "{env:MFSH_KEY}");
+  assert.ok(!/sk-/.test(keyed));
+});
+
+test("where an app is decides its address and whether it needs a key", () => {
+  const places = connectPlaces({ url: "http://127.0.0.1:1234/v1", requireKey: false }, "100.64.0.1:1234", { node: "entrypoint-01", url: "https://api.example.org/" });
+  assert.deepEqual(places.map((p) => [p.key, p.base, p.keyVar]), [
+    ["local", "http://127.0.0.1:1234/v1", ""],
+    ["tailnet", "http://100.64.0.1:1234/v1", ""],
+    ["public", "https://api.example.org/v1", "MFSH_KEY"],
+  ]);
+  assert.match(places[2].keyHelp, /must be one of entrypoint-01's own/);
+  // No entrypoint in the mesh, no tailnet address known: only this machine.
+  assert.deepEqual(connectPlaces({ url: "http://127.0.0.1:1234/v1" }, "", null).map((p) => p.key), ["local"]);
+  // require_api_key is checked on the loopback front door only. The dialog once asked for a key on the
+  // tailnet address too, which the mesh listener never checks: Tailscale membership is the credential there.
+  const keyed = connectPlaces({ url: "http://127.0.0.1:1234/v1", requireKey: true }, "100.64.0.1:1234", null);
+  assert.deepEqual(keyed.map((p) => [p.key, p.keyVar]), [["local", "MFSH_KEY"], ["tailnet", ""]]);
+  assert.match(keyed[1].note, /being on the tailnet is the only credential/);
+  // The public address is not something the node knows.
+  assert.equal(connectPlaces({}, "", { node: "entrypoint-01", url: "" })[1].known, false);
+});
+
+test("what the mesh is writing now adds the engines that say, and counts the ones that do not", () => {
+  // Four busy slots at 22 tok/s each showed as 22 beside a one-slot engine at 78: the per-request
+  // speed made the engine producing the most look the slowest.
+  const c = meshCapacity([
+    { healthy: true, slots: 4, running: 4, outputNow: 88 },
+    { healthy: true, slots: 1, running: 1, outputNow: 78 },
+    { healthy: true, slots: 1, running: 1, outputNow: null }, // an older node
+    { healthy: false, slots: 2, outputNow: 500 },
+  ]);
+  assert.equal(c.outputNow, 166);
+  assert.equal(c.outputUnknown, 1);
+  // No engine reports it: unknown, not zero.
+  assert.equal(meshCapacity([{ healthy: true, slots: 1, outputNow: null }]).outputNow, null);
+  // An idle mesh that does report it reads 0.
+  assert.equal(meshCapacity([{ healthy: true, slots: 1, outputNow: 0 }]).outputNow, 0);
+});
+
+import { aliveNodes } from "./ui-model.js";
+
+test("the nodes to ask are the ones the mesh says are up, this node first", () => {
+  // The Requests tab's "Whole mesh" and the developer log took their node list from the My Models
+  // cache, which holds only this node until a page showing peers' models has been opened.
+  const view = buildView({
+    self: { node: "b-self", alive: true },
+    peers: [{ node: "zeta", alive: true }, { node: "down", alive: false }, { node: "alpha", alive: true }],
+  });
+  assert.deepEqual(aliveNodes(view), ["b-self", "alpha", "zeta"]);
+  assert.deepEqual(aliveNodes(null), []);
 });

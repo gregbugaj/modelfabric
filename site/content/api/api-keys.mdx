@@ -201,6 +201,12 @@ you didn't hand it to. On the dashboard, **Rotate** beside the node key on the T
 same, asks first, and shows the new key. Unlike a token's secret, the node key is kept on disk, so
 `mfsh key` prints it again later.
 
+**Reveal**, beside it, shows the node key again, as `mfsh key` does. It works on the node's own
+dashboard only: a node's key is never sent to another machine, so opening one node's settings from
+another node's dashboard cannot show it. A named token has no Reveal. Its secret is shown once, when
+you create it, and only a fingerprint is kept; if you have lost one, create another and revoke the
+old one.
+
 Run `mfsh key` as the user the node runs as. The key lives in that user's home directory, so as
 anyone else (`root`, say) it would find no key and make a new one that the node never reads. When a
 node is running, every `mfsh key` command asks it where it keeps its keys and refuses to touch any

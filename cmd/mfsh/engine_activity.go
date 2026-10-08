@@ -16,13 +16,15 @@ import (
 // Engine activity includes llm-d traffic, which bypasses this node's router and request log.
 
 type engineSample struct {
-	node, id     string
-	model        string
-	inflight     int64
-	slots        int64
-	kv           float64
-	prefillTokS  float64
-	decodeTokS   float64
+	node, id    string
+	model       string
+	inflight    int64
+	slots       int64
+	kv          float64
+	prefillTokS float64
+	decodeTokS  float64
+	// outputNow is what the engine is writing per second now, all slots; nil when unknown.
+	outputNow    *float64
 	specAccepted float64
 	// Lifetime totals measure work distribution; exclude them from busy() to avoid printing every poll.
 	promptTokens int64
@@ -43,15 +45,16 @@ func engineActivityCmd(addr string, asJSON bool) error {
 	defer stop()
 
 	// Send banners to stderr so redirected JSON contains only samples.
-	fmt.Fprintln(os.Stderr, dim("Following every engine in the mesh: requests in flight, KV cache, prefill rate. Ctrl-C to stop."))
+	fmt.Fprintln(os.Stderr, dim("Following every engine in the mesh: requests in flight, KV cache, read and write rates. Ctrl-C to stop."))
 	if asJSON {
 		fmt.Fprintln(os.Stderr, dim("One JSON object per line, every engine every second, whether or not it changed — a recording is a time series and gaps in it are not silence."))
 	} else {
-		fmt.Fprintln(os.Stderr, dim("A line is printed when an engine's load changes, so a quiet fleet is quiet here too."))
+		fmt.Fprintln(os.Stderr, dim("A line is printed when an engine's load changes, and every few seconds while it is writing. pp/s and tg/s are one request's read and write speed since the engine started; now is what the engine is writing across all its slots."))
 	}
 	enc := json.NewEncoder(os.Stdout)
 
 	last := map[string]string{}
+	shown := map[string]time.Time{}
 	seen := false
 	for {
 		samples, err := sampleEngines(ctx, addr)
@@ -74,7 +77,7 @@ func engineActivityCmd(addr string, asJSON bool) error {
 					Time: now.UTC().Format(time.RFC3339Nano), Node: s.node, Instance: s.id,
 					Model: s.model, Inflight: s.inflight, Slots: s.slots,
 					KVUsage: round3(s.kv), PrefillTokS: round1(s.prefillTokS),
-					DecodeTokS: round1(s.decodeTokS), SpecAccepted: round3(s.specAccepted),
+					DecodeTokS: round1(s.decodeTokS), OutputNowTokS: round1p(s.outputNow), SpecAccepted: round3(s.specAccepted),
 					PromptTokens: s.promptTokens, CachedTokens: s.cachedTokens,
 					OutputTokens: s.outputTokens, State: s.state,
 				}); err != nil {
@@ -82,10 +85,15 @@ func engineActivityCmd(addr string, asJSON bool) error {
 				}
 				continue
 			}
-			if last[s.key()] == s.busy() {
+			// An engine that is writing is shown again every few seconds
+			// though its load has not changed: its rate now is the one figure
+			// here that moves while the slots stay full.
+			writing := s.outputNow != nil && *s.outputNow > 0
+			if last[s.key()] == s.busy() && !(writing && now.Sub(shown[s.key()]) >= 5*time.Second) {
 				continue
 			}
 			last[s.key()] = s.busy()
+			shown[s.key()] = now
 			fmt.Printf("%s  %-10s %s  %s  %s\n",
 				dim(now.Format("15:04:05")),
 				s.node,
@@ -112,8 +120,15 @@ func inflightCell(s engineSample) string {
 	return dim(txt + " idle")
 }
 
+// rateCell is the engine's speeds: reading a prompt and writing one answer,
+// both averaged since it started, then what it is writing now across all its
+// slots. "?" is an engine that does not say.
 func rateCell(s engineSample) string {
-	out := fmt.Sprintf("%5.0f pp/s  %5.0f tg/s", s.prefillTokS, s.decodeTokS)
+	now := "    ?"
+	if s.outputNow != nil {
+		now = fmt.Sprintf("%5.0f", *s.outputNow)
+	}
+	out := fmt.Sprintf("%5.0f pp/s  %5.0f tg/s  now %s tok/s", s.prefillTokS, s.decodeTokS, now)
 	if s.specAccepted >= 0 {
 		out += fmt.Sprintf("  %3.0f%% drafts kept", s.specAccepted*100)
 	}
@@ -143,7 +158,7 @@ func sampleEngines(ctx context.Context, addr string) ([]engineSample, error) {
 			out = append(out, engineSample{
 				node: n.Node, id: i.ID, model: i.Model, inflight: i.Inflight, slots: i.Slots,
 				kv: i.KVUsage, prefillTokS: i.PrefillTokS, decodeTokS: i.DecodeTokS,
-				specAccepted: i.SpecAccepted, promptTokens: i.PromptTokens,
+				outputNow: i.OutputNowTokS, specAccepted: i.SpecAccepted, promptTokens: i.PromptTokens,
 				cachedTokens: i.CachedTokens, outputTokens: i.OutputTokens,
 				state: i.State,
 			})
@@ -155,16 +170,18 @@ func sampleEngines(ctx context.Context, addr string) ([]engineSample, error) {
 
 // engineSampleJSON uses mesh API field names for recorded samples.
 type engineSampleJSON struct {
-	Time         string  `json:"time"`
-	Node         string  `json:"node"`
-	Instance     string  `json:"instance"`
-	Model        string  `json:"model"`
-	Inflight     int64   `json:"inflight"`
-	Slots        int64   `json:"slots"`
-	KVUsage      float64 `json:"kv_usage"`
-	PrefillTokS  float64 `json:"prefill_tok_s"`
-	DecodeTokS   float64 `json:"decode_tok_s"`
-	SpecAccepted float64 `json:"spec_accepted"`
+	Time        string  `json:"time"`
+	Node        string  `json:"node"`
+	Instance    string  `json:"instance"`
+	Model       string  `json:"model"`
+	Inflight    int64   `json:"inflight"`
+	Slots       int64   `json:"slots"`
+	KVUsage     float64 `json:"kv_usage"`
+	PrefillTokS float64 `json:"prefill_tok_s"`
+	DecodeTokS  float64 `json:"decode_tok_s"`
+	// OutputNowTokS is null when the engine does not say.
+	OutputNowTokS *float64 `json:"output_now_tok_s"`
+	SpecAccepted  float64  `json:"spec_accepted"`
 	// Record lifetime totals to preserve work distribution after an engine reload resets its counters.
 	PromptTokens int64  `json:"prompt_tokens"`
 	CachedTokens int64  `json:"cached_tokens"`
@@ -175,22 +192,31 @@ type engineSampleJSON struct {
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
+func round1p(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	r := round1(*v)
+	return &r
+}
+
 type meshNodeView struct {
 	Node      string `json:"node"`
 	Instances []struct {
-		ID            string  `json:"id"`
-		Model         string  `json:"model"`
-		Inflight      int64   `json:"inflight"`
-		Slots         int64   `json:"slots"`
-		ContextLength int     `json:"context_length"`
-		ContextNote   string  `json:"context_note"`
-		KVUsage       float64 `json:"kv_usage"`
-		PrefillTokS   float64 `json:"prefill_tok_s"`
-		DecodeTokS    float64 `json:"decode_tok_s"`
-		SpecAccepted  float64 `json:"spec_accepted"`
-		PromptTokens  int64   `json:"prompt_tokens"`
-		CachedTokens  int64   `json:"cached_tokens"`
-		OutputTokens  int64   `json:"output_tokens"`
-		State         string  `json:"state"`
+		ID            string   `json:"id"`
+		Model         string   `json:"model"`
+		Inflight      int64    `json:"inflight"`
+		Slots         int64    `json:"slots"`
+		ContextLength int      `json:"context_length"`
+		ContextNote   string   `json:"context_note"`
+		KVUsage       float64  `json:"kv_usage"`
+		PrefillTokS   float64  `json:"prefill_tok_s"`
+		DecodeTokS    float64  `json:"decode_tok_s"`
+		OutputNowTokS *float64 `json:"output_now_tok_s"`
+		SpecAccepted  float64  `json:"spec_accepted"`
+		PromptTokens  int64    `json:"prompt_tokens"`
+		CachedTokens  int64    `json:"cached_tokens"`
+		OutputTokens  int64    `json:"output_tokens"`
+		State         string   `json:"state"`
 	} `json:"instances"`
 }

@@ -1,5 +1,6 @@
 // Dashboard initialization order is significant; import order is not.
 
+import { initConnect } from "./connect.js";
 import "./theme.js";
 import "./navigation.js";
 import "./activity.js";
@@ -30,6 +31,7 @@ import { initWorkloadDialog } from "./vision.js";
 initTheme();
 initNav();
 initCapture();
+initConnect();
 initWorkloadDialog();
 initDoctor();
 initServerSettings();

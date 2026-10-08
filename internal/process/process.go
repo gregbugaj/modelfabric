@@ -222,6 +222,18 @@ func (l *Launcher) readRecord(deploymentID string) (*record, error) {
 	return &r, nil
 }
 
+// PIDOf is the process recorded for a deployment, zero when none is. Start
+// records it as soon as the process exists and returns only when the engine
+// is ready, so this is how anything watching a start in progress finds the
+// process to watch.
+func (l *Launcher) PIDOf(deploymentID string) int {
+	r, err := l.readRecord(deploymentID)
+	if err != nil || r == nil {
+		return 0
+	}
+	return r.PID
+}
+
 // Start launches the process and waits for readiness.
 //
 // At most one owned process exists per deployment: a second Start while one is

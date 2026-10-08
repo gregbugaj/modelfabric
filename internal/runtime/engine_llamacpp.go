@@ -32,8 +32,11 @@ type Applied struct {
 	Runtime       string `json:"runtime"`
 	ContextLength int    `json:"context_length"`
 	GPULayers     int    `json:"gpu_layers"`
-	Parallel      int    `json:"parallel"`
-	SlotsClamped  string `json:"slots_clamped,omitempty"`
+	// GPU is the GPUs the engine is confined to, as nvidia-smi numbers them
+	// ("0", "0,1"). Empty is the engine's own behaviour: every GPU it sees.
+	GPU          string `json:"gpu,omitempty"`
+	Parallel     int    `json:"parallel"`
+	SlotsClamped string `json:"slots_clamped,omitempty"`
 	// VisionSkipped records a declined projector so routing excludes image
 	// requests. Empty for models without a projector.
 	VisionSkipped  string `json:"vision_skipped,omitempty"`
@@ -252,6 +255,9 @@ func (llamaCPP) Apply(d *Definition, m catalog.Model, req Requested) Applied {
 	}
 	setInt(&a.CacheReuse, s.CacheReuse)
 	setInt(&a.CtxCheckpoints, s.CtxCheckpoints)
+	if s.GPU != nil {
+		a.GPU = normalGPU(*s.GPU)
+	}
 	a.CacheRAMMiB = fitCacheRAM()
 	setInt(&a.CacheRAMMiB, s.CacheRAM)
 	setInt(&a.NCPUMoE, s.NCPUMoE)

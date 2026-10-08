@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gregbugaj/modelfabric/internal/devlog"
 	"github.com/gregbugaj/modelfabric/internal/mesh"
 )
 
@@ -66,6 +67,11 @@ type Router struct {
 	// OnRoute, if set, receives one event per routed request. It carries
 	// routing metadata only, never request or response content.
 	OnRoute func(Event)
+
+	// Dev, if set, is the node's developer log: a request's arrival, where
+	// it was sent and why, and how it ended, as they happen. nil records
+	// nothing.
+	Dev *devlog.Log
 
 	// JIT, if set, is asked to load a model no node is serving, and returns
 	// once it is routable. attempted is false when JIT does not apply (off,
@@ -183,6 +189,21 @@ type Event struct {
 	RespBody string `json:"resp_body,omitempty"`
 	// Truncated distinguishes capped payloads from malformed complete JSON.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// What the engine said the request used, zero where it did not say.
+	// CachedTokens is the part of PromptTokens served from cache.
+	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64 `json:"completion_tokens,omitempty"`
+	CachedTokens     int64 `json:"cached_tokens,omitempty"`
+	// FirstOutputMillis is how long a streamed request took to produce its
+	// first generated output, measured here. Zero for a request that did not
+	// stream: nothing is seen of those until the whole answer arrives.
+	FirstOutputMillis int64 `json:"first_output_ms,omitempty"`
+	// TokensPerSec is the engine's own generation rate.
+	TokensPerSec float64 `json:"tokens_per_sec,omitempty"`
+	// Drafted and DraftAccepted count speculative decoding's tokens.
+	Drafted       int64 `json:"drafted,omitempty"`
+	DraftAccepted int64 `json:"draft_accepted,omitempty"`
 }
 
 // BodyLog holds the body-capture settings a Router was given. The zero value
@@ -323,6 +344,7 @@ func (r *Router) emit(e Event) {
 	if r.OnRoute != nil {
 		r.OnRoute(e)
 	}
+	r.devFinished(e)
 }
 
 func (r *Router) bodyLog() BodyLog {
@@ -474,6 +496,7 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 	}
 
 	forwarded := req.Header.Get(HopHeader) != ""
+	r.devReceived(trace, path, probe.Model, body, len(probe.Messages), probe.Stream, forwarded)
 	candidates := r.m.Candidates(probe.Model, forwarded)
 	if len(candidates) == 0 {
 		var handled bool
@@ -609,6 +632,7 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 		if i == 0 {
 			r.queue.Sent(grant)
 		}
+		r.devSent(trace, probe.Model, c, choice, i, queuedFor)
 		out, err := r.dispatch(w, req, c, body, path, attempt.Prefilled)
 		release()
 		if err == nil && out.status < 400 {
@@ -627,7 +651,11 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 			e := Event{Time: start, Path: path, Model: probe.Model, Node: node, Engine: engine,
 				Local: c.Local, Status: out.status, Millis: time.Since(start).Milliseconds(),
 				BytesOut: out.bytes, Affine: affineTo == c.Name, Trace: trace,
-				QueuedMillis: queuedFor.Milliseconds()}
+				QueuedMillis: queuedFor.Milliseconds(),
+				PromptTokens: out.usage.prompt, CompletionTokens: out.usage.completion,
+				CachedTokens: out.usage.cached, FirstOutputMillis: out.firstOutput.Milliseconds(),
+				TokensPerSec: out.usage.tokensPerSec,
+				Drafted:      out.usage.drafted, DraftAccepted: out.usage.draftAccepted}
 			// The request body is already in memory (Forward read it to find
 			// the model), so capturing it costs nothing extra.
 			if bl := r.bodyLog(); bl.Enabled {
@@ -647,6 +675,9 @@ func (r *Router) Forward(w http.ResponseWriter, req *http.Request, path string) 
 		}
 		r.log.Warn("candidate failed, trying next",
 			"model", probe.Model, "target", c.Name, "attempt", i+1, "err", err)
+		r.Dev.Add(devlog.Entry{Level: devlog.Warn, Source: devlog.Router, Trace: trace, Model: probe.Model,
+			Engine: candidateName(c), Msg: fmt.Sprintf("%s failed before answering: %v", candidateName(c), err),
+			Fields: map[string]any{"attempt": i + 1, "candidates": len(candidates)}})
 	}
 	r.emit(Event{Time: start, Path: path, Model: probe.Model, Trace: trace, Status: http.StatusBadGateway,
 		Millis: time.Since(start).Milliseconds(), Error: fmt.Sprint(lastErr)})
@@ -670,6 +701,9 @@ type result struct {
 	// the candidate; for a peer it is what that peer reported, since only it
 	// knows which of its engines took the request.
 	node, engine string
+	// firstOutput is how long a streamed response took to carry its first
+	// generated output, zero when it did not stream or produced none.
+	firstOutput time.Duration
 }
 
 func (r *Router) dispatch(w http.ResponseWriter, req *http.Request, c mesh.Candidate, body []byte, path string, prefilled func()) (result, error) {
@@ -795,15 +829,19 @@ func (r *Router) dispatchRaw(w http.ResponseWriter, req *http.Request, c mesh.Ca
 	// The end of the response, kept for its usage block (see readUsage).
 	var tail []byte
 	var stream prefillStream
+	generating := false // the stream has carried generated output
 	isStream := strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") && resp.StatusCode < 400
 	defer func() { res.usage = readUsage(tail) }()
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			tail = keepTail(tail, buf[:n])
-			if isStream && prefilled != nil && stream.Add(buf[:n]) {
-				prefilled()
-				prefilled = nil
+			if isStream && !generating && stream.Add(buf[:n]) {
+				generating = true
+				res.firstOutput = time.Since(start)
+				if prefilled != nil {
+					prefilled()
+				}
 			}
 			progress()
 			// A client that stops reading can block Write while the read watchdog
@@ -855,10 +893,22 @@ var clientCredentials = map[string]bool{
 	"authorization": true, "cookie": true, "x-api-key": true, "api-key": true,
 }
 
+// browserHeader reports whether a header says which web page a request came
+// from. This node has already judged the page (the front door refuses a
+// cross-site request before it is routed). To the next hop this node's own
+// dashboard is a foreign origin, so sent on, the header turned a request the
+// dashboard was allowed to make into one a peer refused: a request sent from
+// the Serving page came back "403 cross-site request refused" whenever the
+// router chose another node (2026-10-08). The management proxy already
+// dropped them (server.dropBrowserHeaders); inference did not.
+func browserHeader(lower string) bool {
+	return lower == "origin" || lower == "referer" || strings.HasPrefix(lower, "sec-fetch-")
+}
+
 func copyRequestHeaders(dst, src http.Header) {
 	for k, vs := range src {
 		lk := strings.ToLower(k)
-		if hopByHop[lk] || lk == "host" || clientCredentials[lk] {
+		if hopByHop[lk] || lk == "host" || clientCredentials[lk] || browserHeader(lk) {
 			continue
 		}
 		for _, v := range vs {

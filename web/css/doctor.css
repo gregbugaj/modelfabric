@@ -1,9 +1,8 @@
 .dr-row {
   display: grid; grid-template-columns: 18px 190px minmax(0, 1fr);
   gap: 10px; align-items: baseline;
-  padding: 6px 18px; font-size: 13px; border-bottom: 1px solid var(--border-soft);
+  padding: 4px 18px; font-size: 13px;
 }
-.dr-row:last-child { border-bottom: none; }
 .dr-mark { text-align: center; font-weight: 700; color: var(--text-muted); }
 .dr-ok .dr-mark { color: hsl(var(--success-text)); }
 .dr-warn .dr-mark { color: hsl(var(--warning-text)); }

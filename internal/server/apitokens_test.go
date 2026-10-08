@@ -209,3 +209,44 @@ func TestChatEndpointIsInferenceNotManagement(t *testing.T) {
 		})
 	}
 }
+
+// Reveal shows the node key where `mfsh key` would print it, and nowhere else.
+func TestRevealingTheNodeKey(t *testing.T) {
+	f := newFrontFixture(t, false, true)
+	home := t.TempDir()
+	f.srv.SetAuth(func() (string, error) { return nodekey.Key(home) }, true)
+	f.srv.SetKeyHome(home)
+	want, err := nodekey.Key(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		handler http.Handler
+		method  string
+		status  int
+		shown   bool
+	}{
+		{"on the node's own management address", f.srv.Handler(), http.MethodPost, 200, true},
+		{"a GET is not how a secret is asked for", f.srv.Handler(), http.MethodGet, 405, false},
+		// Over the tailnet it is refused before anyone's identity is looked
+		// at: the owner's other devices included.
+		{"over the mesh, from any device", f.srv.PeerHandler(), http.MethodPost, 403, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(c.method, "/api/v1/key/reveal", nil)
+			req.RemoteAddr = "100.64.0.9:40000"
+			c.handler.ServeHTTP(rec, req)
+			if rec.Code != c.status {
+				t.Fatalf("status %d, want %d: %s", rec.Code, c.status, rec.Body)
+			}
+			if got := strings.Contains(rec.Body.String(), want); got != c.shown {
+				t.Errorf("key in the answer: %v, want %v", got, c.shown)
+			}
+			if c.shown && rec.Header().Get("Cache-Control") != "no-store" {
+				t.Error("an answer holding the key must not be cached")
+			}
+		})
+	}
+}

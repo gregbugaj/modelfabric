@@ -101,3 +101,82 @@ tr.act-row { cursor: pointer; }
 /* Toggle thinking without rebuilding the DOM during token streaming. */
 .tok-stream.hide-thinking .tok-kind.thinking,
 .tok-stream.hide-thinking .tok-text.thinking { display: none; }
+
+/* Developer log: a dock under every page. Closed it is one bar; open, a
+   panel with the log filling what is left under its controls. A log, so it
+   is monospace and dense, and colour marks only what needs attention
+   (warnings, errors) and which lines are the engine's own. */
+.dev-dock {
+  position: fixed; left: 220px; right: 0; bottom: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--surface); border-top: 1px solid var(--border-strong);
+}
+/* The page keeps room for the dock, so nothing sits behind it. */
+.content { padding-bottom: calc(var(--dev-dock-h, 34px) + 24px); }
+/* A fly-out panel is the full height of the window; it stops at the dock. */
+.side-panel:not(.pinned) { height: calc(100vh - var(--dev-dock-h, 34px)); }
+.side-panel.pinned { max-height: calc(100vh - 32px - var(--dev-dock-h, 34px)); }
+.dev-dock-grip { height: 5px; margin-top: -3px; cursor: row-resize; flex: none; }
+.dev-dock:not(.open) .dev-dock-grip { cursor: default; }
+.dev-dock-grip:hover, body.dock-resizing .dev-dock-grip { background: var(--primary); }
+body.dock-resizing { user-select: none; cursor: row-resize; }
+.dev-dock-bar { display: flex; align-items: center; gap: 10px 14px; padding: 0 12px; min-height: 31px; flex: none; }
+.dev-dock-toggle {
+  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text);
+  background: none; border: 0; padding: 4px 4px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.dev-dock-toggle:hover { color: var(--primary); }
+.dev-dock-caret { display: inline-block; transition: transform 0.12s ease; font-size: 11px; }
+.dev-dock.open .dev-dock-caret { transform: rotate(90deg); }
+/* Closed: only the name. Open: the controls beside it. */
+.dev-dock:not(.open) .dev-dock-bar > :not(.dev-dock-toggle) { display: none; }
+.dev-dock:not(.open) .dev-dock-body { display: none; }
+.dev-dock-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.dev-dock-bar select, .dev-dock-bar input[type="search"] { font: inherit; font-size: 12.5px; padding: 2px 6px; margin-left: 4px; }
+#dev-filter { flex: 1 1 220px; max-width: 360px; }
+#dev-capture { gap: 10px 14px; flex-wrap: wrap; align-items: center; padding: 2px 14px 5px; flex: none; }
+#dev-capture.on #dev-bodies-note { color: hsl(var(--warning-token)); font-weight: 600; }
+#dev-status.bad { color: hsl(var(--error-text)); margin-left: auto; }
+#dev-live::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: hsl(var(--text-muted)); display: inline-block;
+}
+#dev-live.on::before { background: hsl(var(--success-token)); }
+#dev-live::after { content: "live"; font-size: 12.5px; color: var(--text-2); margin-left: 5px; }
+#dev-dock-max { padding: 1px 7px; }
+#dev-empty { padding: 10px 14px; text-align: left; }
+
+.dev-log {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.dev-line { display: flex; gap: 10px; align-items: baseline; padding: 1px 12px; }
+.dev-row.has-more > .dev-line { cursor: pointer; }
+.dev-row.has-more > .dev-line:hover { background: hsl(var(--surface-inset)); }
+.dev-time { color: var(--text-muted); flex: none; }
+.dev-level { flex: none; width: 3.4em; text-transform: uppercase; font-size: 11px; font-weight: 600; color: var(--text-2); }
+.dev-level.lvl-warn { color: hsl(var(--warning-text)); }
+.dev-level.lvl-error { color: hsl(var(--error-text)); }
+.dev-level.lvl-debug { color: var(--text-muted); font-weight: 400; }
+.dev-node, .dev-model, .dev-from { flex: none; color: var(--text-2); }
+.dev-node { font-weight: 600; }
+.dev-from { color: var(--text-muted); }
+.dev-trace {
+  flex: none; font: inherit; font-size: 11.5px; padding: 0 5px; cursor: pointer;
+  color: var(--text-2); background: none; border: 1px solid var(--border-soft); border-radius: var(--r-sm);
+}
+.dev-trace:hover { border-color: var(--primary); color: var(--primary); }
+.dev-msg { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.dev-row.lvl-debug .dev-msg { color: var(--text-muted); }
+.dev-row.lvl-warn .dev-msg { color: hsl(var(--warning-text)); }
+.dev-row.lvl-error .dev-msg { color: hsl(var(--error-text)); }
+.dev-more { padding: 2px 12px 6px 34px; }
+.dev-fields { color: var(--text-2); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dev-more pre.act-body { max-height: 420px; }
+#act-live[hidden] { display: none; }

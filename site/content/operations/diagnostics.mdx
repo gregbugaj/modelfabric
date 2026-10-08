@@ -99,7 +99,8 @@ mfsh status              # who's in the mesh and what they're serving
 mfsh models              # every model in the mesh, and who holds it
 mfsh ps                  # what's resident here, with instance ids and TTL countdowns
 mfsh ops                 # recent operations, from the durable journal
-mfsh log                 # routed requests as they happen (bodies only while capture is on)
+mfsh log                 # one line per finished request (bodies only while capture is on)
+mfsh log -dev -node all  # each request as it happens, on every node: where it went and why
 mfsh log engine          # an engine's own output: load times, VRAM, warnings
 mfsh runtime survey      # hardware, and which runtimes can use it — and why not
 mfsh llmd status         # profile, engines, room filter, measured peak prefill

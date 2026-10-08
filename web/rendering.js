@@ -1,9 +1,10 @@
+import { openTry } from "./try.js";
 import { preferCell } from "./actions.js";
 import { $ } from "./core.js";
 import { platformTag } from "./discover.js";
 import { formatTokens, kvMeter, shareBar } from "./mesh.js";
 import { capBadges, kv } from "./my-models.js";
-import { buildFront, buildView, gib, platformBadge, relativeTime, waitedText } from "./ui-model.js";
+import { buildFront, buildView, engineKind, gib, gpuLabel, gpuMemoryText, platformBadge, relativeTime, waitedText } from "./ui-model.js";
 import { nodesServing } from "./workload-presets.js";
 
 export function el(tag, className, text) {
@@ -53,6 +54,18 @@ export function chips(values, emptyText = "none") {
   }
   for (const v of values) frag.append(el("span", "chip", v));
   return frag;
+}
+
+// engineWhere explains an engine's GPU label on hover: what it was asked
+// for, and what the cards say it holds.
+function engineWhere(e, kind) {
+  const held = gpuMemoryText(e.gpuMemory);
+  const asked = gpuLabel(e.gpu)
+    ? `Loaded to run only on ${gpuLabel(e.gpu)} of ${e.node}.`
+    : (e.gpuMemory ?? []).length > 1
+      ? `Loaded with no GPU chosen, so the model is split across ${e.node}'s cards. It runs at the pace of the slower one. To put it on one card, set GPU in the model's Load settings.`
+      : `Loaded with no GPU chosen; it runs on ${kind}.`;
+  return held ? `${asked} Holding ${held}.` : asked;
 }
 
 export function fillTable(bodyId, emptyId, rows, emptyMessage, buildRow) {
@@ -207,7 +220,7 @@ export function render(view, local) {
     (m) => {
       const tr = el("tr");
       const served = el("td");
-      served.append(chips(m.nodes));
+      served.append(chips(m.servedBy ?? m.nodes));
       tr.append(el("td", "mono", m.id), el("td", "num", String(m.replicas)), served);
       return tr;
     });
@@ -218,9 +231,18 @@ export function render(view, local) {
     () => [el("span", null, "No engines are running anywhere in the mesh.")],
     (e) => {
       const tr = el("tr");
+      // One row per engine, so the row has to say which: a node can run
+      // several, on different GPUs or one on a GPU and one on the CPU.
       const node = el("td");
       node.append(el("span", null, e.node));
       if (e.isSelf) node.append(el("span", "self-tag", "this node"));
+      const kind = engineKind(e.runtime, e.gpu, e.gpuMemory);
+      if (kind) {
+        const k = el("span", "chip", kind);
+        k.title = engineWhere(e, kind);
+        node.append(k);
+      }
+      node.append(el("span", "mono small muted work-model", e.model || ""));
       const share = totalPrefilled ? (e.promptTokens || 0) / totalPrefilled : 0;
       const shareCell = el("td");
       shareCell.append(shareBar(share));
@@ -247,7 +269,9 @@ export function render(view, local) {
         el("span", null, `${c.running} running`),
         el("span", c.waiting ? "waiting" : null, `${c.waiting} waiting on engines`),
         ...(c.held ? [el("span", "waiting", `${c.held} held at the router`)] : []),
-        el("span", null, `${c.free} of ${plural(c.slots, "slot")} free`));
+        el("span", null, `${c.free} of ${plural(c.slots, "slot")} free`),
+        ...(c.outputNow === null ? [] : [el("span", null,
+          `writing ${Math.round(c.outputNow).toLocaleString()} tok/s now${c.outputUnknown ? ` (${plural(c.outputUnknown, "engine")} not reporting)` : ""}`)]));
       cap.title = c.waitingBesideFree
         ? "Requests are queued on one engine while another has a slot free. A request already queued inside an engine cannot be moved."
         : "";
@@ -283,12 +307,11 @@ export function render(view, local) {
       const kv = el("td");
       kv.append(kvMeter(e.kvUsage));
       const running = el("td", "num", e.slots ? `${e.running} / ${e.slots}` : String(e.running));
-      running.title = e.slots ? `${e.running} of ${plural(e.slots, "slot")} busy` : "This engine does not report how many slots it has.";
+      running.title = e.slots ? `${e.running} of ${plural(e.slots, "slot")} busy, ${e.free ?? e.slots - e.running} free` : "This engine does not report how many slots it has.";
       const waiting = el("td", "num" + (e.waiting ? " waiting" : ""), e.waiting === null ? "—" : String(e.waiting));
       waiting.title = e.waiting === null
         ? "Unknown: this engine does not report how many slots it has."
         : e.waiting ? `${plural(e.waiting, "request")} queued for a slot on this engine.` : "";
-      const free = el("td", "num", e.free === null ? "—" : String(e.free));
       // Prefer the node's rolling average, which covers time before the page
       // opened. Use browser samples for peers that do not report one.
       const served = typeof e.loadAvg === "number" && e.loadAvg >= 0 ? e.loadAvg : null;
@@ -310,12 +333,22 @@ export function render(view, local) {
       decode.title = e.decodeTokS
         ? "Measured generated tokens per second: writing the answer. This is what speculative decoding changes."
         : "Not yet measured: this engine has not generated enough tokens.";
+      const now = el("td", "num", e.outputNow === null ? "—" : Math.round(e.outputNow).toLocaleString());
+      now.title = e.outputNow === null
+        ? "Unknown: this node runs a build that does not report it, or the engine's log does not say."
+        : `Tokens per second this engine is writing right now, all ${plural(e.slots || 1, "slot")} together, over the last three seconds. Decode is the speed of one answer; this is what the machine is producing.`;
       const drafts = el("td", "num", e.specAccepted >= 0 ? `${Math.round(e.specAccepted * 100)}%` : "—");
       drafts.title = e.specAccepted >= 0
         ? "Share of speculatively drafted tokens the model kept. Rejected drafts cost time, so this is whether speculation is paying."
         : "This engine is not speculating, or has not drafted yet.";
       const model = el("td", "mono");
-      model.append(el("span", null, e.model || "—"));
+      // The model's name opens the command that calls it, and a button to
+      // send it: the quickest check that this engine is answering.
+      const name = el("button", "link-btn", e.model || "—");
+      name.type = "button";
+      name.title = "Show the curl command that calls this model, and try it";
+      name.addEventListener("click", () => openTry(e));
+      model.append(name);
       // Vision support and slots describe the launched process, not the model file.
       if (e.vision) {
         const v = capBadges(["vision"]);
@@ -323,6 +356,12 @@ export function render(view, local) {
           ? "Serving images with one slot — what llama.cpp needs to process an image reliably."
           : `Serving images with ${e.slots} slots. One is the default: llama.cpp can fail an image request with "failed to process mtmd chunk" when slots are shared.`;
         model.append(v);
+      }
+      const kind = engineKind(e.runtime, e.gpu, e.gpuMemory);
+      if (kind) {
+        const g = el("span", "chip", kind);
+        g.title = engineWhere(e, kind);
+        model.append(g);
       }
       const ram = el("td", "num");
       if (e.cacheRamMib === null) {
@@ -339,7 +378,7 @@ export function render(view, local) {
       mem.title = e.hostMemTotalMb === null
         ? "This node did not report its memory."
         : `${gib(e.hostMemAvailableMb)} free of ${gib(e.hostMemTotalMb)} on ${e.node}.`;
-      tr.append(node, model, status, running, waiting, free, load, prefill, decode, drafts, kv, ram, mem,
+      tr.append(node, model, status, running, waiting, load, prefill, decode, now, drafts, kv, ram, mem,
         el("td", "mono small muted", e.address || "—"), el("td", "small muted", e.runtime || "—"));
       return tr;
     });

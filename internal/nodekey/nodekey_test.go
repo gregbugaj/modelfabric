@@ -121,3 +121,22 @@ func TestRotateRetiresTheOldKey(t *testing.T) {
 		})
 	}
 }
+
+func TestPrefixOfShowsTheKindOfKeyAndNothingOfTheKey(t *testing.T) {
+	for _, c := range []struct{ name, key, want string }{
+		{"a key this build makes", "sk-mfsh-0123456789abcdef0123456789abcdef", "sk-mfsh-"},
+		// A node keeps the key it had before the project was renamed, and its
+		// mask has to say so (2026-10-08).
+		{"a key from before the rename", "sk-llmz-0123456789abcdef0123456789abcdef", "sk-llmz-"},
+		{"a key someone wrote into the file by hand", "hunter2hunter2hunter2", ""},
+		{"dashes inside the secret are not a prefix", "sk-mfsh-0123-4567-89ab-cdef-0123456789ab", ""},
+		{"too little after the dash to call the rest a secret", "sk-mfsh-abc", ""},
+		{"empty", "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := PrefixOf(c.key); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}

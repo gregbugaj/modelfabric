@@ -45,6 +45,12 @@ This is also where you set the [node preference](/docs/routing/preferred-node): 
 Public Front Door, Require Authentication, CORS, API tokens and on-demand loading. See
 [Server settings](/docs/operations/server-settings).
 
+**Connect an app**, next to it, writes a coding agent's configuration for this mesh. It asks where
+the app will run (on this machine, on another machine on your tailnet, or outside through an
+entrypoint), because that decides the address and whether a key is needed, and then shows the file
+to save with every served model and its context length. OpenCode is the first app it covers. See
+[Connect your apps](/docs/getting-started/connect-apps#opencode).
+
 <Shot
   src="/img/dash-overview.png"
   alt="The dashboard's Overview page: the address apps connect to in large monospace with a Copy button and a Server settings button, the front door and how many engines it reaches, and a Nodes table listing four machines with their platform, tailnet address, whether their engines are on the tailnet, status, in-flight count, models held and a Prefer button."
@@ -56,6 +62,22 @@ Public Front Door, Require Authentication, CORS, API tokens and on-demand loadin
 What's running right now: every model in the mesh with its replicas and where each one is routed,
 and below that every engine process across every node, with in-flight count, KV-cache use, address
 and runtime.
+
+Three columns give an engine's speed, in tokens per second:
+
+| Column | What it is |
+|---|---|
+| **Prefill** | reading a prompt, for one request, averaged since the engine started |
+| **Decode** | writing an answer, for one request, averaged since the engine started |
+| **Output now** | what the engine is writing right now, all its slots together, over the last three seconds |
+
+Decode is how fast one answer arrives. Output now is what the machine is producing. They differ by
+the number of busy slots: an engine with four slots writing at 22 tokens per second each shows 22
+under Decode and about 88 under Output now. The panel's header adds Output now across the mesh.
+
+Output now is read from the engine's own log, so it shows a dash for an engine that does not write
+those lines, and for a node running a build from before the column existed. The header says how
+many engines are left out of its total.
 
 <Shot
   src="/img/dash-models.png"
@@ -121,7 +143,8 @@ scheduler restarts. An **Advanced settings** link in the dialog brings you back 
 ### Activity
 
 What the mesh did, and what this node is doing right now: the dashboard's version of `mfsh log`
-and `mfsh ops`. Three tabs: **Requests**, **Live replies** and **Operations**.
+and `mfsh ops`. Three tabs: **Requests**, **Live replies** and **Operations**. The
+[developer log](#developer-log) is docked under every page, this one included.
 
 **Requests** has two scopes, because each node keeps its own log in its own memory. **This node**
 (the machine whose dashboard you have open) streams live over SSE. **Whole mesh** adds a **Front
@@ -172,6 +195,53 @@ either end. Unlike Requests it has no mesh scope: the tap sits on this node's ow
 watching another machine would mean shipping its reply text across the tailnet. To watch a
 different node, open *its* dashboard. The endpoint behind this is not in the peer allowlist, so a
 peer's request for it is rejected the same way management requests are.
+
+### Developer log
+
+A bar along the bottom of every page. Click it, or press <kbd>Ctrl</kbd>+<kbd>`</kbd>, and it opens
+into a panel that stays where it is as you move between pages, so you can load a model on My Models
+or watch Serving and see what your requests are doing underneath. Drag its top edge to resize it,
+or use the button at its right end to fill the window. It remembers whether it was open and how
+tall.
+
+It shows each request as it happens, where Requests shows it once it has ended. In the terminal it is
+[`mfsh log -dev -node all`](/docs/reference/cli#which-log). A request is several lines, tied together by a short request
+id:
+
+```text
+14:02:11.204  INFO   qwen/qwen3.8-27b  a1b2c3  request received: POST /v1/chat/completions, 12 messages, 84.2 KB, streaming
+14:02:11.205  INFO   qwen/qwen3.8-27b  a1b2c3  sent to minion: it holds 94% of this prompt
+14:02:11.310  INFO   qwen/qwen3.8-27b  engine  slot 2: chosen because it holds 94% of this prompt
+14:02:12.900  INFO   qwen/qwen3.8-27b  engine  slot 2: prompt processing 71% (1420 tokens read)
+14:02:13.402  INFO   qwen/qwen3.8-27b  engine  slot 2: read 2004 prompt tokens in 2.1 s (954 tok/s)
+14:02:21.870  INFO   qwen/qwen3.8-27b  a1b2c3  finished: 200 in 10.67 s; 23868 prompt tokens, 21864 from cache (91%); 365 generated at 43.2 tok/s
+```
+
+The **sent to** line gives the reason the engine was chosen: it holds the conversation, or no
+engine does, or the engine that holds it is full. That is the line to read when a request went
+somewhere you did not expect.
+
+Lines marked `engine` are read from the engine's own log on the machine running it: which slot
+the request took, how far prompt processing has got, how fast it read and generated, and a warning
+each time a conversation is dropped from the [RAM cache](/docs/routing/replicas#give-the-ram-cache-room).
+An engine names a slot and not a request, so these lines carry no request id. They fall between a
+request's *sent to* and *finished* lines by time.
+
+The controls:
+
+- **Node** follows one machine's log, or **Every node, merged**. Each node keeps its own. The
+  node an app called logs the request and where it sent it; the node that ran the model logs the
+  engine's lines. Merged, you see both.
+- **Detail** is **Requests** by default. **Everything, with engine lines** adds each line the
+  engines write, unchanged, and the router's failed attempts.
+- **Filter** narrows to lines containing every word you type. Clicking a request id filters to
+  that request.
+- Click a line to see the figures behind it, and the request or response body if one was
+  captured.
+
+Bodies follow the same switch as Requests. With capture off the log holds sizes, counts and
+timings, and nothing a request or an answer says. The node keeps the last 4,000 lines in memory
+and writes none of it to disk.
 
 **Which nodes show it** depends on what is dialling the engine:
 

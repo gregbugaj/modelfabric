@@ -2,10 +2,10 @@ import { showNotice } from "./actions.js";
 import { $ } from "./core.js";
 import { icon } from "./discover.js";
 import { fetchJSON, kv, mm, nodeAPI, readSidePref, selfNode, startSideResize, writeSidePref } from "./my-models.js";
-import { el, render } from "./rendering.js";
+import { el, meshView, render } from "./rendering.js";
 import { meta } from "./routing.js";
 import { available, operations } from "./runtime.js";
-import { formatBytes, relativeTime } from "./ui-model.js";
+import { aliveNodes, formatBytes, relativeTime } from "./ui-model.js";
 
 // The stream owns this in-memory history; a reload starts it over.
 // Cap it to bound memory in long-lived tabs.
@@ -46,7 +46,8 @@ function activityRows() {
 // Fetch prompt bodies only when their request is opened.
 export async function refreshPeerTraffic() {
   if (actScope !== "mesh") return;
-  const peers = [...mm.nodes.keys()].filter((n) => n && n !== selfNode);
+  // From the mesh view, not the My Models cache: see aliveNodes.
+  const peers = aliveNodes(meshView).filter((n) => n !== selfNode);
   await Promise.all(peers.map(async (node) => {
     try {
       const r = await fetchJSON(nodeAPI(node, `/api/v1/traffic/recent?limit=${TRAFFIC_MAX}`));
@@ -145,7 +146,7 @@ function renderPeerCapture() {
   strip.hidden = actScope !== "mesh";
   strip.replaceChildren();
   if (actScope !== "mesh") return;
-  const peers = [...mm.nodes.keys()].filter((n) => n && n !== selfNode).sort();
+  const peers = aliveNodes(meshView).filter((n) => n !== selfNode);
   if (!peers.length) return;
   strip.append(el("span", "hint", "Capture on other nodes"));
   for (const node of peers) {
@@ -179,6 +180,14 @@ export function startTrafficStream() {
   });
   trafficSource.addEventListener("open", () => { $("act-live").classList.add("on"); });
   trafficSource.addEventListener("error", () => { $("act-live").classList.remove("on"); });
+}
+
+// stopTrafficStream closes the Requests stream. It held a connection from the
+// first visit to Activity until the page was closed, on every tab open.
+export function stopTrafficStream() {
+  trafficSource?.close();
+  trafficSource = null;
+  $("act-live")?.classList.remove("on");
 }
 
 function pretty(text) {

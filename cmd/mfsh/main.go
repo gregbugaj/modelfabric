@@ -68,8 +68,10 @@ Mesh
   mfsh chat [model]            talk to the mesh from here; every reply says which node answered
   mfsh bench [-model M]        the standard benchmark: 1K-32K prompts, 1-8 at once  [-node N | -fleet] [-quick]
   mfsh tune [model]            measure how many slots this machine should run
-  mfsh log                     stream routed requests (bodies only while capture is on)
-  mfsh log engine [instance]   show an engine's own output  [-f -n N]
+  mfsh log                     one line per finished request (bodies only while capture is on)
+  mfsh log -dev                the developer log: each request as it arrives, where it goes and why  [-node all | NAME] [-debug]
+  mfsh log -engines            every engine in the mesh: rates, slots, cache
+  mfsh log engine [instance]   one engine's own output, on this machine  [-f -n N]
   mfsh endpoints               mesh model servers in llm-d file-discovery format
   mfsh prefer [node]           prefer a node when several hold the same model
   mfsh llmd init               write EPP + Envoy configs to put llm-d in front

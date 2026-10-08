@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/gregbugaj/modelfabric/internal/devlog"
 	"log/slog"
 	"net"
 	"os"
@@ -181,6 +182,14 @@ type Supervisor struct {
 	runtimeErr string
 
 	stop chan struct{} // closed by Shutdown; ends the idle reaper
+
+	// survey reads this machine's hardware. runtime.Survey, except in tests.
+	survey func(context.Context) runtime.Hardware
+
+	// dev is the node's developer log, nil until SetDevLog. See devtail.go.
+	dev *devlog.Log
+	// live is what each engine is writing per second right now, read from its log.
+	live liveGen
 }
 
 func (s *Supervisor) SetRuntimeError(err error) {
@@ -271,6 +280,7 @@ func New(cfg Config, rts *runtime.Registry, lch *process.Launcher, j *ops.Journa
 		generation: map[string]int{},
 		reserved:   map[int]bool{},
 		stop:       make(chan struct{}),
+		survey:     runtime.Survey,
 	}
 	s.Rescan()
 	if m != nil {
@@ -511,6 +521,16 @@ func (s *Supervisor) Load(req LoadRequest) (*ops.Operation, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	// A GPU that is not there would otherwise surface as an engine that
+	// starts and offloads nothing, or does not start, a minute later.
+	if settings.GPU != nil && *settings.GPU != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		err := runtime.CheckGPUs(def, *settings.GPU, s.survey(ctx))
+		cancel()
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	// llama-server refuses slot save and restore once a projector is loaded,
 	// so a vision instance is left out rather than given a cache that would
 	// fail on first use.
@@ -549,6 +569,7 @@ func (s *Supervisor) runLoad(opID string, def *runtime.Definition, model catalog
 
 	fail := func(err error) {
 		s.log.Error("load failed", "model", model.Key, "err", err)
+		s.said(devlog.Error, model.Key, "", "load failed: "+err.Error(), nil)
 		s.journal.Fail(opID, err)
 	}
 
@@ -597,8 +618,19 @@ func (s *Supervisor) runLoad(opID string, def *runtime.Definition, model catalog
 
 	s.journal.Progress(opID, "starting engine")
 	s.log.Info("loading model", "model", model.Key, "port", port, "generation", generation)
+	loadStarted := time.Now()
+	s.said(devlog.Info, model.Key, instanceID, "loading model", map[string]any{"runtime": def.Name, "port": port})
 
+	// What is being read in: the model, and its projector when it is loaded
+	// to see images.
+	weights := model.SizeBytes
+	if applied.Vision {
+		weights += fileSize(model.Projector)
+	}
+	loaded := make(chan struct{})
+	go s.reportLoad(opID, spec.DeploymentID, weights, loaded)
 	handle, err := s.lch.Start(ctx, spec, instanceID)
+	close(loaded)
 	if err != nil {
 		fail(err)
 		return
@@ -657,6 +689,9 @@ func (s *Supervisor) runLoad(opID string, def *runtime.Definition, model catalog
 	s.attachSlots(inst)
 
 	s.log.Info("model ready", "model", model.Key, "instance", instanceID, "pid", handle.PID)
+	took := time.Since(loadStarted).Round(100 * time.Millisecond)
+	s.said(devlog.Info, model.Key, instanceID, fmt.Sprintf("model ready in %s", took),
+		map[string]any{"ms": took.Milliseconds(), "pid": handle.PID})
 	s.journal.Succeed(opID, instanceID)
 	go s.watch(inst)
 }
@@ -705,6 +740,8 @@ func (s *Supervisor) watch(inst *Instance) {
 	}
 	s.log.Error("engine exited unexpectedly; instance withdrawn",
 		"model", inst.Model, "instance", inst.ID, "pid", inst.PID, "exit", how, "log", inst.LogPath, "hint", hint)
+	s.said(devlog.Error, inst.Model, inst.ID, fmt.Sprintf("engine exited unexpectedly (%s); %s", how, hint),
+		map[string]any{"exit": how, "log": inst.LogPath})
 }
 
 // retainStuck puts an instance back after its engine refused to stop.
@@ -812,6 +849,7 @@ func (s *Supervisor) unload(instanceID string, drain time.Duration) (*ops.Operat
 		return settled, err
 	}
 	s.log.Info("model unloaded", "model", inst.Model, "instance", instanceID)
+	s.said(devlog.Info, inst.Model, instanceID, "model unloaded", nil)
 	s.journal.Succeed(op.ID, instanceID)
 	settled, _ := s.journal.Get(op.ID)
 	return settled, nil
@@ -871,6 +909,11 @@ func (s *Supervisor) instanceStates() []mesh.InstanceState {
 		})
 		st := &out[len(out)-1]
 		st.CacheRAMMiB = i.Config.CacheRAMMiB
+		st.GPU = i.Config.GPU
+		st.GPUMemory = s.memory.gpu(i.PID)
+		if v, ok := s.live.rate(i.ID, time.Now()); ok {
+			st.OutputNowTokS = &v
+		}
 		st.CacheDropped, st.MemoryMB = s.memory.read(i.ID, i.LogPath, i.PID)
 	}
 	return out

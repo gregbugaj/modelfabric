@@ -43,15 +43,23 @@ export async function renderTokens(body, justCreated = null) {
   if (justCreated) {
     const box = el("div", "tk-secret");
     // A token's secret is not kept; the node key is, in the node's key file.
-    box.append(el("div", "tk-secret-head", justCreated.nodeKey
-      ? "The new node key. Give it to the apps that used the old one; mfsh key on this node prints it again."
-      : `Copy "${justCreated.name}" now. It is not stored and cannot be shown again.`));
+    box.append(el("div", "tk-secret-head", justCreated.revealed
+      ? "This node's key. Anyone holding it can use this node, so show it only where nobody else is looking."
+      : justCreated.nodeKey
+        ? "The new node key. Give it to the apps that used the old one; mfsh key on this node prints it again."
+        : `Copy "${justCreated.name}" now. It is not stored and cannot be shown again.`));
     const row = el("div", "tk-secret-row");
     const code = el("code", null, justCreated.token);
     const copy = el("button", "btn sm", "Copy");
     copy.type = "button";
     copy.addEventListener("click", () => copySecret(code));
     row.append(code, copy);
+    if (justCreated.revealed) {
+      const hide = el("button", "btn sm", "Hide");
+      hide.type = "button";
+      hide.addEventListener("click", () => renderTokens(body));
+      row.append(hide);
+    }
     box.append(row);
     body.append(box);
   }
@@ -93,9 +101,23 @@ function tokenRow(row, body) {
     meta.append("printed by ", el("code", null, "mfsh key"), " · rotated, not revoked: a node always has one");
   } else {
     meta.append(`created ${row.created} · last used ${row.lastUsed}`);
+    r.title = "A named token is shown once, when it is created, and only a fingerprint of it is kept. To get one you can read, create a new token and revoke this one.";
   }
   r.append(main, meta);
   if (row.builtin && row.rotatable) {
+    // The node key is kept on this node, so it can be shown again here.
+    const show = el("button", "btn sm", "Reveal");
+    show.type = "button";
+    show.title = "Show this node's key, as mfsh key prints it";
+    show.addEventListener("click", async () => {
+      try {
+        const k = await post("/api/v1/key/reveal", {});
+        await renderTokens(body, { name: "Node key", token: k.key, nodeKey: true, revealed: true });
+      } catch (e) {
+        showNotice(e.message, "error");
+      }
+    });
+    main.append(show);
     const b = el("button", "btn sm danger", "Rotate");
     b.type = "button";
     b.addEventListener("click", async () => {

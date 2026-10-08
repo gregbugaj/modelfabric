@@ -372,9 +372,17 @@ func TestReadUsage(t *testing.T) {
 		name, tail string
 		want       usage
 	}{
-		{"a chat completion", `..."finish_reason":"stop"}],"usage":{"completion_tokens":157,"prompt_tokens":1688,"total_tokens":1845,"prompt_tokens_details":{"cached_tokens":0}},"timings":{"cache_n":0,"prompt_n":1688}}`, usage{1688, 157}},
-		{"the last chunk of a stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\": 97006, \"completion_tokens\": 188}}\n\ndata: [DONE]\n\n", usage{97006, 188}},
-		{"an answer that talks about usage is not usage", `{"choices":[{"message":{"content":"set \"prompt_tokens\": 5 in the config"}}],"usage":{"prompt_tokens":12,"completion_tokens":9}}`, usage{12, 9}},
+		{"a chat completion", `..."finish_reason":"stop"}],"usage":{"completion_tokens":157,"prompt_tokens":1688,"total_tokens":1845,"prompt_tokens_details":{"cached_tokens":0}},"timings":{"cache_n":0,"prompt_n":1688}}`, usage{prompt: 1688, completion: 157}},
+		{"the last chunk of a stream", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\": 97006, \"completion_tokens\": 188}}\n\ndata: [DONE]\n\n", usage{prompt: 97006, completion: 188}},
+		{"an answer that talks about usage is not usage", `{"choices":[{"message":{"content":"set \"prompt_tokens\": 5 in the config"}}],"usage":{"prompt_tokens":12,"completion_tokens":9}}`, usage{prompt: 12, completion: 9}},
+		{"what the engine says about its cache and speed", `"usage":{"prompt_tokens":2100,"completion_tokens":48,"prompt_tokens_details":{"cached_tokens":2000}},"timings":{"cache_n":2000,"prompt_n":100,"prompt_ms":120.5,"predicted_per_second":43.25,"draft_n":40,"draft_n_accepted":30}}`,
+			usage{prompt: 2100, completion: 48, cached: 2000, promptMillis: 120.5, tokensPerSec: 43.25, drafted: 40, draftAccepted: 30}},
+		// Most agents stream without asking for a usage block. llama.cpp's last
+		// chunk still carries its timings, and a streamed request used to end
+		// with no size at all (seen live 2026-10-07: "finished: 200 in 500ms"
+		// and nothing about tokens).
+		{"a stream with no usage block, sized from the engine's timings", "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"timings\":{\"cache_n\":1978,\"prompt_n\":4,\"prompt_ms\":152.1,\"predicted_n\":40,\"predicted_per_second\":114.1}}\n\ndata: [DONE]\n\n",
+			usage{prompt: 1982, completion: 40, cached: 1978, promptMillis: 152.1, tokensPerSec: 114.1}},
 		{"no usage in the response", `{"error":{"message":"context size has been exceeded"}}`, usage{}},
 		{"cut off before the number", `"usage":{"prompt_tokens":`, usage{}},
 	} {
@@ -392,7 +400,7 @@ func TestReadUsage(t *testing.T) {
 	if len(tail) > usageTail {
 		t.Errorf("kept %d bytes, want at most %d", len(tail), usageTail)
 	}
-	if got := readUsage(tail); got != (usage{7, 3}) {
+	if got := readUsage(tail); got != (usage{prompt: 7, completion: 3}) {
 		t.Errorf("after a long response: got %+v", got)
 	}
 }

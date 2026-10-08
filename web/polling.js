@@ -130,8 +130,12 @@ async function tickOnce() {
     for (const n of [...mm.nodes.keys()]) if (n !== selfNode && !livePeers.includes(n)) mm.nodes.delete(n);
     if (!document.querySelector('section[data-view="mesh"]').hidden) await refreshTopology(livePeers);
     const discovering = $("dv-dialog").open;
-    const wantsPeers = !document.querySelector('section[data-view="local"]').hidden
-      || !document.querySelector('section[data-view="activity"]').hidden || discovering;
+    // A stream per peer, so only where the peers' models and operations are
+    // on screen: My Models, and Activity's Operations tab. On Activity's
+    // other tabs they were three connections held for nothing.
+    const onOperations = !document.querySelector('section[data-view="activity"]').hidden
+      && document.querySelector("#act-tabs .tab.active")?.dataset.tab === "operations";
+    const wantsPeers = !document.querySelector('section[data-view="local"]').hidden || onOperations || discovering;
     if (wantsPeers) await refreshPeerModels(livePeers); else closePeerFeeds();
     renderMyModels();
     if (discovering) renderDownloads();

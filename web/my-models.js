@@ -4,9 +4,9 @@ import { caps, icon, platformTag } from "./discover.js";
 import { tick } from "./polling.js";
 import { el, lastView } from "./rendering.js";
 import { meta } from "./routing.js";
-import { operations } from "./runtime.js";
+import { operations, progressBar } from "./runtime.js";
 import { fieldInput, openPresetEditor, openPresetManager, presets, refreshPresets, setPresets } from "./settings-presets.js";
-import { PRESET_FIELDS, SETTINGS_SCHEMA, buildCatalog, filterCatalog, formatBytes, groupByModel, inheritedValue, parseSettingsForm, presetDrift, relativeTime, settingsToForm } from "./ui-model.js";
+import { PRESET_FIELDS, SETTINGS_SCHEMA, buildCatalog, filterCatalog, formatBytes, engineKind, engineSummary, freeGPU, gib, gpuChoices, gpuLabel, gpuMemoryText, groupByModel, inheritedValue, parseSettingsForm, presetDrift, relativeTime, settingsToForm } from "./ui-model.js";
 import { profileTitle, routingView, workloadFor } from "./workload-presets.js";
 
 // Peer API calls use /api/v1/nodes/<node>/... and require the same owner.
@@ -48,47 +48,21 @@ export async function fetchJSON(url, opts) {
   return data;
 }
 
-// Subscribe to peer events only while My Models is open. The local node
-// proxies each stream, avoiding repeated peer requests on every tick.
-const peerFeeds = new Map();
+// Peers' models and operations are asked for on each tick while they are on
+// screen, not streamed. A stream per peer was three of the six connections a
+// browser allows to this address, held for as long as My Models was open:
+// with the page's own feed and one more stream anywhere, nothing else the
+// dashboard asked for got a turn (2026-10-08, the Doctor page and then the
+// Engines tab both sat on "loading" for good). A request that is still
+// waiting on a peer is not asked again, so a slow node costs one connection.
+const peerBusy = new Set();
 
-function openPeerFeed(node) {
-  const f = { es: new EventSource(nodeAPI(node, "/api/v1/events?only=models,operations")), data: new Map() };
-  for (const name of ["models", "operations"]) {
-    f.es.addEventListener(name, (e) => {
-      f.data.set(name, JSON.parse(e.data));
-      if (f.data.size === 2) void tick();
-    });
-  }
-  f.es.onerror = () => {
-    f.data.clear();
-    // A CLOSED stream means an old or refusing peer. Keep its entry so
-    // polling takes over; retry the stream only after it rejoins the mesh.
-  };
-  peerFeeds.set(node, f);
-}
-
-export function closePeerFeeds(keep = []) {
-  for (const [node, f] of peerFeeds) {
-    if (keep.includes(node)) continue;
-    f.es.close();
-    peerFeeds.delete(node);
-  }
-}
+export function closePeerFeeds() { /* kept for callers; there is nothing held open any more */ }
 
 export async function refreshPeerModels(peers) {
-  closePeerFeeds(peers);
   await Promise.all(peers.map(async (node) => {
-    if (!document.hidden && !peerFeeds.has(node)) openPeerFeed(node);
-    const f = peerFeeds.get(node);
-    if (f?.data.size === 2) {
-      // The feed uses null for a GET that did not return 200.
-      const api = f.data.get("models");
-      mm.nodes.set(node, api
-        ? { api, operations: f.data.get("operations")?.operations ?? [] }
-        : { error: "this node does not manage models" });
-      return;
-    }
+    if (document.hidden || peerBusy.has(node)) return;
+    peerBusy.add(node);
     try {
       const [api, ops] = await Promise.all([
         fetchJSON(nodeAPI(node, "/api/v1/models")),
@@ -97,6 +71,8 @@ export async function refreshPeerModels(peers) {
       mm.nodes.set(node, { api, operations: ops.operations ?? [] });
     } catch (err) {
       mm.nodes.set(node, { error: err.message });
+    } finally {
+      peerBusy.delete(node);
     }
   }));
 }
@@ -151,10 +127,10 @@ export function renderMyModels() {
   if (mm.group === "model") {
     for (const g of groupByModel(shown)) {
       body.append(modelGroupRow(g, cols.length));
-      for (const r of g.nodes) body.append(modelRow(r, true));
+      for (const r of g.nodes) body.append(modelRow(r, true), ...engineRows(r, cols.length));
     }
   } else {
-    for (const r of shown) body.append(modelRow(r));
+    for (const r of shown) body.append(modelRow(r), ...engineRows(r, cols.length));
   }
   const empty = $("mm-empty");
   empty.hidden = shown.length > 0;
@@ -242,11 +218,42 @@ function modelRow(r, grouped) {
   const state = el("td");
   const busy = r.busy || mmPending.has(r.id);
   if (busy) {
-    const s = el("span", "muted");
-    s.append(el("span", "spinner"), r.busyKind === "unload" ? "unloading" : "loading");
+    const s = el("span", "muted busy-state");
+    const loading = r.busyKind !== "unload";
+    // A load reports how much of the model the engine holds; say it, and
+    // draw it, so a load that is working can be told from one that is stuck.
+    const pct = loading && r.busyFraction > 0 ? Math.round(r.busyFraction * 100) : 0;
+    s.append(el("span", "spinner"), loading ? (pct ? `loading ${pct}%` : "loading") : "unloading");
+    if (r.busyMessage) s.title = r.busyMessage;
     state.append(s);
+    if (pct) {
+      const bar = progressBar(r.busyFraction);
+      bar.classList.add("load-bar");
+      bar.title = r.busyMessage;
+      state.append(bar);
+    } else if (loading && r.busyMessage) {
+      state.append(el("span", "small muted busy-note", r.busyMessage));
+    }
   } else if (r.loaded) {
     state.append(el("span", "pill fit-yes", "loaded"));
+    // A model's row is the model on that node. Its engines, when it has
+    // more than one, are rows of their own beneath it (engineRows): an
+    // engine is a running thing with its own settings and its own unload,
+    // and folded into this row it read as a property of the model.
+    if (r.instances.length > 1) {
+      state.append(el("span", "muted engines-count", `${r.instances.length} engines`));
+    } else if (r.instances[0]) {
+      // One engine: say which card it is on, or that it is split across
+      // several, when the machine gives it a choice. "CUDA" or "Metal" on a
+      // one-GPU machine says nothing a person needs here.
+      const i = r.instances[0];
+      const kind = engineKind(i.config?.runtime, i.config?.gpu, heldOn(i));
+      if (/^(GPU|split)/.test(kind)) {
+        const chip = el("span", "chip engine-chip" + (kind.startsWith("split") ? " split" : ""), kind);
+        chip.title = gpuMemoryText(heldOn(i)) || kind;
+        state.append(chip);
+      }
+    }
     // Place instance settings beside "loaded": they differ by node, and
     // the model-name cell is absent when rows are grouped by model.
     const think = thinkingState(r);
@@ -261,7 +268,9 @@ function modelRow(r, grouped) {
     state.append(el("span", "muted", "—"));
   }
   const actions = el("td", "actions");
-  const btn = r.loaded ? el("button", "btn sm", "Unload") : el("button", "btn sm accent", "Load");
+  const several = r.loaded && r.instances.length > 1;
+  const btn = r.loaded ? el("button", "btn sm", several ? `Unload all ${r.instances.length}` : "Unload") : el("button", "btn sm accent", "Load");
+  if (several) btn.title = `Unload every engine of ${r.key} on ${r.node}. Each engine has its own Unload on the row below.`;
   btn.disabled = busy;
   btn.addEventListener("click", () => (r.loaded ? unloadRow(r) : loadRow(r)));
   actions.append(btn);
@@ -284,6 +293,55 @@ function modelRow(r, grouped) {
     el("td", "muted opt", r.modified ? relativeTime(r.modified) : "—"),
     state, actions);
   return tr;
+}
+
+// heldOn is what the cards report an engine holds on each GPU, from the mesh
+// state the page already has. The model list gives an engine's settings, and
+// only the node's live state says where the model actually sits.
+function heldOn(i) {
+  return (lastView?.meshEngines ?? []).find((e) => e.id === i.id)?.gpuMemory ?? [];
+}
+
+// engineTitle names an engine by where it runs: "Engine on GPU 1",
+// "Engine split across GPUs 0+1".
+function engineTitle(i) {
+  const c = i.config ?? {};
+  const kind = engineKind(c.runtime, c.gpu, heldOn(i));
+  if (kind.startsWith("split")) return `Engine ${kind}`;
+  return `Engine on ${kind || "this node"}`;
+}
+
+// engineRows is one row per running engine of a model on a node, shown
+// when there is more than one. Each says what it runs on and how it was
+// loaded, and unloads by itself.
+function engineRows(r, span) {
+  if (!r.loaded || r.instances.length < 2) return [];
+  const busy = r.busy || mmPending.has(r.id);
+  return r.instances.map((i) => {
+    const c = i.config ?? {};
+    const tr = el("tr", "mm-engine-row");
+    const what = el("td");
+    what.colSpan = span - 1;
+    const line = el("div", "mm-engine-line");
+    line.append(el("span", "mm-engine-kind", engineTitle(i)));
+    const facts = [
+      gpuMemoryText(heldOn(i)),
+      c.parallel > 0 ? `${c.parallel} slot${c.parallel === 1 ? "" : "s"}` : "",
+      c.context_length > 0 ? `${c.context_length.toLocaleString()} context` : "",
+      c.cache_ram_mib > 0 ? `${gib(c.cache_ram_mib)} RAM cache` : "",
+    ].filter(Boolean).join(" · ");
+    line.append(el("span", "mono small muted", facts), el("span", "mono small muted mm-engine-id", i.id));
+    what.append(line);
+    const actions = el("td", "actions");
+    const btn = el("button", "btn sm", "Unload");
+    btn.type = "button";
+    btn.disabled = busy;
+    btn.title = `Unload only this engine and leave the other${r.instances.length > 2 ? "s" : ""} running`;
+    btn.addEventListener("click", () => unloadInstance(r, i));
+    actions.append(btn);
+    tr.append(what, actions);
+    return tr;
+  });
 }
 
 export function closeSide() {
@@ -339,7 +397,8 @@ function renderSide(r) {
 
   const tabs = el("div", "side-tabs");
   tabs.setAttribute("role", "tablist");
-  for (const [id, label] of [["info", "Info"], ["load", "Load"], ["inference", "Inference"]]) {
+  const engineCount = r.instances.length;
+  for (const [id, label] of [["info", "Info"], ["engines", engineCount ? `Engines (${engineCount})` : "Engines"], ["load", "Load settings"], ["inference", "Inference"]]) {
     const active = mm.tab === id;
     const b = el("button", "side-tab" + (active ? " active" : ""), label);
     b.type = "button";
@@ -353,6 +412,7 @@ function renderSide(r) {
   const body = el("div", "side-body");
   side.append(body);
   if (mm.tab === "info") renderInfo(body, r);
+  else if (mm.tab === "engines") renderEnginesTab(body, r);
   else renderSettingsTab(body, r, mm.tab === "inference");
 }
 
@@ -380,9 +440,11 @@ function updateSideHead(r) {
   sub.append(el("span", r.self ? "node self" : "node", r.node));
   if (r.loaded) sub.append(el("span", "pill fit-yes", "loaded"));
   const busy = r.busy || mmPending.has(r.id);
-  const btn = r.loaded ? el("button", "btn", "Unload") : el("button", "btn primary", "Load");
+  const several = r.loaded && r.instances.length > 1;
+  const btn = r.loaded ? el("button", "btn", several ? `Unload all ${r.instances.length}` : "Unload") : el("button", "btn primary", "Load");
   btn.disabled = busy;
-  btn.title = r.loaded ? `Unload from ${r.node}` : `Load on ${r.node}`;
+  btn.title = !r.loaded ? `Load on ${r.node}`
+    : several ? `Unload every engine of this model on ${r.node}. The Engines tab unloads one at a time.` : `Unload from ${r.node}`;
   btn.addEventListener("click", () => (r.loaded ? unloadRow(r) : loadRow(r)));
   sub.append(btn);
   head.append(title, sub);
@@ -438,11 +500,15 @@ async function renderSettingsTab(body, r, inference) {
   body.append(el("div", "muted side-note", "Loading settings…"));
   let saved = { preset: "", settings: {} };
   let presets = [];
+  // The node's own GPUs: a GPU can only be chosen where there is more than one.
+  let gpus = [];
   try {
-    const [d, p] = await Promise.all([
+    const [d, p, topo] = await Promise.all([
       fetchJSON(nodeAPI(r.node, `/api/v1/model-defaults?model=${encodeURIComponent(r.key)}`)),
       fetchJSON(nodeAPI(r.node, "/api/v1/presets")).catch(() => ({ presets: [] })),
+      inference ? null : fetchJSON(nodeAPI(r.node, "/api/v1/topology")).catch(() => null),
     ]);
+    gpus = topo?.gpus ?? [];
     saved = d.defaults ?? saved;
     setPresets(p.presets ?? []);
   } catch (err) {
@@ -551,6 +617,14 @@ async function renderSettingsTab(body, r, inference) {
     form.append(bar);
     queueMicrotask(() => { refreshHints(); refreshDrift(); });
   }
+  // These are the model's saved settings, used when an engine is loaded.
+  // The engines running now are on their own tab, each with the settings it
+  // was actually loaded with: with two of them, "running: 4" beside a field
+  // here could only ever describe one.
+  if (!inference && r.instances.length > 1) {
+    form.append(el("div", "muted side-note",
+      `${r.instances.length} engines of this model are running on ${r.node}, each with its own settings. They are listed under Engines. What you save here is used the next time one is loaded.`));
+  }
   for (const group of SETTINGS_SCHEMA.filter((gr) => Boolean(gr.inference) === inference)) {
     const g = el("div", "side-group");
     g.append(el("div", "side-group-title", group.group));
@@ -560,6 +634,17 @@ async function renderSettingsTab(body, r, inference) {
       let field = f;
       if (f.key === "reasoning_effort" && r.reasoningEfforts?.length) {
         field = { ...f, type: "pills", options: r.reasoningEfforts };
+      }
+      if (f.type === "gpu") {
+        // One card, or none this node can name: nothing to choose.
+        if (gpus.length < 2) continue;
+        const sel = el("select", "select");
+        sel.name = f.key;
+        sel.append(Object.assign(el("option", null, "every GPU (split)"), { value: "" }));
+        for (const c of gpuChoices(gpus)) sel.append(Object.assign(el("option", null, c.label), { value: c.value }));
+        sel.value = values[f.key] ?? "";
+        g.append(settingRow(f, sel));
+        continue;
       }
       const input = fieldInput(field, values[f.key], nodeModels);
       const inherit = inference ? inheritedValue(r.spec, f.key) : runningValue(r, f.key);
@@ -635,7 +720,122 @@ async function renderSettingsTab(body, r, inference) {
   body.append(err, foot);
 }
 
+// renderEnginesTab is the engines of a model that are running on a node, and
+// the way to start another. It is apart from the Load settings tab because
+// the two are different things: that tab is what is saved for the model, and
+// this is what is running, each engine with the settings it was given.
+async function renderEnginesTab(body, r) {
+  // What is running is already known, so it is drawn at once. Only the
+  // choice of GPU for a new engine needs the node's hardware, and the tab
+  // must not sit on "Loading…" if that is slow to arrive.
+  drawEngines(body, r, []);
+  const topo = await fetchJSON(nodeAPI(r.node, "/api/v1/topology")).catch(() => null);
+  if (mm.shownFor !== `${r.id}|${mm.tab}` || !(topo?.gpus ?? []).length) return;
+  drawEngines(body, r, topo.gpus);
+}
+
+function drawEngines(body, r, gpus) {
+  body.replaceChildren();
+
+  const running = el("div", "side-group");
+  running.append(el("div", "side-group-title", `Running on ${r.node}`));
+  if (!r.instances.length) {
+    running.append(el("div", "muted side-note", "No engine is running. Load starts one with this model's saved load settings."));
+  }
+  for (const i of r.instances) {
+    const c = i.config ?? {};
+    const card = el("div", "engine-card");
+    const head = el("div", "engine-card-head");
+    head.append(el("span", "engine-card-title", engineTitle(i)));
+    const x = el("button", "btn sm", "Unload");
+    x.type = "button";
+    x.title = r.instances.length > 1 ? "Unload only this engine" : `Unload from ${r.node}`;
+    x.addEventListener("click", () => unloadInstance(r, i));
+    head.append(x);
+    card.append(head);
+    kv(card, "Slots", c.parallel > 0 ? String(c.parallel) : "");
+    kv(card, "Context", c.context_length > 0 ? `${c.context_length.toLocaleString()} tokens per request` : "");
+    kv(card, "RAM cache", c.cache_ram_mib > 0 ? gib(c.cache_ram_mib) : "");
+    const held = heldOn(i);
+    kv(card, "GPU chosen", gpuLabel(c.gpu) || (gpus.length > 1 || held.length > 1 ? "none: every GPU" : ""));
+    kv(card, "GPU memory", gpuMemoryText(held));
+    if (held.length > 1) {
+      card.append(el("div", "muted side-note",
+        "This engine is split across the cards above. A split model runs at the pace of the slower card. To run it on one card, choose a GPU in Load settings and reload; to use both cards, give each its own engine below."));
+    }
+    kv(card, "Runtime", c.runtime || "");
+    kv(card, "Instance", i.id);
+    running.append(card);
+  }
+  body.append(running);
+
+  if (!r.loaded) return;
+  const add = el("div", "side-group");
+  add.append(el("div", "side-group-title", "Add another engine"));
+  const choices = gpuChoices(gpus);
+  const open = freeGPU(gpus, r.instances);
+  let sel = null;
+  if (choices.length > 1) {
+    sel = el("select", "select");
+    for (const c of choices) sel.append(Object.assign(el("option", null, c.label), { value: c.value }));
+    sel.value = open || choices[0].value;
+    add.append(settingRow({ label: "GPU" }, sel));
+  }
+  const slots = Object.assign(el("input", "input"), { type: "text", inputMode: "decimal", placeholder: "slots", value: "1" });
+  const ctx = Object.assign(el("input", "input"), { type: "text", inputMode: "decimal", placeholder: "saved setting" });
+  const ram = Object.assign(el("input", "input"), { type: "text", inputMode: "decimal", placeholder: "saved setting" });
+  add.append(settingRow({ label: "Slots" }, slots),
+    settingRow({ label: "Context", help: "tokens per request; leave empty for this model's saved setting" }, ctx),
+    settingRow({ label: "RAM cache (MiB)", help: "host memory for conversations waiting for a slot on this engine; leave empty for this model's saved setting. Two engines on one machine each take their own, so they must fit in its RAM together" }, ram));
+  const btn = el("button", "btn primary", "Add engine");
+  btn.type = "button";
+  const note = el("div", "muted side-note", choices.length < 2
+    ? "A second engine of this model gives the node more slots. Everything not set here comes from the model's saved load settings."
+    : open
+      ? `${choices.find((c) => c.value === open).label} has no engine of this model. Size the new one to that card's memory.`
+      : "Every GPU here already has an engine of this model, or one engine is spread across them all.");
+  btn.addEventListener("click", async () => {
+    const settings = sel ? { gpu: sel.value } : {};
+    for (const [key, input, name] of [["parallel", slots, "Slots"], ["context_length", ctx, "Context"], ["cache_ram", ram, "RAM cache"]]) {
+      const raw = input.value.trim();
+      if (raw === "") continue;
+      // 0 is a real choice for the RAM cache: it turns it off.
+      if (!/^\d+$/.test(raw) || (Number(raw) < 1 && key !== "cache_ram")) {
+        note.className = "err-text side-note";
+        note.textContent = `${name} must be a whole number${key === "cache_ram" ? "" : " above zero"}.`;
+        return;
+      }
+      settings[key] = Number(raw);
+    }
+    const where = sel ? `${gpuLabel(sel.value)} of ${r.node}` : r.node;
+    btn.disabled = true;
+    showNotice(`Adding an engine of ${r.key} on ${where}…`);
+    try {
+      const res = await fetchJSON(nodeAPI(r.node, "/api/v1/models/load"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: r.key, add_instance: true, ...settings }),
+      });
+      showNotice(res.instance?.id ? `Added an engine of ${r.key} on ${where}` : `The engine on ${where} is still starting.`, "success");
+      mm.shownFor = "";
+      tick();
+    } catch (err) {
+      // Usually the card's memory: the engine's own reason is in the message.
+      note.className = "err-text side-note";
+      note.textContent = `Could not add the engine: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  const foot = el("div", "engine-add");
+  foot.append(btn);
+  add.append(foot, note);
+  body.append(add);
+}
+
 function runningValue(r, key) {
+  // One engine has one answer. Several may each have a different one, so
+  // there is nothing honest to show beside a single field.
+  if (r.instances.length !== 1) return "";
   const c = r.instances[0]?.config;
   if (!c) return "";
   if (key === "spec_mode") {
@@ -685,6 +885,28 @@ async function loadRow(r) {
     showNotice(`Load failed on ${r.node}: ${err.message}`, "error");
   } finally {
     mmPending.delete(r.id);
+    tick();
+  }
+}
+
+// unloadInstance unloads one engine of a model and leaves its others on the
+// node running.
+async function unloadInstance(r, inst) {
+  if (mmPending.has(r.id)) return;
+  mmPending.add(r.id);
+  renderMyModels();
+  const what = engineSummary(inst.config, inst.config?.runtime) || inst.id;
+  try {
+    await fetchJSON(nodeAPI(r.node, "/api/v1/models/unload"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instance_id: inst.id }),
+    });
+    showNotice(`Unloaded the ${what} engine of ${r.key} on ${r.node}`, "success");
+  } catch (err) {
+    showNotice(`Unload failed on ${r.node}: ${err.message}`, "error");
+  } finally {
+    mmPending.delete(r.id);
+    mm.shownFor = "";
     tick();
   }
 }

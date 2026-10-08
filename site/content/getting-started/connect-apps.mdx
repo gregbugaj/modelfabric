@@ -37,6 +37,75 @@ print(r.choices[0].message.content)
 
 Streaming works end to end, including across a forward to another machine.
 
+## OpenCode
+
+[OpenCode](https://opencode.ai) takes ModelFabric as a custom provider. The dashboard writes the
+file for you: Overview → **Connect an app** asks where OpenCode will run, then shows an
+`opencode.json` with the right address and every model the mesh is serving.
+
+On the machine running the node there is no key:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "modelfabric": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ModelFabric",
+      "options": {
+        "baseURL": "http://127.0.0.1:1234/v1"
+      },
+      "models": {
+        "qwen/qwen3.8-27b": {
+          "name": "qwen/qwen3.8-27b",
+          "limit": { "context": 65536, "output": 16384 },
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
+        }
+      }
+    }
+  }
+}
+```
+
+Save it as `~/.config/opencode/opencode.json`, or as `opencode.json` in a project to use it there
+only. Run `opencode` and pick the model with `/models`.
+
+Set `limit.context` to the context length the model is loaded with. Without it OpenCode assumes a
+small window and compacts the conversation early. A coding agent needs about 64,000 tokens or more,
+because it sends its tools and the files it has read with every request. Context length is in the
+model's [load settings](/docs/models/settings).
+
+`attachment` and `modalities` tell OpenCode the model reads images. Leave them out for a model
+loaded without vision. Without them OpenCode removes an attached image before it sends the request,
+and the model answers that it "doesn't support image input" even though it is loaded with vision
+and other clients' images work. If you see that message, this is the cause.
+
+### Where OpenCode runs decides the key
+
+| OpenCode runs | `baseURL` | Key |
+|---|---|---|
+| on the machine running the node | `http://127.0.0.1:1234/v1` | none, unless you set `"require_api_key": true` |
+| on another machine on your tailnet | `http://100.64.0.1:1234/v1`, the node's tailnet address | none, even with `"require_api_key": true`: being on the tailnet is the credential |
+| outside your tailnet | `https://api.example.com/v1`, the entrypoint's public address | always, and it must be a token of the entrypoint's own |
+
+When a key is needed, name an environment variable in the file and keep the key out of it:
+
+```json
+"options": {
+  "baseURL": "https://api.example.com/v1",
+  "apiKey": "{env:MFSH_KEY}"
+}
+```
+
+```bash
+mfsh key create opencode        # on the entrypoint; prints the token once
+export MFSH_KEY=<the token>     # on the machine running OpenCode, in your shell profile
+```
+
+OpenCode reads `MFSH_KEY` when it starts and sends it as `Authorization: Bearer`. See
+[API keys](/docs/api/api-keys) for tokens and how to revoke one.
+
 ## Clients that speak something else
 
 Not everything is an OpenAI client, so ModelFabric answers several shapes at the same address:
@@ -98,6 +167,8 @@ To watch traffic as it happens:
 
 ```bash
 mfsh log              # routed requests — metadata, and bodies while capture is on
+mfsh log -dev         # each request as it happens: received, where it went and why, progress, result
+mfsh log -dev -node all   # the same for every node in the mesh, merged
 mfsh log engine       # an engine's own output: load times, VRAM, warnings
 ```
 

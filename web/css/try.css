@@ -1,0 +1,45 @@
+/* "Try it": a model's curl command and its answer. */
+#try-dialog {
+  width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--overlay-bg); color: var(--text); box-shadow: var(--shadow-overlay);
+}
+#try-dialog::backdrop { background: var(--overlay-scrim); }
+#try-form { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+#try-body { gap: 18px; padding-top: 14px; }
+.try-block { display: grid; gap: 7px; }
+.try-head { font-weight: 600; font-size: 13.5px; }
+.try-note { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.try-cmd, .try-reply {
+  margin: 0; padding: 10px 12px; overflow: auto;
+  background: hsl(var(--surface-inset)); border: 1px solid var(--border-soft); border-radius: var(--r-sm);
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre;
+}
+.try-reply { white-space: pre-wrap; word-break: break-word; max-height: 220px; }
+.try-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.try-out { display: grid; gap: 6px; }
+.try-facts { font-size: 12.5px; font-weight: 600; color: hsl(var(--success-text)); }
+.try-out.bad .try-facts { color: hsl(var(--error-text)); }
+/* A name that opens something: reads as text, behaves as a button. */
+.link-btn {
+  font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
+  text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px;
+}
+.link-btn:hover { color: var(--primary); text-decoration-color: var(--primary); }
+.try-url { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; font-size: 12.5px; color: var(--text-2); }
+.try-actions { align-items: center; }
+.try-why { margin-right: auto; }
+
+/* "Connect an app" shares the Try dialog's blocks. */
+#connect-dialog {
+  width: min(780px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  padding: 0; border: 1px solid var(--border); border-radius: var(--r-lg);
+  background: var(--overlay-bg); color: var(--text); box-shadow: var(--shadow-overlay);
+}
+#connect-dialog::backdrop { background: var(--overlay-scrim); }
+#connect-form { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+#connect-body { gap: 18px; padding-top: 14px; }
+.connect-seg { justify-self: start; }
+.connect-cmd { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+.connect-warn { color: hsl(var(--warning-text)); }
+.fd-buttons { display: inline-flex; gap: 8px; }

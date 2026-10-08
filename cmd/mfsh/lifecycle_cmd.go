@@ -334,6 +334,7 @@ func loadCmd(args []string) error {
 	format := fs.String("format", "", "which weights to load when the model has variants: gguf or mlx")
 	collect := settingsFromFlags(fs)
 	replicas := fs.Int("replicas", 1, "ensure this many instances of the model on this node")
+	addInstance := fs.Bool("add", false, "start another engine for a model already loaded here, with its own settings (a second GPU, a different slot count)")
 	ttlFlag := fs.String("ttl", "", "unload after this long idle: a duration (30m) or seconds, as lms takes")
 	positional, err := parsePositional(fs, args)
 	if err != nil {
@@ -379,6 +380,34 @@ func loadCmd(args []string) error {
 	if ttl > 0 {
 		req["ttl"] = ttl
 	}
+	if *addInstance {
+		req["add_instance"] = true
+	}
+	// -gpu each is one engine per GPU: the first load takes GPU 0 and a
+	// further instance is added for every other card. The node only knows
+	// numbers; "each" is this command's shorthand.
+	eachGPU := 0
+	if g, _ := req["gpu"].(string); g == "each" {
+		if *replicas > 1 || *addInstance {
+			return fmt.Errorf("-gpu each starts one engine per GPU by itself; leave out -replicas and -add")
+		}
+		gctx, gcancel := context.WithTimeout(context.Background(), 20*time.Second)
+		var topo struct {
+			GPUs []struct {
+				Name string `json:"name"`
+			} `json:"gpus"`
+		}
+		err := call(gctx, *addr, http.MethodGet, "/api/v1/topology", nil, &topo)
+		gcancel()
+		if err != nil {
+			return fmt.Errorf("could not ask the node how many GPUs it has: %w", err)
+		}
+		if len(topo.GPUs) < 2 {
+			return fmt.Errorf("-gpu each needs more than one GPU, and this node reports %d; leave -gpu out", len(topo.GPUs))
+		}
+		eachGPU = len(topo.GPUs)
+		req["gpu"] = "0"
+	}
 
 	// Allow for cold loads that take minutes; the server waits until the engine is ready.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -409,6 +438,27 @@ func loadCmd(args []string) error {
 
 	fmt.Printf("%s %s as %s in %s\n", green("✓ loaded"), bold(resp.Model), cyan(resp.Instance.ID),
 		(time.Duration(resp.ElapsedMS) * time.Millisecond).Round(time.Millisecond))
+
+	for g := 1; g < eachGPU; g++ {
+		add := map[string]any{}
+		for k, v := range req {
+			add[k] = v
+		}
+		add["model"], add["add_instance"], add["gpu"] = resp.Model, true, strconv.Itoa(g)
+		var r struct {
+			Instance struct {
+				ID string `json:"id"`
+			} `json:"instance"`
+			ElapsedMS int64 `json:"elapsed_ms"`
+			Operation struct {
+				ID string `json:"id"`
+			} `json:"operation"`
+		}
+		if err := call(ctx, *addr, http.MethodPost, "/api/v1/models/load", add, &r); err != nil {
+			return fmt.Errorf("the engine for GPU %d: %w (GPU 0 through %d are loaded; `mfsh ps` lists them)", g, err, g-1)
+		}
+		fmt.Println(gpuLoadLine(g, r.Instance.ID, r.Operation.ID, time.Duration(r.ElapsedMS)*time.Millisecond))
+	}
 
 	// Replicas are added one at a time. Each call waits for readiness, so the
 	// count below is always of instances that are actually serving.
@@ -968,3 +1018,15 @@ func preferCmd(args []string) error {
 
 const preferScope = `  Applies to requests at this node's front door; with
   llm-d on, llm-d schedules only what the preferred node does not take.`
+
+// gpuLoadLine reports one engine of `load -gpu each`. A load that outlasts
+// the server's wait is answered with the operation and no instance. That was
+// printed as "✓ GPU 1 as  in 0s", a tick for an engine that was not up and
+// might yet fail.
+func gpuLoadLine(gpu int, instance, operation string, took time.Duration) string {
+	if instance == "" {
+		return fmt.Sprintf("%s GPU %d is still loading (operation %s); `mfsh ps` shows when it is up, `mfsh ops` if it fails",
+			yellow("…"), gpu, operation)
+	}
+	return fmt.Sprintf("%s GPU %d as %s in %s", green("✓"), gpu, cyan(instance), took.Round(time.Millisecond))
+}

@@ -17,12 +17,13 @@ type tokenView struct {
 	ID       string     `json:"id"`
 	Name     string     `json:"name"`
 	Hint     string     `json:"hint"`
+	Prefix   string     `json:"prefix,omitempty"`
 	Created  time.Time  `json:"created"`
 	LastUsed *time.Time `json:"last_used,omitempty"`
 }
 
 func viewOf(t nodekey.Token) tokenView {
-	v := tokenView{ID: t.ID, Name: t.Name, Hint: t.Hint, Created: t.Created}
+	v := tokenView{ID: t.ID, Name: t.Name, Hint: t.Hint, Prefix: t.Prefix, Created: t.Created}
 	if !t.LastUsed.IsZero() {
 		lu := t.LastUsed
 		v.LastUsed = &lu
@@ -33,9 +34,12 @@ func viewOf(t nodekey.Token) tokenView {
 type tokensList struct {
 	// NodeKey is the node key's last four characters. Rotating the key revokes
 	// all clients using it; the dashboard requests confirmation.
-	NodeKey   string      `json:"node_key,omitempty"`
-	Rotatable bool        `json:"rotatable,omitempty"`
-	Tokens    []tokenView `json:"tokens"`
+	NodeKey string `json:"node_key,omitempty"`
+	// NodeKeyPrefix is how the node key begins (see nodekey.PrefixOf), so the
+	// masked form shown for it is the key's own and not a guess.
+	NodeKeyPrefix string      `json:"node_key_prefix,omitempty"`
+	Rotatable     bool        `json:"rotatable,omitempty"`
+	Tokens        []tokenView `json:"tokens"`
 }
 
 func (s *Server) tokenStore(w http.ResponseWriter) bool {
@@ -62,6 +66,7 @@ func (s *Server) handleTokens(w http.ResponseWriter, _ *http.Request) {
 	if s.apiKey != nil {
 		if k, err := s.apiKey(); err == nil && len(k) >= 4 {
 			out.NodeKey = k[len(k)-4:]
+			out.NodeKeyPrefix = nodekey.PrefixOf(k)
 		}
 	}
 	out.Rotatable = s.keyHome != ""
@@ -140,6 +145,31 @@ func (s *Server) handleKeyInfo(w http.ResponseWriter, _ *http.Request) {
 		info.User = os.Getenv("USER")
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+// handleKeyReveal answers with the node key, for the dashboard's Reveal
+// button. It is what `mfsh key` prints, to the same person: whoever can reach
+// this node's own management address.
+//
+// It is refused over the mesh (see PeerHandler). A node's key is read from its
+// own disk and never served to another machine: one node's key in another
+// node's browser is how a key meant for one machine ends up used from two.
+// Named tokens have no such route because their secrets are not kept, only a
+// hash to check them against.
+func (s *Server) handleKeyReveal(w http.ResponseWriter, _ *http.Request) {
+	if s.keyHome == "" {
+		writeError(w, http.StatusNotFound, "this node cannot show its key from here; run `mfsh key` on it")
+		return
+	}
+	key, err := nodekey.Key(s.keyHome)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.log.Warn("node key shown in the dashboard")
+	// The answer is a secret: nothing on the way may keep a copy.
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"key": key})
 }
 
 // handleKeyRotate replaces the node key and answers with the new one, once,

@@ -23,13 +23,16 @@ th {
   background: hsl(var(--surface-inset));
   border-bottom: 1px solid var(--border-soft);
 }
+/* Rows are told apart by their spacing and by the row under the pointer, not
+   by a rule under each. With a rule per row, a page of short tables and
+   lists was mostly horizontal lines. The header keeps its rule: it is the
+   one edge a table needs. */
 td {
   padding: 7px 14px;
   font-size: 13.5px;
-  border-bottom: 1px solid var(--border-soft);
   vertical-align: middle;
 }
-tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: hsl(var(--surface-inset) / 0.6); }
 td.num { font-variant-numeric: tabular-nums; }
 th[title] { cursor: help; text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; }
 .mono {
@@ -98,3 +101,7 @@ th[title] { cursor: help; text-decoration: underline dotted var(--border-strong)
 .held-row .held-why { color: var(--text-muted); }
 
 td.num .dropped { color: hsl(var(--warning-text)); font-weight: 600; }
+
+/* Work done: an engine's row names its machine, what it runs on, its model. */
+#work-body .chip { margin-left: 8px; }
+.work-model { margin-left: 10px; }

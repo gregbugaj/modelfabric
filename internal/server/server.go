@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/gregbugaj/modelfabric/internal/chatapi"
+	"github.com/gregbugaj/modelfabric/internal/devlog"
 	"github.com/gregbugaj/modelfabric/internal/llmd"
 	"log/slog"
 	"net/http"
@@ -45,6 +46,9 @@ type Server struct {
 	prefMu sync.Mutex
 
 	traffic *traffic
+	// dev is the developer log: each request's arrival, placement and end as
+	// they happen, with the engines' own lines between (internal/devlog).
+	dev *devlog.Log
 	// tokens taps replies as they stream, for `mfsh log -tokens`. Node-local
 	// by construction: the tap sits on this node's front door and the route
 	// is not in peerAllowed, so the mesh listener refuses it.
@@ -126,6 +130,14 @@ func New(m *mesh.Mesh, r *router.Router, sup *supervisor.Supervisor, log *slog.L
 		sup.SetTokenTap(srv.tokens)
 	}
 	r.OnRoute = srv.traffic.publish
+	srv.dev = devlog.New(srv.nodeName(), 0)
+	r.Dev = srv.dev
+	if sup != nil {
+		sup.SetDevLog(srv.dev)
+	}
+	// Switching capture off forgets the bodies already held, here as in the
+	// traffic ring.
+	srv.traffic.onBodiesOff = srv.dev.DropBodies
 	// The router asks per request, so the dashboard's capture switch applies
 	// to the next request rather than after a restart.
 	r.Bodies = func() router.BodyLog {
@@ -194,12 +206,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/traffic", s.handleTrafficSettings)
 	mux.HandleFunc("POST /api/v1/traffic", s.handleTrafficSettings)
 	mux.HandleFunc("GET /api/v1/traffic/recent", s.handleTrafficRecent)
+	mux.HandleFunc("GET /api/v1/devlog", s.handleDevlog)
+	mux.HandleFunc("GET /api/v1/devlog/stream", s.handleDevlogStream)
 	mux.HandleFunc("GET /api/v1/tokens", s.handleTokens)
 	mux.HandleFunc("POST /api/v1/tokens", s.handleTokenCreate)
 	mux.HandleFunc("POST /api/v1/tokens/revoke", s.handleTokenRevoke)
 	mux.HandleFunc("POST /api/v1/chat", s.handleChat)
 	mux.HandleFunc("GET /api/v1/key", s.handleKeyInfo)
 	mux.HandleFunc("POST /api/v1/key/rotate", s.handleKeyRotate)
+	mux.HandleFunc("POST /api/v1/key/reveal", s.handleKeyReveal)
 	mux.HandleFunc("GET /api/v1/server-settings", s.handleGetServerSettings)
 	mux.HandleFunc("PUT /api/v1/server-settings", s.handlePutServerSettings)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)

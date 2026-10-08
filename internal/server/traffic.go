@@ -33,6 +33,9 @@ type traffic struct {
 	// metrics counts every event that arrives here. The ring forgets and the
 	// subscribers come and go; the counters are the part that must not.
 	metrics *metrics
+	// onBodiesOff is called when capture is switched off, for whatever else
+	// holds captured bodies to drop them too.
+	onBodiesOff func()
 }
 
 func newTraffic(m *metrics) *traffic {
@@ -90,6 +93,9 @@ func (t *traffic) setSettings(bodies bool, keep int) {
 		// leaving prompts sitting in memory until the ring rolls over.
 		for i := range t.ring {
 			t.ring[i].ReqBody, t.ring[i].RespBody, t.ring[i].Truncated = "", "", false
+		}
+		if t.onBodiesOff != nil {
+			t.onBodiesOff()
 		}
 	}
 	if len(t.ring) > t.keep {

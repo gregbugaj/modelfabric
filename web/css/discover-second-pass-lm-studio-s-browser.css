@@ -4,7 +4,6 @@
 .with-ico.ok { color: hsl(var(--success-text)); font-weight: 500; }
 .warn-text { color: hsl(var(--warning-token)); }
 .btn.ghost { border-color: transparent; background: none; color: var(--text-muted); }
-.btn.lg { font-size: 14px; padding: 8px 16px; }
 
 .avatar {
   flex: none; display: inline-grid; place-items: center; overflow: hidden; border-radius: var(--r-md);

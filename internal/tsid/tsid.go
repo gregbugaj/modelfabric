@@ -54,6 +54,9 @@ type Resolver struct {
 	mu    sync.Mutex
 	self  *cached
 	peers map[string]*cached
+	// flight is the lookups running now, by key, each with a channel closed
+	// when it ends.
+	flight map[string]chan struct{}
 }
 
 type cached struct {
@@ -72,32 +75,82 @@ func New() *Resolver {
 	}
 }
 
-func (r *Resolver) Self(ctx context.Context) (Identity, error) {
+// errTTL is how long a failed lookup is remembered. An answer is good for
+// TTL: who owns a tailnet address does not change from one minute to the
+// next. A failure is not an answer. It used to be kept as long, so one lookup
+// that was cancelled or timed out refused that device every management
+// request for a minute: on 2026-10-08 two nodes dropped out of another's
+// dashboard with "Tailscale does not identify 100.x: signal: killed" and
+// "context canceled", each from a single bad lookup just after a restart.
+// Long enough that a tailscaled that is down is not asked on every request.
+const errTTL = 3 * time.Second
+
+func (r *Resolver) fresh(c *cached) bool {
+	if c == nil {
+		return false
+	}
+	if c.err != nil {
+		return time.Since(c.at) < errTTL
+	}
+	return time.Since(c.at) < r.TTL
+}
+
+// once runs one lookup for key however many callers ask at the same time,
+// and gives them all its result. Several requests arriving together after a
+// restart each used to start their own `tailscale`, and the slowest were
+// killed at the deadline.
+func (r *Resolver) once(key string, get func() *cached, set func(*cached), lookup func(context.Context) (Identity, error)) (Identity, error) {
 	r.mu.Lock()
-	c := r.self
-	r.mu.Unlock()
-	if c != nil && time.Since(c.at) < r.TTL {
+	if c := get(); r.fresh(c) {
+		r.mu.Unlock()
 		return c.id, c.err
 	}
-	id, err := r.lookupSelf(ctx)
-	r.mu.Lock()
-	r.self = &cached{id: id, err: err, at: time.Now()}
+	if wait, running := r.flight[key]; running {
+		r.mu.Unlock()
+		<-wait
+		r.mu.Lock()
+		c := get()
+		r.mu.Unlock()
+		if c == nil {
+			return Identity{}, errors.New("identity lookup did not finish")
+		}
+		return c.id, c.err
+	}
+	done := make(chan struct{})
+	if r.flight == nil {
+		r.flight = map[string]chan struct{}{}
+	}
+	r.flight[key] = done
 	r.mu.Unlock()
+
+	// Not the caller's context: the answer is for everyone who asks in the
+	// next minute, and the request that happened to start the lookup going
+	// away (a closed browser tab) must not turn into a refusal for the rest.
+	id, err := lookup(context.Background())
+
+	r.mu.Lock()
+	set(&cached{id: id, err: err, at: time.Now()})
+	delete(r.flight, key)
+	r.mu.Unlock()
+	close(done)
 	return id, err
 }
 
-func (r *Resolver) WhoIs(ctx context.Context, ip string) (Identity, error) {
-	r.mu.Lock()
-	c := r.peers[ip]
-	r.mu.Unlock()
-	if c != nil && time.Since(c.at) < r.TTL {
-		return c.id, c.err
-	}
-	id, err := r.lookupPeer(ctx, ip)
-	r.mu.Lock()
-	r.peers[ip] = &cached{id: id, err: err, at: time.Now()}
-	r.mu.Unlock()
-	return id, err
+// Self is this node's own identity. ctx is accepted for the callers that
+// have one; the lookup runs to its own deadline (see once).
+func (r *Resolver) Self(_ context.Context) (Identity, error) {
+	return r.once("self",
+		func() *cached { return r.self },
+		func(c *cached) { r.self = c },
+		r.lookupSelf)
+}
+
+// WhoIs is the identity Tailscale gives for a tailnet address.
+func (r *Resolver) WhoIs(_ context.Context, ip string) (Identity, error) {
+	return r.once("peer:"+ip,
+		func() *cached { return r.peers[ip] },
+		func(c *cached) { r.peers[ip] = c },
+		func(ctx context.Context) (Identity, error) { return r.lookupPeer(ctx, ip) })
 }
 
 func (r *Resolver) lookupSelf(ctx context.Context) (Identity, error) {

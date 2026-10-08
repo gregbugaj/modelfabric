@@ -250,3 +250,48 @@ func (p *Placement) Reading() map[string]int64 {
 func (c Choice) Explain() string {
 	return fmt.Sprintf("tokens %d cold %v shares %v", c.tokens, c.cold, c.shares)
 }
+
+// Why says, for a person, why the named engine was chosen for this request,
+// with the figures behind it. It is what the developer log prints beside
+// "sent to".
+func (c Choice) Why(name string) (string, map[string]any) {
+	fields := map[string]any{}
+	if len(c.blocks) == 0 {
+		return "its prompt is too short to tell one conversation from another, so the least busy engine was used", fields
+	}
+	pct := func(engine string) int { return int(c.shares[engine]*100 + 0.5) }
+	if c.tokens > 0 {
+		fields["prompt_tokens_estimate"] = c.tokens
+	}
+	if len(c.shares) > 0 {
+		held := make(map[string]int, len(c.shares))
+		for engine := range c.shares {
+			held[engine] = pct(engine)
+		}
+		fields["holds_percent"] = held
+	}
+	if c.Target != "" {
+		fields["home"] = c.Target
+	}
+	switch {
+	case c.shares == nil:
+		// The home-slot rule keeps no shares, only where the prompt was last seen.
+		if c.Target == name {
+			return "this prompt was last seen there", fields
+		}
+		if c.Target != "" {
+			return fmt.Sprintf("this prompt was last seen on %s, which has no free slot; this engine has the fewest requests in flight", c.Target), fields
+		}
+		return "no engine has seen this prompt; this one has the fewest requests in flight", fields
+	case c.shares[name] >= stickyShare:
+		return fmt.Sprintf("it holds %d%% of this prompt", pct(name)), fields
+	case c.cold:
+		return "no engine holds this prompt (a new conversation); it was next in turn and has the least waiting to be read", fields
+	case c.Target != "" && c.Target != name:
+		return fmt.Sprintf("%s holds %d%% of this prompt but is full or too far behind; this engine holds %d%%", c.Target, pct(c.Target), pct(name)), fields
+	case c.shares[name] > 0:
+		return fmt.Sprintf("it holds %d%% of this prompt, and has the least waiting to be read among engines with room", pct(name)), fields
+	default:
+		return "it holds none of this prompt, but has the least waiting to be read among engines with room", fields
+	}
+}

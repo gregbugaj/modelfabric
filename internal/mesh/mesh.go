@@ -634,7 +634,20 @@ type InstanceState struct {
 	// to; zero when the engine is scraped directly.
 	MetricsPort int `json:"metrics_port,omitempty"`
 	EngineStats
+	// GPU is the GPUs the engine was confined to at load, as nvidia-smi
+	// numbers them ("0", "0,1"). Empty means it was left to use every GPU it
+	// sees, or comes from a peer too old to say.
 	GPU string `json:"gpu,omitempty"`
+	// GPUMemory is what the engine holds on each GPU right now, measured. It
+	// is what shows a model split across cards: GPU says what was asked for,
+	// and an engine asked for nothing in particular can end up on one card
+	// or on several. Empty when unknown (no nvidia-smi, or an older peer).
+	GPUMemory []osproc.GPUUse `json:"gpu_memory,omitempty"`
+	// OutputNowTokS is the tokens per second the engine is writing right now,
+	// summed over its slots: what the machine is producing, where DecodeTokS
+	// is how fast one request is answered. Nil when unknown (an engine whose
+	// log does not say, or an older peer); zero is an engine writing nothing.
+	OutputNowTokS *float64 `json:"output_now_tok_s,omitempty"`
 	// Address is where this instance is reachable from outside the node. It is
 	// loopback unless engine_bind says otherwise, which matters to anything
 	// scheduling across the mesh rather than through ModelFabric.

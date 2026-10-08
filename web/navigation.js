@@ -1,5 +1,6 @@
-import { actScope, loadCapture, renderOperations, setActScope, setCapture, startTrafficStream } from "./activity.js";
+import { actScope, loadCapture, renderOperations, setActScope, setCapture, startTrafficStream, stopTrafficStream } from "./activity.js";
 import { $ } from "./core.js";
+import { initDevlog } from "./devlog.js";
 import { openBench } from "./bench.js";
 import { renderDoctorNodes, runDoctor } from "./doctor.js";
 import { readSidePref, writeSidePref } from "./my-models.js";
@@ -36,12 +37,14 @@ function showView(name) {
   if (view === "doctor") { renderDoctorNodes(); runDoctor(); }
   if (view === "bench") openBench();
   if (view === "activity") {
-    startTrafficStream(); loadCapture(); setActScope(actScope); renderOperations();
+    loadCapture(); setActScope(actScope); renderOperations();
     if (typeof tick === "function") tick();
   }
   if ((view === "local" || view === "mesh") && typeof tick === "function") tick();
   // Close the live tap when leaving the page to stop unused server work.
-  if (view !== "activity") stopTokenStream();
+  // Each of Activity's live tabs holds a connection only while it is the
+  // one on screen (see streams, below).
+  streams();
 }
 
 export function initCapture() {
@@ -56,10 +59,23 @@ export function initCapture() {
   for (const b of document.querySelectorAll("#act-tabs .tab")) {
     b.addEventListener("click", () => setActTab(b.dataset.tab));
   }
+  initDevlog();
+  document.addEventListener("visibilitychange", streams);
   setActTab(readSidePref("mfsh.act.tab") || "requests");
 }
 
 let actTab = "requests";
+
+// streams opens the one stream the tab on screen needs and closes the rest.
+// A stream holds one of the six connections a browser allows to this
+// address, across every tab open on it. Left open on tabs nobody was looking
+// at, they used all six, and the page's ordinary requests never got a turn:
+// the Doctor page sat on "checking…" for good (2026-10-08).
+function streams() {
+  const here = !document.hidden && !document.querySelector('section[data-view="activity"]').hidden;
+  if (here && actTab === "requests") startTrafficStream(); else stopTrafficStream();
+  if (here && actTab === "replies") startTokenStream(); else stopTokenStream();
+}
 
 function setActTab(name) {
   const tabs = ["requests", "replies", "operations"];
@@ -76,7 +92,7 @@ function setActTab(name) {
   // Only Requests streams automatically, so other tabs must not show its pulse.
   const live = $("act-live");
   if (live) live.hidden = actTab !== "requests";
-  if (actTab === "replies") startTokenStream(); else stopTokenStream();
+  streams();
   if (actTab === "operations") renderOperations();
 }
 

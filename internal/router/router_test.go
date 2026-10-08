@@ -257,3 +257,38 @@ func TestDefaultBodyCapHoldsARealisticPrompt(t *testing.T) {
 		t.Errorf("an explicit Max stands, got %d", got)
 	}
 }
+
+// A request the dashboard sends from a browser carries the page's origin. The
+// node it reached has checked that; the next hop must not be asked to, or a
+// peer refuses what this node allowed (seen 2026-10-08: "403 cross-site
+// request refused" from the Serving page whenever another node was chosen).
+func TestBrowserHeadersStopAtThisNode(t *testing.T) {
+	got := make(chan http.Header, 1)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		got <- req.Header.Clone()
+		io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer up.Close()
+	r := routerWith(t, up)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"content":"hi"}]}`))
+	for k, v := range map[string]string{
+		"Origin": "http://127.0.0.1:1234", "Referer": "http://127.0.0.1:1234/", "Sec-Fetch-Site": "same-origin",
+		"Sec-Fetch-Mode": "cors", "X-Request-Id": "kept",
+	} {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	r.Forward(rec, req, "/v1/chat/completions")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	h := <-got
+	for _, k := range []string{"Origin", "Referer", "Sec-Fetch-Site", "Sec-Fetch-Mode"} {
+		if v := h.Get(k); v != "" {
+			t.Errorf("%s: %q was sent on to the engine", k, v)
+		}
+	}
+	if h.Get("X-Request-Id") != "kept" {
+		t.Error("an ordinary header must still be passed on")
+	}
+}

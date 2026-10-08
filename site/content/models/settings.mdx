@@ -20,7 +20,7 @@ mfsh load -h                                   # the current full list
 
 | area | flags |
 |---|---|
-| context & GPU | `-context`, `-parallel`, `-gpu-layers` or `-offload-ratio`, `-flash-attention` |
+| context & GPU | `-context`, `-parallel`, `-gpu`, `-gpu-layers` or `-offload-ratio`, `-flash-attention` |
 | speculative decoding | `-spec auto\|mtp\|draft\|off`, `-draft-model`, `-draft-max`, `-draft-min`, `-draft-p-min`, `-draft-gpu-layers` |
 | batching & KV | `-batch`, `-ubatch`, `-cache-k`, `-cache-v`, `-kv-unified`, `-kv-offload`, `-cache-reuse`, `-ctx-checkpoints`, `-cache-ram` |
 | memory & MoE | `-keep-in-memory` (mlock), `-mmap`, `-n-cpu-moe` or `-cpu-moe-ratio` |
@@ -43,6 +43,7 @@ These are the flags most people change, and what to set them to.
 | `-context` | 8192 | how much conversation the model can see, **per request** | As much as you need and no more. The KV pool is `context × parallel`, so doubling this doubles the memory. 32768 is comfortable for agent work on a 24&nbsp;GB card. |
 | `-parallel` | 4 | how many requests the engine serves at once | Match the concurrency that engine will see. [Prefix affinity](/docs/routing/replicas) concentrates traffic, so size for the busy engine, not the average. |
 | `-gpu-layers` / `-offload-ratio` | 99 / none | how much of the model runs on the GPU | Start with everything on the GPU. Drop it only when a load fails for memory: each layer you move to the CPU costs speed. `-offload-ratio 0.8` is easier to reason about than counting layers. |
+| `-gpu` | every GPU | which GPUs this engine may use, as `nvidia-smi` numbers them: `0`, `1`, `0,1` | Leave it unset for a model too large for one card. On a machine with several cards and a model that fits on one, [give each card its own engine](/docs/routing/replicas#one-engine-per-gpu). CUDA runtimes only. |
 | `-flash-attention` | on | a faster attention kernel | Leave it on. Turn it off only if a model misbehaves and you're bisecting why. |
 | `-cache-k` / `-cache-v` | `f16` | how the KV cache is stored | `q8_0` roughly halves KV memory for a small quality cost, which is often the cheapest way to fit a longer context. Go below `q8_0` only if you've measured the damage. |
 | `-temp` | the model's own | creative vs. predictable | Leave it unset: `model.yaml` carries what the publisher tested. Override only for a specific job: 0.2–0.3 for code and extraction, 0.7–1.0 for prose. |

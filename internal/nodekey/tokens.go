@@ -56,10 +56,16 @@ func badName(format string, a ...any) error {
 // Token is one named credential. Hash is the SHA-256 of the secret: the
 // secret is random, so a plain hash is enough, and it is all that is kept.
 type Token struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Hash     string    `json:"hash"`
-	Hint     string    `json:"hint"` // the secret's last four characters, to tell tokens apart
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Hash string `json:"hash"`
+	Hint string `json:"hint"` // the secret's last four characters, to tell tokens apart
+	// Prefix is how the secret begins, up to its last dash ("sk-mfsh-"). It is
+	// the same for every token a build makes, so it gives nothing away, and it
+	// is recorded because a later build may make them differently. Empty for
+	// a token created before it was recorded: what that one began with is
+	// not known.
+	Prefix   string    `json:"prefix,omitempty"`
 	Created  time.Time `json:"created"`
 	LastUsed time.Time `json:"last_used,omitzero"`
 }
@@ -127,7 +133,7 @@ func (s *Store) Create(name string) (string, Token, error) {
 	if err != nil {
 		return "", Token{}, err
 	}
-	t := Token{ID: id, Name: name, Hash: hashOf(secret), Hint: secret[len(secret)-4:], Created: time.Now().UTC()}
+	t := Token{ID: id, Name: name, Hash: hashOf(secret), Hint: secret[len(secret)-4:], Prefix: PrefixOf(secret), Created: time.Now().UTC()}
 	err = s.update(func(ts []Token) ([]Token, error) {
 		for _, x := range ts {
 			if strings.EqualFold(x.Name, name) {

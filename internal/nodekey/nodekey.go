@@ -148,3 +148,25 @@ func exists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
+
+// PrefixOf is the part of a key that says what kind of key it is and nothing
+// about which: "sk-mfsh-" of "sk-mfsh-9f2c...". Empty for a key not made that
+// way, of which nothing may be shown.
+//
+// It is read from the key and never assumed. The dashboard once wrote
+// "sk-mfsh-" in front of every masked key, and a node whose key was made
+// before the project was renamed showed "sk-mfsh-...bedf" for a key that
+// begins "sk-llmz-": the mask and the key it stood for did not match.
+func PrefixOf(key string) string {
+	i := strings.LastIndexByte(key, '-')
+	// "sk-<name>-": short, lower-case, and with the secret still to come.
+	if i < 3 || i > 16 || !strings.HasPrefix(key, "sk-") || len(key)-i < 9 {
+		return ""
+	}
+	for _, c := range key[3:i] {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return ""
+		}
+	}
+	return key[:i+1]
+}

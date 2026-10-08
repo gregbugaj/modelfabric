@@ -30,7 +30,9 @@ export function buildLocal(api, operations = []) {
       // Block duplicate loads while an operation is in flight.
       busy: Boolean(op),
       busyKind: op ? op.kind : "",
-      busyMessage: op ? op.message || "" : "",
+      // How far the operation has got, 0 to 1, and where it is, when it says.
+      busyFraction: op?.fraction > 0 ? op.fraction : 0,
+      busyMessage: op?.message || "",
     };
   });
 
@@ -133,6 +135,14 @@ export function buildView(mesh) {
       cacheRamMib: i.cache_ram_mib > 0 ? i.cache_ram_mib : null,
       cacheDropped: typeof i.cache_dropped === "number" ? i.cache_dropped : (i.cache_ram_mib > 0 ? 0 : null),
       memoryMb: i.memory_mb > 0 ? i.memory_mb : null,
+      // The GPUs the engine was confined to, as nvidia-smi numbers them; ""
+      // when it was left to use every GPU, or the node is too old to say.
+      gpu: typeof i.gpu === "string" ? i.gpu : "",
+      // What the engine holds on each GPU now, measured: [{ gpu, mb }]. More
+      // than one entry is a model split across cards.
+      gpuMemory: Array.isArray(i.gpu_memory) ? i.gpu_memory : [],
+      // Tokens one request may use on this engine; 0 when it did not say.
+      contextLength: i.context_length > 0 ? i.context_length : 0,
       hostMemTotalMb: host?.mem_total_mb > 0 ? host.mem_total_mb : null,
       hostMemAvailableMb: host?.mem_available_mb > 0 ? host.mem_available_mb : null,
       id: i.id,
@@ -146,6 +156,9 @@ export function buildView(mesh) {
       // Display early estimates, but mark rates not yet reliable for scheduling.
       prefillTrusted: Boolean(i.prefill_trusted),
       decodeTokS: i.decode_tok_s ?? 0,
+      // What the engine is writing per second right now, all slots together.
+      // null when it does not say: an older node, or an engine whose log has no such figure.
+      outputNow: typeof i.output_now_tok_s === "number" ? i.output_now_tok_s : null,
       specAccepted: typeof i.spec_accepted === "number" ? i.spec_accepted : -1,
       // Lifetime totals expose load imbalance that rates alone cannot show.
       promptTokens: i.prompt_tokens ?? 0,
@@ -206,11 +219,21 @@ export function buildView(mesh) {
       enginesTotal: engines.length,
     },
     nodes: nodes.sort(byNode),
-    models: models.map((m) => ({
-      id: m.id,
-      nodes: m.nodes ?? [],
-      replicas: (m.nodes ?? []).length,
-    })),
+    // An engine is a replica, and a node can run several of one model (one
+    // per GPU). Counting nodes called three machines "3 replicas" when four
+    // engines were serving.
+    models: models.map((m) => {
+      const per = new Map();
+      for (const e of meshEngines) if (e.model === m.id) per.set(e.node, (per.get(e.node) ?? 0) + 1);
+      const nodes = m.nodes ?? [];
+      const counted = nodes.reduce((sum, n) => sum + (per.get(n) ?? 1), 0);
+      return {
+        id: m.id,
+        nodes,
+        servedBy: nodes.map((n) => ((per.get(n) ?? 1) > 1 ? `${n} ×${per.get(n)}` : n)),
+        replicas: counted,
+      };
+    }),
     engines,
     meshEngines,
     capacity: {
@@ -236,7 +259,12 @@ export function meshCapacity(engines) {
   const known = (engines ?? []).filter((e) => e.healthy && e.slots);
   const sum = (k) => known.reduce((n, e) => n + (e[k] || 0), 0);
   const c = { slots: sum("slots"), running: sum("running"), waiting: sum("waiting"), free: sum("free") };
-  return { ...c, waitingBesideFree: c.waiting > 0 && c.free > 0 };
+  // What the mesh is writing now. Engines that do not say are left out and
+  // counted, so the total is never passed off as the whole mesh.
+  const saying = (engines ?? []).filter((e) => e.healthy && typeof e.outputNow === "number");
+  const outputNow = saying.length ? saying.reduce((n, e) => n + e.outputNow, 0) : null;
+  const outputUnknown = (engines ?? []).filter((e) => e.healthy).length - saying.length;
+  return { ...c, waitingBesideFree: c.waiting > 0 && c.free > 0, outputNow, outputUnknown };
 }
 
 function byNode(a, b) {
@@ -261,17 +289,25 @@ export function relativeTime(iso, now = Date.now()) {
  * first. Only suffixes are available; token secrets are not retained.
  * Usage timestamps have minute precision; "never" means no recorded use.
  */
+// maskedKey is a key as it is shown without showing it: how it begins, when
+// the node says, and its last four characters. The beginning is the node's
+// word and never assumed: a key made before the project was renamed begins
+// "sk-llmz-", and was shown as "sk-mfsh-…" beside a Reveal that said otherwise.
+export function maskedKey(prefix, hint) {
+  return `${prefix || ""}…${hint ?? ""}`;
+}
+
 export function buildTokens(api, now = Date.now()) {
   const rows = [];
   if (api?.node_key) {
-    rows.push({ id: "", name: "Node key", masked: `sk-mfsh-…${api.node_key}`, created: "", lastUsed: "", builtin: true, rotatable: Boolean(api.rotatable) });
+    rows.push({ id: "", name: "Node key", masked: maskedKey(api.node_key_prefix, api.node_key), created: "", lastUsed: "", builtin: true, rotatable: Boolean(api.rotatable) });
   }
   const tokens = [...(api?.tokens ?? [])].sort((a, b) => String(b.created).localeCompare(String(a.created)));
   for (const t of tokens) {
     rows.push({
       id: t.id,
       name: t.name,
-      masked: `sk-mfsh-…${t.hint}`,
+      masked: maskedKey(t.prefix, t.hint),
       created: relativeTime(t.created, now),
       lastUsed: t.last_used ? relativeTime(t.last_used, now) : "never",
       builtin: false,
@@ -603,6 +639,10 @@ export const SETTINGS_SCHEMA = [
   { group: "Context & GPU", fields: [
     { key: "context_length", label: "Context length", type: "int", help: "tokens per request" },
     { key: "parallel", label: "Parallel slots", type: "int" },
+    // Shown only on a node with more than one GPU; its choices come from
+    // that node's hardware (see gpuChoices).
+    { key: "gpu", label: "GPU", type: "gpu",
+      help: "which GPU this engine runs on, as nvidia-smi numbers them. Unset, one engine spreads the model across every GPU, which is for a model too large for one card" },
     { key: "gpu_layers", label: "GPU layers", type: "int", help: "or use GPU offload ratio" },
     { key: "offload_ratio", label: "GPU offload ratio", type: "float", help: "0–1, LM Studio's GPU offload" },
     { key: "flash_attention", label: "Flash attention", type: "bool" },
@@ -634,7 +674,8 @@ export const SETTINGS_SCHEMA = [
     { key: "kv_offload", label: "KV cache on GPU", type: "bool" },
     { key: "cache_reuse", label: "Cache reuse chunk", type: "int" },
     { key: "ctx_checkpoints", label: "Context checkpoints", type: "int" },
-    { key: "cache_ram", label: "Prompt cache in RAM (MiB)", type: "int" },
+    { key: "cache_ram", label: "RAM cache (MiB)", type: "int",
+      help: "host memory for conversations that are not in a slot right now. A conversation that loses its slot is saved here and restored in about half a second; when this is full the oldest is dropped and read again from the start. Unset: 8192 or an eighth of the machine's RAM, whichever is less. 0 turns it off. The Serving page shows how many each engine has dropped" },
   ] },
   { group: "Memory & MoE", fields: [
     { key: "keep_in_memory", label: "Keep in memory (mlock)", type: "bool" },
@@ -772,6 +813,9 @@ export function buildCatalog(nodes = []) {
         loaded: instances.length > 0,
         busy: Boolean(op),
         busyKind: op ? op.kind : "",
+        // How far the operation has got, 0 to 1, and where it is, when it says.
+        busyFraction: op?.fraction > 0 ? op.fraction : 0,
+        busyMessage: op?.message || "",
       });
     }
     perNode.push({ node: n.node, self: Boolean(n.self), models: n.api.models.length, bytes });
@@ -1304,4 +1348,325 @@ export function gib(mib) {
   if (mib === null || mib === undefined) return "—";
   const g = mib / 1024;
   return `${g < 10 ? g.toFixed(1) : Math.round(g)} GB`;
+}
+
+// ---- Developer log --------------------------------------------------------
+
+// devlogKey identifies an entry across the nodes a page follows: each node
+// numbers its own.
+export function devlogKey(e) {
+  return `${e.node ?? ""}#${e.seq ?? ""}`;
+}
+
+// devlogAppend adds an entry to a list held oldest first, keeping it in time
+// order and no longer than cap. An entry already present is ignored: a stream
+// that reconnects replays its backlog.
+export function devlogAppend(list, entry, cap) {
+  const key = devlogKey(entry);
+  // Entries arrive nearly in order, so look back from the end.
+  const t = Date.parse(entry.time) || 0;
+  let i = list.length;
+  for (let k = list.length - 1; k >= 0 && k >= list.length - 400; k--) {
+    if (devlogKey(list[k]) === key) return list;
+    if ((Date.parse(list[k].time) || 0) > t) i = k;
+  }
+  list.splice(i, 0, entry);
+  if (list.length > cap) list.splice(0, list.length - cap);
+  return list;
+}
+
+// devlogMatches reports whether an entry is shown for the text in the filter
+// box. Every word must appear somewhere in what the row shows.
+export function devlogMatches(entry, filter) {
+  const words = String(filter ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = [entry.msg, entry.model, entry.engine, entry.trace, entry.node, entry.level, entry.source]
+    .filter(Boolean).join(" ").toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+// devlogClock is an entry's time of day to the millisecond: requests a few
+// hundred milliseconds apart are the usual thing being told apart here.
+export function devlogClock(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+// devlogBody is a captured body as shown: indented where it is whole JSON,
+// as it came where it is not (a stream of events, or one cut at the cap).
+export function devlogBody(body, truncated) {
+  if (!body) return "";
+  if (!truncated) {
+    try { return JSON.stringify(JSON.parse(body), null, 2); } catch { /* not JSON */ }
+  }
+  return truncated ? `${body}\n… cut at the capture limit` : body;
+}
+
+// devlogFields is an entry's figures on one line, key=value, objects as JSON.
+export function devlogFields(fields) {
+  return Object.entries(fields ?? {})
+    .map(([k, v]) => {
+      if (v !== null && typeof v === "object") return `${k}=${JSON.stringify(v)}`;
+      // The engine reports rates to fourteen places.
+      return `${k}=${typeof v === "number" && !Number.isInteger(v) ? Number(v.toFixed(2)) : v}`;
+    })
+    .join("  ");
+}
+
+// gpuLabel names the GPUs an engine is confined to: "GPU 1", "GPUs 0,1", or
+// "" when it was left to use every GPU it sees.
+export function gpuLabel(gpu) {
+  const ids = String(gpu ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return "";
+  return ids.length === 1 ? `GPU ${ids[0]}` : `GPUs ${ids.join(",")}`;
+}
+
+// gpuName is a GPU's name without the vendor prefixes everyone skips.
+export function gpuName(name) {
+  return String(name ?? "").replace(/^(NVIDIA|AMD|Intel)\s+(GeForce\s+)?/i, "").replace(/\s+Generation$/i, "");
+}
+
+// gpuChoices is what a GPU selector offers for a node's GPUs, as
+// /api/v1/topology lists them: one entry per card, numbered as nvidia-smi
+// numbers them, which is the order of the list.
+export function gpuChoices(gpus) {
+  return (gpus ?? []).map((g, i) => ({
+    value: String(i),
+    label: `GPU ${i} · ${gpuName(g.name)} · ${Math.round((g.vram_mb ?? 0) / 1024)} GB`,
+  }));
+}
+
+// freeGPU is the first GPU no running engine is confined to, "" when every
+// card has one or an engine is spread across all of them. It is what "add an
+// engine" offers first.
+export function freeGPU(gpus, instances) {
+  const used = new Set();
+  for (const i of instances ?? []) {
+    const g = String(i.config?.gpu ?? "");
+    if (!g) return "";
+    for (const id of g.split(",")) used.add(id.trim());
+  }
+  const open = gpuChoices(gpus).find((c) => !used.has(c.value));
+  return open ? open.value : "";
+}
+
+// engineKind says what an engine computes on, in a word or two: the GPU it is
+// confined to, or else its backend. It is what tells two engines on one node
+// apart, and a CPU engine from a GPU one.
+export function engineKind(runtime, gpu, gpuMemory) {
+  // What is measured wins over what was asked for: an engine told nothing
+  // lands on one card or is split across several, and only the cards say.
+  const cards = (gpuMemory ?? []).filter((g) => g.mb > 0).map((g) => g.gpu);
+  if (cards.length > 1) return `split across GPUs ${cards.join("+")}`;
+  if (cards.length === 1) return `GPU ${cards[0]}`;
+  const pinned = gpuLabel(gpu);
+  if (pinned) return pinned;
+  const r = String(runtime ?? "").toLowerCase();
+  for (const [mark, label] of [["cuda", "CUDA"], ["rocm", "ROCm"], ["metal", "Metal"], ["mlx", "MLX"], ["vulkan", "Vulkan"], ["cpu", "CPU"]]) {
+    if (r.includes(mark)) return label;
+  }
+  return "";
+}
+
+// engineSummary is one running engine in a few words, for a list of a
+// model's engines on a node: "GPU 1 · 1 slot".
+export function engineSummary(config, runtime, gpuMemory) {
+  const c = config ?? {};
+  const parts = [engineKind(runtime ?? c.runtime, c.gpu, gpuMemory)];
+  if (c.parallel > 0) parts.push(`${c.parallel} slot${c.parallel === 1 ? "" : "s"}`);
+  return parts.filter(Boolean).join(" · ");
+}
+
+// gpuMemoryText is what an engine holds on each card, for a person:
+// "GPU 0: 25 GB · GPU 1: 15 GB". "" when nothing was measured.
+export function gpuMemoryText(gpuMemory) {
+  return (gpuMemory ?? []).filter((g) => g.mb > 0).map((g) => `GPU ${g.gpu}: ${gib(g.mb)}`).join(" · ");
+}
+
+// ---- Trying a model from the Serving page ---------------------------------
+
+// tryRequest is the smallest chat request that shows a model is answering.
+export function tryRequest(model, prompt = "Say hello in five words.") {
+  // Room for a reasoning model to think and still answer: at 64 tokens one
+  // spent them all thinking and the reply came back empty.
+  return { model, messages: [{ role: "user", content: prompt }], max_tokens: 512 };
+}
+
+// curlFor is a curl command that sends body to base's chat completions, as a
+// person would paste it into a terminal. base ends in /v1. keyVar names an
+// environment variable holding the API key, "" when none is needed.
+export function curlFor(base, body, keyVar = "") {
+  // Single-quoted for the shell: a quote inside the JSON closes, escapes and reopens.
+  const json = JSON.stringify(body, null, 2).replaceAll("'", `'\\''`);
+  const lines = [`curl ${String(base).replace(/\/+$/, "")}/chat/completions \\`, `  -H 'Content-Type: application/json' \\`];
+  if (keyVar) lines.push(`  -H "Authorization: Bearer $${keyVar}" \\`);
+  lines.push(`  -d '${json}'`);
+  return lines.join("\n");
+}
+
+// tryTargets is the two ways to reach an engine's model: through the mesh,
+// as an app does, and the engine itself. front is the page's front door
+// (buildFront); e is an engine row from the Serving page.
+export function tryTargets(front, e) {
+  const body = tryRequest(e.model);
+  const mesh = {
+    key: "mesh",
+    title: "Through the mesh",
+    note: "What an app sends. The router picks the engine, so any node serving this model may answer; the reply says which one did.",
+    base: front?.url || "",
+    curl: front?.url ? curlFor(front.url, body, front.requireKey ? "MFSH_KEY" : "") : "",
+    setup: front?.requireKey ? "export MFSH_KEY=$(mfsh key)" : "",
+    body,
+  };
+  const base = e.address ? `http://${e.address}/v1` : "";
+  const direct = {
+    key: "engine",
+    title: `This engine only (${e.node})`,
+    note: e.address && /^(127\.|localhost|\[?::1)/.test(e.address)
+      ? `Straight to the engine, past the router. It listens on loopback, so this works only on ${e.node} itself.`
+      : "Straight to the engine, past the router: no key, no placement, nothing recorded in Activity. It answers anyone who can reach its address on the tailnet.",
+    base,
+    curl: base ? curlFor(base, body) : "",
+    setup: "",
+    body,
+  };
+  return [mesh, direct].filter((t) => t.curl);
+}
+
+// entrypoints is the nodes that take requests from outside the tailnet: those
+// whose topology lists a public listener that is switched on.
+export function entrypoints(topologies) {
+  return (topologies ?? [])
+    .filter((t) => t && (t.listeners ?? []).some((l) => l.name === "public" && l.enabled))
+    .map((t) => t.node)
+    .filter(Boolean)
+    .sort();
+}
+
+// publicTarget is the command for calling a model from outside, through an
+// entrypoint. The public listener always wants a key, and it has to be one
+// of that node's own. url is the address people outside use; ModelFabric
+// does not know it (a TLS proxy in front of the node owns the name), so it
+// is whatever the reader last typed, or a placeholder.
+export function publicTarget(node, url, model) {
+  const base = String(url ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+  const body = tryRequest(model);
+  return {
+    key: "public",
+    node,
+    title: `From outside, through ${node}`,
+    note: `What a caller on the internet sends. The public address always asks for a key, and it must be one of ${node}'s own: its node key, or a named token created on ${node}. A key from another node is refused.`,
+    known: Boolean(base),
+    base: base ? `${base}/v1` : "",
+    setup: `export MFSH_KEY=...   # a token from ${node}: its dashboard, Server settings, Tokens; or \`mfsh key\` run on ${node}`,
+    curl: curlFor(`${base || "https://api.example.com"}/v1`, body, "MFSH_KEY"),
+    body,
+  };
+}
+
+// ---- Connecting a coding agent --------------------------------------------
+
+// servedModels is each model the mesh serves with the context a request can
+// count on: the smallest among its engines, since the router may send a
+// request to any of them. 0 when no engine said. vision is whether any
+// engine has it loaded to read images: one is enough, because the router
+// sends a request carrying an image only to engines that can read it.
+export function servedModels(meshEngines) {
+  const by = new Map();
+  for (const e of meshEngines ?? []) {
+    if (!e.model) continue;
+    const have = by.get(e.model);
+    const ctx = e.contextLength || 0;
+    by.set(e.model, {
+      context: have === undefined ? ctx : (ctx && have.context ? Math.min(ctx, have.context) : ctx || have.context),
+      vision: Boolean(have?.vision || e.vision),
+    });
+  }
+  return [...by.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+// connectPlaces is where an app can be, and so which address and what key it
+// uses. front is the page's front door; mesh is this node's tailnet address
+// and port ("" when unknown); entry is { node, url } for a node that takes
+// requests from outside, or null.
+export function connectPlaces(front, mesh, entry) {
+  const places = [{
+    key: "local",
+    label: "On this machine",
+    base: front?.url || "http://127.0.0.1:1234/v1",
+    keyVar: front?.requireKey ? "MFSH_KEY" : "",
+    keyHelp: front?.requireKey ? "This node is set to ask for a key on 127.0.0.1. `mfsh key` prints it; a named token is better for an app." : "",
+    note: front?.requireKey ? "" : "No key is needed on the machine itself.",
+  }];
+  if (mesh) {
+    places.push({
+      key: "tailnet",
+      label: "On another of your machines",
+      base: `http://${mesh}/v1`,
+      // require_api_key covers the loopback front door only. The mesh
+      // listener never checks a key: Tailscale has already said who is calling.
+      keyVar: "",
+      keyHelp: "",
+      note: "Any machine on your tailnet can use this address, and being on the tailnet is the only credential" + (front?.requireKey ? ", even though this node asks for a key on 127.0.0.1" : "") + ". A machine running ModelFabric itself should use its own 127.0.0.1 instead.",
+    });
+  }
+  if (entry?.node) {
+    const base = String(entry.url ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+    places.push({
+      key: "public",
+      label: `From outside, through ${entry.node}`,
+      base: `${base || "https://api.example.com"}/v1`,
+      known: Boolean(base),
+      node: entry.node,
+      keyVar: "MFSH_KEY",
+      keyHelp: `The public address always asks for a key, and it must be one of ${entry.node}'s own: create a named token on ${entry.node} (its dashboard, Server settings, Tokens, or \`mfsh key create opencode\` there).`,
+      note: "",
+    });
+  }
+  return places;
+}
+
+// opencodeConfig is an opencode.json that adds ModelFabric as a provider.
+// The key, when one is needed, is read from the environment by opencode
+// ("{env:NAME}") and is never written into the file.
+export function opencodeConfig(base, models, keyVar = "") {
+  const options = { baseURL: base };
+  if (keyVar) options.apiKey = `{env:${keyVar}}`;
+  const entries = {};
+  for (const m of models ?? []) {
+    entries[m.id] = { name: m.id };
+    // Without a limit opencode assumes a small window and compacts early.
+    if (m.context > 0) entries[m.id].limit = { context: m.context, output: Math.min(16384, Math.floor(m.context / 4)) };
+    // opencode assumes a model it does not know reads text only. Unless told
+    // otherwise it removes an attached image before sending and the model
+    // answers that it "doesn't support image input", with vision loaded and
+    // working. Reproduced with opencode 1.18.35; these two fields fix it.
+    if (m.vision) {
+      entries[m.id].attachment = true;
+      entries[m.id].modalities = { input: ["text", "image"], output: ["text"] };
+    }
+  }
+  return JSON.stringify({
+    $schema: "https://opencode.ai/config.json",
+    provider: {
+      modelfabric: { npm: "@ai-sdk/openai-compatible", name: "ModelFabric", options, models: entries },
+    },
+  }, null, 2);
+}
+
+// A coding agent sends its tools, its instructions and the files it has read
+// with every request. Under this it runs out of room within a few steps.
+export const AGENT_MIN_CONTEXT = 64000;
+
+// aliveNodes is the names of the nodes that are up, this node first, from
+// the mesh view. It is what anything that asks every node something should
+// iterate. The My Models cache (mm.nodes) is not: it only learns a peer
+// while a page that shows peers' models is open, so the Requests tab's
+// "Whole mesh" and the developer log's node list came up with this node
+// alone on a fresh page.
+export function aliveNodes(view) {
+  const nodes = (view?.nodes ?? []).filter((n) => n.alive && n.name);
+  return [...nodes.filter((n) => n.isSelf), ...nodes.filter((n) => !n.isSelf).sort((a, b) => a.name.localeCompare(b.name))].map((n) => n.name);
 }

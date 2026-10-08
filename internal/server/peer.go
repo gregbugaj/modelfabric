@@ -25,6 +25,12 @@ func (s *Server) PeerHandler() http.Handler {
 			full.ServeHTTP(w, r.WithContext(router.WithoutJIT(r.Context())))
 			return
 		}
+		// A node's key is shown on that node only, whoever owns the device
+		// asking (see handleKeyReveal).
+		if r.URL.Path == "/api/v1/key/reveal" {
+			writeError(w, http.StatusForbidden, "a node's key is shown only on the node itself; run `mfsh key` there, or open its own dashboard")
+			return
+		}
 		// Management and metrics require the same Tailscale owner. Never expose
 		// onward proxying here; remote management is limited to one hop.
 		if strings.HasPrefix(r.URL.Path, "/api/v1/") && !strings.HasPrefix(r.URL.Path, "/api/v1/nodes/") ||
